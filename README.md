@@ -2,6 +2,7 @@
 
 **Stand:** 2026-09-09  
 
+
 ## Überblick
 
 Dieses ESP-IDF-Projekt implementiert einen kompakten Snapcast-kompatiblen Audiostreaming-Server auf einem ESP32-S3 mit PSRAM. Der ESP32-S3 arbeitet gleichzeitig als autonomer ESP-Mesh-Lite-Root, liest ein Stereo-I2S-Signal vom TinySine AudioB I2S V2r0 ein, mischt das Signal zu Mono, codiert es mit Opus und verteilt den Stream an mehrere Snapclients.
