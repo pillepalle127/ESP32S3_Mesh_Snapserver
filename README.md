@@ -1,248 +1,324 @@
 # ESP32-S3 Mini Snapserver
 
-**Stand:** 2026-09-09  
+**Stand:** 2026-09-09
 
+## Projektziel
 
-## Überblick
+Dieses Projekt implementiert einen eigenständigen **Snapcast-kompatiblen Audio-Server auf einem ESP32-S3**.
 
-Dieses ESP-IDF-Projekt implementiert einen kompakten Snapcast-kompatiblen Audiostreaming-Server auf einem ESP32-S3 mit PSRAM. Der ESP32-S3 arbeitet gleichzeitig als autonomer ESP-Mesh-Lite-Root, liest ein Stereo-I2S-Signal vom TinySine AudioB I2S V2r0 ein, mischt das Signal zu Mono, codiert es mit Opus und verteilt den Stream an mehrere Snapclients.
+Der ESP32-S3 übernimmt dabei mehrere Aufgaben:
 
-Parallel zum Netzwerkstream verarbeitet der ESP32-S3 dasselbe Monosignal lokal mit einer Linkwitz-Riley-Frequenzweiche 4. Ordnung und gibt Tiefpass und Hochpass über die beiden Kanäle eines PCM5102A aus.
+* Audioeingang über I2S
+* Stereo-zu-Mono-Mischung
+* Opus-Encoding
+* Snapcast-kompatibler Audiostream
+* TCP-Verbindung für Audio auf Port **1704**
+* JSON-RPC-Steuerung auf Port **1705**
+* eigenständiger ESP-Mesh-Lite-Root
+* Verteilung des Audiosignals an Snapclients
+* lokale digitale Frequenzweiche für die angeschlossene Audiohardware
+
+Das Ziel ist ein vollständig eigenständiger Audio-Server ohne Raspberry Pi oder PC im laufenden Betrieb.
+
+---
 
 ## Aktueller Funktionsumfang
 
-- autonomer ESP-Mesh-Lite-Root ohne externen Router
-- gemeinsamer I2S-Full-Duplex-Bus für Eingang und lokalen Ausgang
-- Stereo-Eingang mit 48 kHz und 16-Bit-Audiodaten in 32-Bit-I2S-Slots
-- überlaufsichere Mischung von links und rechts zu Mono
-- lokale Linkwitz-Riley-Frequenzweiche 4. Ordnung
-- Opus-Codierung mit 48 kHz, Mono und 20-ms-Frames
-- Snapcast-Binärprotokoll auf TCP-Port 1704
-- JSON-RPC-Control-Schnittstelle auf TCP-Port 1705
-- Verwaltung mehrerer gleichzeitig verbundener Clients
-- synchronisierte Socket-Schreibzugriffe und kontrollierter Clientabbau
-- monotone Audiozeitbasis mit Laufzeitabgleich auf eine plausible Client-Wanduhr
-- Status- und Clientdaten für Control-Anwendungen
+* ESP32-S3 als Snapserver
+* PSRAM-Unterstützung
+* ESP-Mesh-Lite als eigenes Mesh-Netzwerk
+* ESP32-S3 arbeitet als Mesh-Root
+* I2S-Audioeingang
+* Stereo-Eingang wird vor der weiteren Verarbeitung zu Mono gemischt
+* Opus-Encoding
+* Snapcast-Audiostream über TCP Port 1704
+* Snapcast JSON-RPC über TCP Port 1705
+* monotone Audiozeitbasis mit Abgleich mit der absoluten Client-Zeit
+* Audioübertragung an normale Snapclients
+* lokale digitale Frequenzweiche
+* Ausgabe der getrennten Frequenzbereiche über I2S
+* vorgesehen für die Kombination mit externen I2S-DACs und Verstärkern
 
-## Signalfluss
+---
 
-```text
-Bluetooth-Quelle
-    |
-    v
-TinySine AudioB I2S V2r0
-    |  Stereo, 48 kHz, 16-Bit-Daten in 32-Bit-Slots
-    v
-ESP32-S3 I2S0 RX
-    |
-    +--> Mono-Mischung
-           |
-           +--> Opus-Encoder
-           |      |
-           |      +--> Snapcast TCP 1704 --> ESP-/PC-/Android-Clients
-           |
-           +--> LR4-Frequenzweiche
-                  |
-                  +--> Tiefpass  --> PCM5102A links  --> Subwoofer
-                  +--> Hochpass  --> PCM5102A rechts --> Breitband
-```
+## Hardware
 
-Das Bluetoothsignal wird lokal nicht unverändert als Stereo durchgeschleift. Das im ESP32-S3 gebildete Monosignal wird vor der lokalen Ausgabe durch die Frequenzweiche verarbeitet.
+### ESP32-S3
 
-## Verbindliche I2S-Konfiguration
+Der Server basiert auf einem ESP32-S3 mit PSRAM.
 
-TinySine und PCM5102A verwenden einen gemeinsamen Full-Duplex-I2S-Bus ohne MCLK. BCLK und LRCLK werden gemeinsam genutzt, während RX- und TX-Daten getrennte Leitungen verwenden.
+Die zusätzliche Speichergröße wird unter anderem für Audioverarbeitung, Netzwerk- und Opus-Puffer verwendet.
 
-| Signal | GPIO | Verbindung |
-|---|---:|---|
-| BCLK | 4 | ESP32-S3 zu TinySine und PCM5102A |
-| LRCLK / WS | 6 | ESP32-S3 zu TinySine und PCM5102A |
-| DIN | 5 | TinySine SD OUT zum ESP32-S3 |
-| DOUT | 7 | ESP32-S3 zum PCM5102A DIN |
-| MCLK | nicht verwendet | keine Verbindung |
+### Audioeingang
 
-Weitere Parameter:
+Als Audioquelle wird ein I2S-Audioeingang verwendet.
 
-- I2S-Controller: I2S0
-- Betriebsart: gemeinsamer Full-Duplex-Bus
-- ESP32-S3: I2S-Master
-- TinySine und PCM5102A: I2S-Slaves
-- Abtastrate: 48 kHz
-- Nutzdatenbreite: 16 Bit
-- Slotbreite: 32 Bit
-- Hardwarekanäle: Stereo
-- Netzwerkstream: Mono
+Aktuell vorgesehen:
 
-Die aktuelle I2S-Konfiguration ist funktional bestätigt. Der lokale I2S-Audiopfad spielt mit 16-Bit-Audiodaten in 32-Bit-Slots einwandfrei; das DMA-Datenlayout ist daher kein offener Verifikationspunkt.
+**TinySine AudioB I2S V2r0**
+
+Das Eingangssignal wird zunächst als Stereo verarbeitet und anschließend zu einem Monosignal gemischt.
+
+### Audioausgang
+
+Für die lokale Audioausgabe ist ein I2S-DAC vorgesehen:
+
+**PCM5102A**
+
+Das Ausgangssignal wird nach der digitalen Frequenzweiche entsprechend der jeweiligen Frequenzbereiche ausgegeben.
+
+---
 
 ## Audioverarbeitung
 
-### Mono-Mischung
+Der grundsätzliche Signalweg ist:
 
-Für jedes Stereo-Sample wird aus linkem und rechtem Kanal ein Monosample gebildet. Die Berechnung erfolgt mit 32-Bit-Zwischenwerten, bevor das Ergebnis auf 16 Bit zurückgeführt wird.
+```text
+I2S Stereo Input
+       │
+       ▼
+  L + R → Mono
+       │
+       ├──────────────► Opus Encoder
+       │                     │
+       │                     ▼
+       │              Snapcast Stream
+       │
+       ▼
+ Digitale Frequenzweiche
+       │
+       ├────────► Low Band
+       │
+       └────────► High Band
+                     │
+                     ▼
+                 I2S DAC
+```
 
-### Lokale Frequenzweiche
+Die Stereo-Kanäle werden **vor der Frequenzweiche** zu einem gemeinsamen Monosignal gemischt.
 
-Die lokale Ausgabe verwendet zwei kaskadierte Butterworth-Biquads je Zweig und bildet damit eine Linkwitz-Riley-Weiche 4. Ordnung. Die Trennfrequenz wird über `CONFIG_SNAPSERVER_CROSSOVER_HZ` konfiguriert.
+Damit wird ausdrücklich keine getrennte Frequenzweiche für den linken und rechten Kanal betrieben.
 
-Standardzuordnung:
+---
 
-- PCM5102A links: Tiefpass / Subwoofer
-- PCM5102A rechts: Hochpass / Breitband
+## Digitale Frequenzweiche
 
-### Opus-Stream
+Die lokale DSP-Verarbeitung erfolgt direkt auf dem ESP32-S3.
 
-- Abtastrate: 48 kHz
-- Kanäle: 1
-- Auflösung des PCM-Eingangs: 16 Bit
-- Framegröße: 960 Samples
-- Framedauer: 20 ms
-- Bitrate: `CONFIG_SNAPSERVER_OPUS_BITRATE`
-- Komplexität: `CONFIG_SNAPSERVER_OPUS_COMPLEXITY`
+Vorgesehen ist eine **Linkwitz-Riley-Frequenzweiche 4. Ordnung (LR4)**.
 
-## Netzwerkprotokolle
+Die Frequenzweiche arbeitet auf dem zuvor aus L und R gebildeten Monosignal.
 
-### Audiostream auf TCP 1704
+Beispiel:
 
-Der Server implementiert die für den aktuellen Betrieb benötigten Snapcast-Nachrichten:
+```text
+             Mono
+               │
+               ▼
+        ┌──────────────┐
+        │     LR4      │
+        │ Frequenzweiche│
+        └──────────────┘
+             │     │
+             │     │
+             ▼     ▼
+            LOW   HIGH
+             │     │
+             ▼     ▼
+           Output Output
+```
 
-- Hello
-- ServerSettings
-- CodecHeader
-- WireChunk
-- Time
-- ClientInfo-Empfang
+Die konkrete Trennfrequenz wird über die Projektkonfiguration festgelegt.
 
-### Control-Schnittstelle auf TCP 1705
+Die DSP-Verarbeitung benötigt für diesen Signalweg kein externes DSP-System und ist auf dem ESP32-S3 ohne zwingende Verwendung von PSRAM für die eigentliche Filterberechnung vorgesehen.
 
-Die JSON-RPC-Schnittstelle liefert Server-, Gruppen-, Stream- und Clientinformationen. Clientidentitäten werden aus der Hello-Nachricht des Audiokanals übernommen.
+---
 
-Aktuell vorgesehene Methoden:
+## Snapcast-Kompatibilität
 
-- `Server.GetStatus`
-- `Server.GetRPCVersion`
-- `Client.GetStatus`
-- `Client.SetVolume`
-- `Client.SetName`
-- `Client.SetLatency`
-- `Group.GetStatus`
-- `Group.SetStream`
-- `Group.SetMute`
-- `Group.SetClients`
-- `Server.DeleteClient`
+Der ESP32-S3 stellt die für Snapcast benötigten Netzwerkdienste bereit.
 
-Die vollständige semantische Kompatibilität aller schreibenden Methoden ist noch zu verifizieren.
+### Audio
+
+**TCP Port 1704**
+
+Über diesen Port wird der Audiostream an die Snapclients übertragen.
+
+### Steuerung
+
+**TCP Port 1705**
+
+Über diesen Port erfolgt die JSON-RPC-Kommunikation.
+
+Damit kann sich beispielsweise ein normaler PC-Snapclient mit dem ESP32-S3 verbinden.
+
+---
 
 ## Zeitbasis
 
-Der ESP32-S3 besitzt in dieser Anwendung keine dauerhaft gültige Wanduhr. Deshalb verwendet der Server `esp_timer_get_time()` als monotone Zeitquelle und ergänzt einen Laufzeit-Offset.
+Der ESP32-S3 besitzt in dieser Anwendung keine dauerhaft gültige Echtzeituhr (RTC) mit verlässlicher absoluter Zeit.
 
-- Uptime-basierte ESP-Clients werden nicht als Wanduhrquelle verwendet.
-- Eine plausible Epoch-Zeit kann von einem PC- oder Android-Client übernommen werden.
-- Nachrichtenheader und Audiochunks verwenden dieselbe monotone Zeitbasis.
-- Audiozeitstempel beziehen sich auf den Beginn des jeweiligen PCM-Frames.
+Deshalb verwendet der Server `esp_timer_get_time()` als monotone Zeitquelle und ergänzt einen Laufzeit-Offset.
+
+* Uptime-basierte ESP-Clients werden nicht als Quelle für die absolute Zeit verwendet.
+* Eine plausible Epoch-Zeit kann von einem PC- oder Android-Client übernommen werden.
+* Nachrichtenheader und Audiochunks verwenden dieselbe monotone Zeitbasis.
+* Audiozeitstempel beziehen sich auf den Beginn des jeweiligen PCM-Frames.
+
+Ziel ist ein sauberer **Abgleich mit der absoluten Client-Zeit**, ohne die Audiozeitbasis selbst von einer möglicherweise unstabilen Echtzeituhr abhängig zu machen.
+
+---
+
+## Netzwerk
+
+Der ESP32-S3 arbeitet als eigenständiger **ESP-Mesh-Lite-Root**.
+
+Die Mesh-Struktur ermöglicht die Verbindung weiterer ESP-Geräte, ohne dass für die reine Audioverteilung zwingend ein separater Raspberry-Pi-Snapserver erforderlich ist.
+
+Der Snapserver selbst stellt seine Dienste über das lokale Netzwerk beziehungsweise Mesh-Netzwerk bereit.
+
+---
 
 ## Projektstruktur
 
+Die wichtigsten Komponenten befinden sich unter anderem in:
+
 ```text
+components/
+├── audio_i2s/
+│   ├── CMakeLists.txt
+│   ├── audio_i2s.c
+│   └── include/
+│
+├── ...
+│
 main/
-|-- app_main.c
-|-- audio_i2s.c
-|-- audio_i2s.h
-|-- audio_opus.c
-|-- audio_opus.h
-|-- mesh_root.c
-|-- mesh_root.h
-|-- snapcontrol.c
-|-- snapcontrol.h
-|-- snapserver.c
-|-- snapserver.h
-`-- CMakeLists.txt
+├── ...
+│
+CMakeLists.txt
+sdkconfig
+README.md
 ```
+
+Die genaue Struktur kann sich während der Entwicklung noch ändern.
+
+---
+
+## Abhängigkeiten
+
+Das Projekt basiert auf **ESP-IDF**.
+
+Verwendete beziehungsweise vorgesehene Komponenten:
+
+* ESP-IDF
+* ESP-Mesh-Lite
+* esp-opus
+* ESP-IoT-Bridge
+* CMake Utilities
+* ESP-Modem
+
+Die konkreten Versionen sind abhängig vom jeweiligen Entwicklungsstand und werden über die ESP-IDF-Komponentenverwaltung festgelegt.
+
+---
 
 ## Build
 
-Voraussetzung ist eine eingerichtete ESP-IDF-5.4.3-Umgebung.
+ESP-IDF muss zunächst eingerichtet sein.
+
+Danach im Projektverzeichnis:
 
 ```powershell
 idf.py set-target esp32s3
-idf.py reconfigure
 idf.py build
+```
+
+Flashen:
+
+```powershell
+idf.py flash
+```
+
+Serielle Ausgabe:
+
+```powershell
+idf.py monitor
+```
+
+Build und Monitor können auch kombiniert werden:
+
+```powershell
 idf.py flash monitor
 ```
 
-## Wichtige Konfigurationspunkte
+---
 
-Vor dem Build prüfen:
+## Konfiguration
 
-- `CONFIG_SNAPSERVER_ENABLE_MESH_LITE`
-- `CONFIG_MESH_SOFTAP_SSID_PREFIX`
-- `CONFIG_MESH_SOFTAP_PASSWORD`
-- `CONFIG_MESH_CHANNEL`
-- `CONFIG_SNAPSERVER_OPUS_BITRATE`
-- `CONFIG_SNAPSERVER_OPUS_COMPLEXITY`
-- `CONFIG_SNAPSERVER_CROSSOVER_HZ`
+Die ESP-IDF-Konfiguration erfolgt über:
 
-Root und Clients müssen denselben Mesh-Namen, dasselbe Kennwort und denselben Funkkanal verwenden.
+```powershell
+idf.py menuconfig
+```
 
-## Diagnose
+Die daraus erzeugte `sdkconfig` ist projektspezifisch.
 
-### Erwartete Streamrate
+Passwörter, Zugangsdaten und andere private Netzwerkdaten gehören **nicht in das Git-Repository**.
 
-Bei 20-ms-Frames sind ungefähr 50 WireChunks pro Sekunde und Client zu erwarten.
+---
 
-### Control-Status abfragen
+## Sicherheit / Repository
 
-Die von der verwendeten Android-App bestätigte Antwortstruktur enthält den vollständigen Status unter `result.server`. Die verbundenen Clients stehen unter `result.server.groups[0].clients[]` und werden in der Android-App korrekt angezeigt.
+Das Repository darf keine privaten Zugangsdaten enthalten.
 
-### Relevante Logs
+Insbesondere nicht:
 
-- `Client connected`
-- `Hello from ...`
-- `Client handshake complete`
-- `chunks/s=50`
-- `send_errors=0`
-- `RPC request: Server.GetStatus`
-- `Server.OnUpdate sent after client-set change`
+* WLAN-Passwörter
+* API-Keys
+* Tokens
+* private Schlüssel
+* Zertifikats-Private-Keys
+* persönliche Zugangsdaten
+* reale private Netzwerkdetails, sofern diese nicht für die Dokumentation erforderlich sind
+* erzeugte NVS-Datenbanken mit gespeicherten Credentials
 
-## Bekannte offene Punkte
+Auch die **Git-Historie** muss bei der Veröffentlichung des Projekts frei von solchen Daten sein.
 
-- Benachrichtigungen der Control-Schnittstelle bei Laufzeitänderungen weiter prüfen
-- tatsächliche Wirkung der schreibenden JSON-RPC-Methoden vollständig implementieren oder als nicht unterstützt kennzeichnen
-- Opus-Encoder bei Fehlern während der Konfiguration vollständig freigeben
-- Speicher-, Stack- und CPU-Auslastung mit mehreren Clients über längere Zeit messen
-- Audioaussetzer und Rebuffer-Ereignisse unter Funklast weiter beobachten
+---
 
 ## Testreihenfolge
 
-1. Server starten und I2S-, Opus-, Port-1704- und Port-1705-Initialisierung prüfen.
-2. Einen ESP-Snapclient direkt am Root verbinden.
-3. Einen PC-Snapclient verbinden und Wanduhrabgleich prüfen.
-4. `Server.GetStatus` abfragen und Clientliste kontrollieren.
-5. Android-Control-App verbinden; die Clientanzeige ist bestätigt, Laufzeitupdates separat prüfen.
-6. Serverneustart und Client-Reconnect testen.
-7. Mehrere Clients sowie Mesh-Hops unter Dauerlast testen.
-8. Lokale Tiefpass-/Hochpass-Ausgabe und Netzwerkstream parallel prüfen.
+1. ESP32-S3 flashen und starten.
+2. Mesh-Lite-Netzwerk initialisieren.
+3. I2S-Audioeingang prüfen.
+4. Stereo-zu-Mono-Mischung prüfen.
+5. Opus-Encoding prüfen.
+6. Snapcast-Port 1704 prüfen.
+7. JSON-RPC-Port 1705 prüfen.
+8. Einen PC-Snapclient verbinden und den **Abgleich mit der absoluten Client-Zeit** prüfen.
+9. Audioübertragung und Synchronität prüfen.
+10. Lokale Frequenzweiche und die beiden Ausgangssignale prüfen.
 
+---
 
-## Project status
+## Entwicklungsstatus
 
-Experimental implementation. Not an official Snapcast server and not
-affiliated with the Snapcast project.
+Das Projekt befindet sich in aktiver Entwicklung.
 
-## Security notice
+Der Schwerpunkt liegt derzeit auf:
 
-Change the default Mesh SSID and password before deployment.
-Do not commit a local sdkconfig containing credentials.
+* stabiler Audioübertragung
+* korrekter Snapcast-Synchronisation
+* stabiler Zeitbasis
+* ESP-Mesh-Lite-Integration
+* DSP-Frequenzweiche
+* zuverlässiger I2S-Verarbeitung
+* möglichst geringer zusätzlicher Latenz
 
-## Compatibility
+Änderungen an Audioformat, Buffergrößen, Filterparametern und Netzwerkverhalten sind während der Entwicklung möglich.
 
-Tested with:
+---
 
-- ESP-IDF 5.4.3
-- ESP32-S3 with PSRAM
-- ESP-Mesh-Lite 1.0.2
-- ESP-IoT-Bridge 1.0.1
-- Snapclient 0.35.0 on Windows
-- ESP32 Snapclient
-- Android Snapcast control/client application
+## Lizenz
+
+MIT License
+	
