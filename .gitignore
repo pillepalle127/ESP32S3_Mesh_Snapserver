@@ -1,0 +1,46 @@
+# ESP-IDF build output
+build/
+build_*/
+
+# Local ESP-IDF configuration
+sdkconfig
+sdkconfig.old
+
+# Generated dependency output
+managed_components/
+
+# Temporary source copies
+txt/
+
+# Monitor and test output
+*.log
+TEST_LOGS/
+pytest_embedded_log/
+pytest-embedded/
+build_summary_*.xml
+app_info_*.txt
+size_info*.txt
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editors
+.vscode/
+.idea/
+.settings/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Local binaries and firmware images
+*.bin
+*.elf
+*.map
+*.hex
+
+# Temporary files
+*.tmp
+*.bak

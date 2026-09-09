@@ -1,0 +1,22 @@
+idf_component_register(
+    SRCS
+        "app_main.c"
+        "audio_i2s.c"
+        "audio_opus.c"
+        "mesh_root.c"
+        "snapserver.c"
+		"snapcontrol.c" # <--
+    INCLUDE_DIRS "."
+    REQUIRES
+        esp_timer
+        esp_wifi
+        esp_event
+        esp_netif
+        esp_driver_i2s
+        lwip
+        nvs_flash
+        esphome__micro-opus
+        mesh_lite
+        espressif__iot_bridge
+		json
+)
