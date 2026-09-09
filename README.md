@@ -254,6 +254,25 @@ idf.py flash monitor
 
 ---
 
+
+## Pining
+
+PCM5102A                 ESP32-S3                 TinySine
+--------                 --------                 --------
+BCK   <----------------- GPIO 7 ----------------> BCLK
+LCK   <----------------- GPIO 8 ----------------> LRCLK
+DIN   <----------------- GPIO 10
+
+                         GPIO 9 <---------------- DOUT
+
+GND   ------------------ GND -------------------- GND
+
+MCLK  nicht verbunden
+
+
+---
+
+
 ## Entwicklungsstatus
 
 Das Projekt befindet sich in aktiver Entwicklung.
