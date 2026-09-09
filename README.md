@@ -331,12 +331,19 @@ MIT License
 This project uses components from the ESP-IDF ecosystem,
 including:
 
-- ESP-IDF
-- ESP-Mesh-Lite
-- esp-opus
-- ESP-IoT-Bridge
-- CMake Utilities
-- ESP-Modem
+# Third-Party Components
 
-Please refer to the respective component repositories
-for their individual license terms.
+This project uses the following third-party components:
+
+- ESP-IDF — Apache License 2.0
+- ESP-Mesh-Lite — Apache License 2.0
+- ESP-IoT-Bridge — Apache License 2.0
+- ESP-Modem — Apache License 2.0
+- CMake Utilities — Apache License 2.0
+- esp-opus — MIT License
+
+The respective third-party components remain subject to
+their original license terms.
+
+See the respective upstream repositories and component
+registries for the complete license texts.
