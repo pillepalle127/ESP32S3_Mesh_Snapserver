@@ -115,10 +115,10 @@ Beispiel:
              Mono
                │
                ▼
-        ┌──────────────┐
-        │     LR4      │
+        ┌────────────-──┐
+        │     LR4       │
         │ Frequenzweiche│
-        └──────────────┘
+        └──────────-────┘
              │     │
              │     │
              ▼     ▼
@@ -203,21 +203,23 @@ README.md
 Die genaue Struktur kann sich während der Entwicklung noch ändern.
 
 ---
-
 ## Abhängigkeiten
 
-Das Projekt basiert auf **ESP-IDF**.
+Dieses Projekt verwendet Komponenten aus dem ESP-IDF-Ökosystem, darunter:
 
-Verwendete beziehungsweise vorgesehene Komponenten:
+* **ESP-IDF** — Apache License 2.0
+* **ESP-Mesh-Lite** — Apache License 2.0
+* **ESP-IoT-Bridge** — Apache License 2.0
+* **ESP-Modem** — Apache License 2.0
+* **CMake Utilities** — Apache License 2.0
+* **esp-opus** — MIT License
 
-* ESP-IDF
-* ESP-Mesh-Lite
-* esp-opus
-* ESP-IoT-Bridge
-* CMake Utilities
-* ESP-Modem
+Die jeweiligen Drittanbieter-Komponenten unterliegen weiterhin ihren
+ursprünglichen Lizenzbedingungen.
 
-Die konkreten Versionen sind abhängig vom jeweiligen Entwicklungsstand und werden über die ESP-IDF-Komponentenverwaltung festgelegt.
+Für die vollständigen Lizenztexte und weitere Informationen wird auf die
+jeweiligen Upstream-Repositories und den ESP-IDF-Komponenten-Registry
+verwiesen.
 
 ---
 
@@ -252,54 +254,6 @@ idf.py flash monitor
 
 ---
 
-## Konfiguration
-
-Die ESP-IDF-Konfiguration erfolgt über:
-
-```powershell
-idf.py menuconfig
-```
-
-Die daraus erzeugte `sdkconfig` ist projektspezifisch.
-
-Passwörter, Zugangsdaten und andere private Netzwerkdaten gehören **nicht in das Git-Repository**.
-
----
-
-## Sicherheit / Repository
-
-Das Repository darf keine privaten Zugangsdaten enthalten.
-
-Insbesondere nicht:
-
-* WLAN-Passwörter
-* API-Keys
-* Tokens
-* private Schlüssel
-* Zertifikats-Private-Keys
-* persönliche Zugangsdaten
-* reale private Netzwerkdetails, sofern diese nicht für die Dokumentation erforderlich sind
-* erzeugte NVS-Datenbanken mit gespeicherten Credentials
-
-Auch die **Git-Historie** muss bei der Veröffentlichung des Projekts frei von solchen Daten sein.
-
----
-
-## Testreihenfolge
-
-1. ESP32-S3 flashen und starten.
-2. Mesh-Lite-Netzwerk initialisieren.
-3. I2S-Audioeingang prüfen.
-4. Stereo-zu-Mono-Mischung prüfen.
-5. Opus-Encoding prüfen.
-6. Snapcast-Port 1704 prüfen.
-7. JSON-RPC-Port 1705 prüfen.
-8. Einen PC-Snapclient verbinden und den **Abgleich mit der absoluten Client-Zeit** prüfen.
-9. Audioübertragung und Synchronität prüfen.
-10. Lokale Frequenzweiche und die beiden Ausgangssignale prüfen.
-
----
-
 ## Entwicklungsstatus
 
 Das Projekt befindet sich in aktiver Entwicklung.
@@ -321,29 +275,3 @@ Der Schwerpunkt liegt derzeit auf:
 ## Lizenz
 
 MIT License
-	
-	
-	
-
-
-## Dependencies
-
-This project uses components from the ESP-IDF ecosystem,
-including:
-
-# Third-Party Components
-
-This project uses the following third-party components:
-
-- ESP-IDF — Apache License 2.0
-- ESP-Mesh-Lite — Apache License 2.0
-- ESP-IoT-Bridge — Apache License 2.0
-- ESP-Modem — Apache License 2.0
-- CMake Utilities — Apache License 2.0
-- esp-opus — MIT License
-
-The respective third-party components remain subject to
-their original license terms.
-
-See the respective upstream repositories and component
-registries for the complete license texts.
