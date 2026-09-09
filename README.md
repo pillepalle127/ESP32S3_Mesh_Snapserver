@@ -20,6 +20,10 @@ Der ESP32-S3 übernimmt dabei mehrere Aufgaben:
 
 Das Ziel ist ein vollständig eigenständiger Audio-Server ohne Raspberry Pi oder PC im laufenden Betrieb.
 
+
+![Verdrahtungsplan](docs/Verdrahtungsplan.png)
+<img src="docs/Verdrahtungsplan.png" width="800">
+
 ---
 
 ## Aktueller Funktionsumfang
@@ -257,18 +261,13 @@ idf.py flash monitor
 
 ## Pining
 
-PCM5102A                 ESP32-S3                 TinySine
---------                 --------                 --------
-BCK   <----------------- GPIO 7 ----------------> BCLK
-LCK   <----------------- GPIO 8 ----------------> LRCLK
-DIN   <----------------- GPIO 10
+GPIO 7   ESP32-S3 -> PCM5102A BCK und TinySine BCLK
 
-                         GPIO 9 <---------------- DOUT
+GPIO 8   ESP32-S3 -> PCM5102A LCK und TinySine LRCLK
 
-GND   ------------------ GND -------------------- GND
+GPIO 9   TinySine DOUT -> ESP32-S3 DIN
 
-MCLK  nicht verbunden
-
+GPIO 10  ESP32-S3 DOUT -> PCM5102A DIN
 
 ---
 
