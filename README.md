@@ -322,3 +322,21 @@ Der Schwerpunkt liegt derzeit auf:
 
 MIT License
 	
+	
+	
+
+
+## Dependencies
+
+This project uses components from the ESP-IDF ecosystem,
+including:
+
+- ESP-IDF
+- ESP-Mesh-Lite
+- esp-opus
+- ESP-IoT-Bridge
+- CMake Utilities
+- ESP-Modem
+
+Please refer to the respective component repositories
+for their individual license terms.
