@@ -23,6 +23,10 @@ static void configure_routerless_wifi(void)
     wifi_config_t sta_config = {0};
     esp_bridge_wifi_set_config(WIFI_IF_STA, &sta_config);
 
+    /*
+     * Kanal und Passwort muessen auf Root und allen Child-Knoten identisch
+     * sein, sonst scheitern Kinder mit WiFi reason 210/15.
+     */
     wifi_config_t ap_config = {
         .ap = {
             .password = CONFIG_MESH_SOFTAP_PASSWORD,

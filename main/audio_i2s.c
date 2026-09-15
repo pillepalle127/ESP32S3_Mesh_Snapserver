@@ -216,8 +216,10 @@ esp_err_t audio_i2s_start(void)
         },
     };
 
-    /* 16-Bit-Audiodaten in 32-Bit-I2S-Slots:
+    /*
+     * 16-Bit-Audiodaten in 32-Bit-I2S-Slots:
      * 48 kHz x 2 Kanaele x 32 Bit = 3,072 MHz BCLK.
+     * Das entspricht dem Format, das TinySine und PCM5102A erwarten.
      */
     standard_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
     standard_config.slot_cfg.ws_width = 32;

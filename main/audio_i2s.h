@@ -13,6 +13,8 @@
  * ESP32-S3 = Master, TinySine und PCM5102A = Slaves.
  * RX und TX teilen BCLK und LRCLK. Die Datenleitungen sind getrennt.
  * MCLK wird nicht verwendet.
+ *
+ * Format: 48 kHz, 16-Bit-Daten in 32-Bit-Slots, stereo.
  */
 #define AUDIO_I2S_GPIO_BCLK       4
 #define AUDIO_I2S_GPIO_LRCLK      6
@@ -45,6 +47,10 @@ esp_err_t audio_i2s_start(void);
  * Das ungefilterte Mono wird dem Snapserver im Puffer "mono" bereitgestellt.
  * Lokal wird dasselbe Mono durch eine Linkwitz-Riley-Weiche 4. Ordnung
  * verarbeitet und als Tiefpass/Hochpass an den PCM5102A ausgegeben.
+ *
+ * mono_samples muss zwischen 1 und MAX_FRAME_SAMPLES (960) liegen.
+ * timestamp_us erhaelt den Aufnahmezeitpunkt des Frames in Mikrosekunden
+ * (monotone esp_timer-Basis).
  */
 esp_err_t audio_i2s_read_frame(int16_t *mono,
                                size_t mono_samples,

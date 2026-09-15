@@ -17,9 +17,13 @@
 extern "C" {
 #endif
 
+/* Snapcast streaming port. */
 #define SNAPSERVER_PORT 1704
 
-/* Upper bound for snapserver_get_clients(). */
+/*
+ * Upper bound for snapserver_get_clients() and for the number of
+ * simultaneously connected streaming clients.
+ */
 #define SNAPSERVER_MAX_CLIENTS 8
 
 /*
@@ -58,7 +62,8 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
                               size_t max_clients);
 
 /*
- * Applies a volume change requested via the control protocol.
+ * Applies a volume/mute change requested via the control protocol and
+ * pushes a fresh ServerSettings message to the client.
  * Returns true if a client with this id exists.
  */
 bool snapserver_set_client_volume(const char *id,
@@ -66,13 +71,15 @@ bool snapserver_set_client_volume(const char *id,
                                   bool muted);
 
 /*
- * Applies a latency change requested via the control protocol.
+ * Applies a latency change requested via the control protocol and pushes a
+ * fresh ServerSettings message to the client.
  * Returns true if a client with this id exists.
  */
 bool snapserver_set_client_latency(const char *id, int32_t latency_ms);
 
 /*
- * Applies a name change requested via the control protocol.
+ * Applies a name change requested via the control protocol. The new name is
+ * reported on the next status query.
  * Returns true if a client with this id exists.
  */
 bool snapserver_set_client_name(const char *id, const char *name);

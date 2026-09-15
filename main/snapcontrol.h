@@ -18,6 +18,7 @@
 extern "C" {
 #endif
 
+/* Snapcast JSON-RPC control port. */
 #define SNAPCONTROL_PORT 1705
 
 /* Starts the JSON-RPC control server task. Idempotent. */

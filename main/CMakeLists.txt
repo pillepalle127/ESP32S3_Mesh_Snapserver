@@ -5,7 +5,7 @@ idf_component_register(
         "audio_opus.c"
         "mesh_root.c"
         "snapserver.c"
-		"snapcontrol.c" # <--
+        "snapcontrol.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
@@ -18,5 +18,5 @@ idf_component_register(
         esphome__micro-opus
         mesh_lite
         espressif__iot_bridge
-		json
+        json
 )

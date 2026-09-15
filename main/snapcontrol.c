@@ -52,12 +52,15 @@ static const char *TAG = "SNAPCONTROL";
 #define CTRL_RX_MAX       2048
 #define CTRL_CONN_STACK   8192
 #define CTRL_SERVER_STACK 4096
+/* Poll interval for Server.OnUpdate change detection. */
 #define CTRL_REFRESH_MS    500
 
 #define SERVER_NAME       "esp32-s3-mini-snapserver"
+/* Snapcast-compatible version string, not the firmware version. */
 #define SERVER_VERSION    "0.27.0"
 #define STREAM_ID         "default"
 #define GROUP_ID          "esp32-mini-group"
+/* Mono Opus: 48 kHz, 16 bit, 1 channel. */
 #define SAMPLE_FORMAT     "48000:16:1"
 
 static TaskHandle_t s_server_task;

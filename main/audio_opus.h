@@ -12,9 +12,15 @@
 #define AUDIO_CHANNELS              1
 #define AUDIO_BITS                 16
 #define AUDIO_FRAME_MS             20
+/* AUDIO_FRAME_MS * AUDIO_SAMPLE_RATE / 1000 */
 #define AUDIO_FRAME_SAMPLES       960
+/* Upper bound for one encoded Opus packet. */
 #define AUDIO_MAX_OPUS_PACKET    1500
 
+/*
+ * One encoded Opus packet. data points into a static buffer owned by
+ * audio_opus.c and is valid until the next audio_opus_get_packet() call.
+ */
 typedef struct {
     const uint8_t *data;
     size_t size;

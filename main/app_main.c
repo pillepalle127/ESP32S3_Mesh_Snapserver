@@ -15,6 +15,10 @@
 
 static const char *TAG = "APP";
 
+/*
+ * Initializes NVS, erasing and re-initializing the partition if it is full
+ * or was written by an incompatible firmware version.
+ */
 static esp_err_t initialize_nvs(void)
 {
     esp_err_t result = nvs_flash_init();
@@ -50,6 +54,10 @@ static esp_err_t initialize_nvs(void)
     return ESP_OK;
 }
 
+/*
+ * Initializes the TCP/IP stack and the default event loop. Tolerates an
+ * already existing event loop (ESP_ERR_INVALID_STATE).
+ */
 static esp_err_t initialize_network_stack(void)
 {
     esp_err_t result = esp_netif_init();
@@ -74,6 +82,10 @@ static esp_err_t initialize_network_stack(void)
     return ESP_OK;
 }
 
+/*
+ * Boot sequence: NVS -> TCP/IP stack -> Mesh-Lite root -> audio/Opus ->
+ * streaming server (1704) -> JSON-RPC control server (1705).
+ */
 void app_main(void)
 {
     ESP_LOGI(TAG, "Starting ESP32-S3 Mini Snapserver");

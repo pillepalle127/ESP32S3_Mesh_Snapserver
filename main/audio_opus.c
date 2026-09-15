@@ -22,6 +22,10 @@ esp_err_t audio_opus_start(void)
         return result;
     }
 
+    /*
+     * OPUS_APPLICATION_AUDIO ist fuer Musik optimiert; fuer reine Sprache
+     * waere OPUS_APPLICATION_VOIP passend. Der Snapcast-Stream ist Musik.
+     */
     int opus_error = OPUS_OK;
     s_encoder = opus_encoder_create(
         AUDIO_SAMPLE_RATE,

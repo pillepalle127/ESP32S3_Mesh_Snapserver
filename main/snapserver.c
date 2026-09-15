@@ -36,20 +36,25 @@ static const char *TAG = "SNAPSERVER";
 
 #define MAX_CLIENTS             SNAPSERVER_MAX_CLIENTS
 #define RX_MAX                  4096
+/* Snapcast stream protocol version we advertise and accept. */
 #define SNAP_PROTOCOL_VER       2
 #define CLIENT_TASK_STACK       8192
 #define SERVER_TASK_STACK       8192
 #define AUDIO_TASK_STACK        8192
 
-/* Single socket write timeout. */
+/* Single socket write timeout (SO_SNDTIMEO) for one client. */
 #define CLIENT_SEND_TIMEOUT_US  2000000
 
-/* The Opus stream on the wire is mono, independent of the local I2S link. */
+/*
+ * The Opus stream on the wire is mono, independent of the local I2S link
+ * (which is stereo in both directions). Must match AUDIO_CHANNELS in
+ * audio_opus.h.
+ */
 #define SNAPSTREAM_CHANNELS     1
 
 /*
  * Snapcast writes this constant as a little-endian uint32_t into the
- * codec header.
+ * codec header. It is the ASCII string "OPUS".
  */
 #define SNAP_OPUS_ID            0x4F505553U
 
@@ -1160,9 +1165,11 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
 }
 
 /*
- * Finds a client by id and applies a mutation. Volume and latency changes
- * only update the bookkeeping; they take effect for the client on its next
- * ServerSettings message.
+ * Finds a client by id. Must be called with s_clients_lock held.
+ *
+ * Volume and latency changes only update the bookkeeping; they take effect
+ * for the client on its next ServerSettings message, which the setters below
+ * trigger immediately.
  */
 static client_t *find_client_by_id_unsafe(const char *id)
 {
