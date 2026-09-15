@@ -6,6 +6,7 @@
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_system.h"
 #include "nvs_flash.h"
 #include "snapcontrol.h"
 
@@ -89,6 +90,7 @@ static esp_err_t initialize_network_stack(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Starting ESP32-S3 Mini Snapserver");
+    ESP_LOGI(TAG, "Freier Heap beim Start: %u Bytes", esp_get_free_heap_size());
 
     ESP_ERROR_CHECK(initialize_nvs());
     ESP_ERROR_CHECK(initialize_network_stack());
