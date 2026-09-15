@@ -49,7 +49,10 @@ Das Ziel ist ein vollständig eigenständiger Audio-Server ohne Raspberry Pi ode
 
 Der Server basiert auf einem ESP32-S3 mit PSRAM.
 
-Die zusätzliche Speichergröße wird unter anderem für Audioverarbeitung, Netzwerk- und Opus-Puffer verwendet.
+PSRAM ist in `sdkconfig.defaults` aktiviert (`CONFIG_SPIRAM=y`, Octal-Modus,
+80 MHz) und steht für zukünftige Puffer und die DSP-Verarbeitung bereit.
+Der aktuelle Code alloziert seine Audio-, Netzwerk- und Opus-Puffer noch im
+internen RAM.
 
 ### Audioeingang
 
@@ -183,22 +186,22 @@ Der Snapserver selbst stellt seine Dienste über das lokale Netzwerk beziehungsw
 
 ## Projektstruktur
 
-Die wichtigsten Komponenten befinden sich unter anderem in:
+Die Anwendungsquellen liegen vollständig unter `main/`:
 
 ```text
-components/
-├── audio_i2s/
-│   ├── CMakeLists.txt
-│   ├── audio_i2s.c
-│   └── include/
-│
-├── ...
-│
 main/
-├── ...
-│
+├── app_main.c        Einstiegspunkt und Initialisierungsreihenfolge
+├── mesh_root.c/.h    Autarker ESP-Mesh-Lite-Root (SoftAP + DHCP)
+├── audio_i2s.c/.h    Full-Duplex-I2S, Mono-Mix, LR4-Frequenzweiche
+├── audio_opus.c/.h   Opus-Encoder (20-ms-Frames, mono)
+├── snapserver.c/.h   Snapcast-Binärprotokoll auf Port 1704
+├── snapcontrol.c/.h  JSON-RPC-2.0-Control-Server auf Port 1705
+├── Kconfig.projbuild menuconfig-Optionen
+└── CMakeLists.txt
+
 CMakeLists.txt
-sdkconfig
+sdkconfig.defaults
+partitions.csv
 README.md
 ```
 
@@ -231,41 +234,44 @@ ESP-IDF muss zunächst eingerichtet sein.
 
 Danach im Projektverzeichnis:
 
-```powershell
+```bash
 idf.py set-target esp32s3
 idf.py build
 ```
 
 Flashen:
 
-```powershell
+```bash
 idf.py flash
 ```
 
 Serielle Ausgabe:
 
-```powershell
+```bash
 idf.py monitor
 ```
 
 Build und Monitor können auch kombiniert werden:
 
-```powershell
+```bash
 idf.py flash monitor
 ```
 
 ---
 
 
-## Pining
+## Pinbelegung
 
-GPIO 7   ESP32-S3 -> PCM5102A BCK und TinySine BCLK
+Der I2S-Bus läuft als Full-Duplex-Master ohne MCLK. RX und TX teilen sich
+BCLK und LRCLK, die Datenleitungen sind getrennt. Die Werte sind in
+`main/audio_i2s.h` definiert.
 
-GPIO 8   ESP32-S3 -> PCM5102A LCK und TinySine LRCLK
-
-GPIO 9   TinySine DOUT -> ESP32-S3 DIN
-
-GPIO 10  ESP32-S3 DOUT -> PCM5102A DIN
+| GPIO | Richtung | Signal | Gegenstelle |
+|------|----------|--------|-------------|
+| 4    | Ausgang  | BCLK   | PCM5102A BCK und TinySine BCLK |
+| 6    | Ausgang  | LRCLK  | PCM5102A LCK und TinySine LRCLK |
+| 5    | Eingang  | DIN    | TinySine SD OUT -> ESP32-S3 |
+| 7    | Ausgang  | DOUT   | ESP32-S3 -> PCM5102A DIN |
 
 ---
 
