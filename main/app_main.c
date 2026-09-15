@@ -127,4 +127,5 @@ void app_main(void)
     ESP_LOGI(
         TAG,
         "ESP32-S3 Snapserver started: TinySine stereo input, PCM5102A stereo output, Snapcast mono Opus");
+    ESP_LOGI(TAG, "Freier Heap nach dem Start: %u Bytes", esp_get_free_heap_size());
 }
