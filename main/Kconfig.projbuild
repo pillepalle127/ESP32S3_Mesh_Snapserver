@@ -34,7 +34,7 @@ config MESH_CHANNEL
     help
         Fester 2.4-GHz-WLAN-Kanal des autarken Mesh-Netzes.
         Root und alle Clients muessen denselben Kanal verwenden.
-		
+
 config SNAPSERVER_OPUS_BITRATE
     int "Opus bitrate (bit/s)"
     default 96000
@@ -44,13 +44,13 @@ config SNAPSERVER_OPUS_COMPLEXITY
     int "Opus encoder complexity"
     default 5
     range 0 10
-	
+
 config SNAPSERVER_CROSSOVER_HZ
     int "LR4 crossover frequency (Hz)"
     default 120
     range 40 500
     help
         Trennfrequenz der Linkwitz-Riley-Frequenzweiche (4. Ordnung).
-        sub = Tiefpass unterhalb, wideband = Hochpass oberhalb.
-		
+        sub = Tiefpass oberhalb, wideband = Hochpass unterhalb.
+
 endmenu

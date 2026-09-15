@@ -27,7 +27,8 @@
 
 /*
  * Lokale Linkwitz-Riley-Frequenzweiche 4. Ordnung.
- * Die Trennfrequenz kann im menuconfig zentral angepasst werden.
+ * Die Trennfrequenz kann im menuconfig zentral angepasst werden
+ * (CONFIG_SNAPSERVER_CROSSOVER_HZ).
  */
 #include "sdkconfig.h"
 
