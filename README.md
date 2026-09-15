@@ -1,6 +1,6 @@
 # ESP32-S3 Mini Snapserver
 
-**Stand:** 2026-09-09
+**Stand:** 2026-09-15
 
 ## Projektziel
 
@@ -133,9 +133,12 @@ Beispiel:
            Output Output
 ```
 
-Die konkrete Trennfrequenz wird über die Projektkonfiguration festgelegt.
+Die konkrete Trennfrequenz wird über die Projektkonfiguration festgelegt
+(`CONFIG_SNAPSERVER_CROSSOVER_HZ`, Standard 120 Hz).
 
-Die DSP-Verarbeitung benötigt für diesen Signalweg kein externes DSP-System und ist auf dem ESP32-S3 ohne zwingende Verwendung von PSRAM für die eigentliche Filterberechnung vorgesehen.
+Die DSP-Verarbeitung benötigt für diesen Signalweg kein externes DSP-System.
+Die Filter laufen als zwei kaskadierte Biquads (Butterworth, Q = 0,7071) pro
+Zweig direkt auf dem ESP32-S3; PSRAM wird dafür nicht benötigt.
 
 ---
 
@@ -163,14 +166,24 @@ Damit kann sich beispielsweise ein normaler PC-Snapclient mit dem ESP32-S3 verbi
 
 Der ESP32-S3 besitzt in dieser Anwendung keine dauerhaft gültige Echtzeituhr (RTC) mit verlässlicher absoluter Zeit.
 
-Deshalb verwendet der Server `esp_timer_get_time()` als monotone Zeitquelle und ergänzt einen Laufzeit-Offset.
+Deshalb verwendet der Server `esp_timer_get_time()` als monotone Zeitquelle und
+addiert einen Offset (`s_wall_offset_us`), der die Wall-Clock-Domäne abbildet.
 
-* Uptime-basierte ESP-Clients werden nicht als Quelle für die absolute Zeit verwendet.
-* Eine plausible Epoch-Zeit kann von einem PC- oder Android-Client übernommen werden.
-* Nachrichtenheader und Audiochunks verwenden dieselbe monotone Zeitbasis.
-* Audiozeitstempel beziehen sich auf den Beginn des jeweiligen PCM-Frames.
+* Der Offset startet auf einem festen Epoch-Anker (2026-01-01) und wird
+  einmalig neu gesetzt, sobald ein Client mit plausibler Wall-Clock-Zeit
+  (nach 2024-01-01) sein erstes `Time`-Paket sendet.
+* Uptime-basierte ESP-Clients werden dabei ignoriert, weil ihr Zeitstempel
+  die Plausibilitätsgrenze nicht überschreitet.
+* Nach dem ersten Abgleich bleibt der Offset fest (`s_clock_synced`), damit
+  ein späterer Client die Zeitbasis während des Streamings nicht verschiebt.
+* Nachrichtenheader und Audiochunks verwenden dieselbe Zeitdomäne.
+* Audiozeitstempel beziehen sich auf den Beginn des jeweiligen PCM-Frames und
+  werden aus einem fortlaufenden Sample-Zähler abgeleitet, nicht aus dem
+  Rückgabezeitpunkt von `i2s_channel_read()`.
 
-Ziel ist ein sauberer **Abgleich mit der absoluten Client-Zeit**, ohne die Audiozeitbasis selbst von einer möglicherweise unstabilen Echtzeituhr abhängig zu machen.
+Ziel ist ein sauberer **Abgleich mit der absoluten Client-Zeit**, ohne die
+Audiozeitbasis selbst von einer möglicherweise unstabilen Echtzeituhr
+abhängig zu machen.
 
 ---
 
