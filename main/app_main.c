@@ -2,6 +2,8 @@
  * @file app_main.c
  * @brief Initializes NVS, networking, Mesh-Lite, audio, streaming and control services.
  */
+#include <inttypes.h>
+
 #include "esp_err.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -90,7 +92,8 @@ static esp_err_t initialize_network_stack(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Starting ESP32-S3 Mini Snapserver");
-    ESP_LOGI(TAG, "Freier Heap beim Start: %u Bytes", esp_get_free_heap_size());
+    ESP_LOGI(TAG, "Freier Heap beim Start: %" PRIu32 " Bytes",
+             esp_get_free_heap_size());
 
     ESP_ERROR_CHECK(initialize_nvs());
     ESP_ERROR_CHECK(initialize_network_stack());
@@ -127,5 +130,6 @@ void app_main(void)
     ESP_LOGI(
         TAG,
         "ESP32-S3 Snapserver started: TinySine stereo input, PCM5102A stereo output, Snapcast mono Opus");
-    ESP_LOGI(TAG, "Freier Heap nach dem Start: %u Bytes", esp_get_free_heap_size());
+    ESP_LOGI(TAG, "Freier Heap nach dem Start: %" PRIu32 " Bytes",
+             esp_get_free_heap_size());
 }
