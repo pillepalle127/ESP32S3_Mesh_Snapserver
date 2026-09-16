@@ -44,6 +44,21 @@ static const char *TAG = "SNAPSERVER";
 /* Single socket write timeout. */
 #define CLIENT_SEND_TIMEOUT_US  2000000
 
+/*
+ * Backstop so recv() in client_task() cannot block forever on a peer that
+ * vanished without a TCP FIN/RST (Wi-Fi dropout, deep sleep, roaming).
+ * Kept well above the TCP keepalive detection window below so it only
+ * fires if keepalive somehow did not.
+ */
+#define CLIENT_RECV_TIMEOUT_US  30000000
+
+/* TCP keepalive: idle 10s, then 3 probes 5s apart -> dead peer detected
+ * after ~25s even while client_task is blocked waiting for the next
+ * message. */
+#define CLIENT_KEEPALIVE_IDLE_SEC   10
+#define CLIENT_KEEPALIVE_INTVL_SEC  5
+#define CLIENT_KEEPALIVE_COUNT      3
+
 /* The Opus stream on the wire is mono, independent of the local I2S link. */
 #define SNAPSTREAM_CHANNELS     1
 
@@ -1030,6 +1045,38 @@ static void server_task(void *arg)
                      "Could not set client send timeout, errno=%d",
                      errno);
         }
+
+        const struct timeval recv_timeout = {
+            .tv_sec = (time_t)(CLIENT_RECV_TIMEOUT_US / 1000000),
+            .tv_usec = (suseconds_t)(CLIENT_RECV_TIMEOUT_US % 1000000),
+        };
+        if (setsockopt(fd,
+                       SOL_SOCKET,
+                       SO_RCVTIMEO,
+                       &recv_timeout,
+                       sizeof(recv_timeout)) < 0) {
+            ESP_LOGW(TAG,
+                     "Could not set client receive timeout, errno=%d",
+                     errno);
+        }
+
+        int keepalive = 1;
+        if (setsockopt(fd,
+                       SOL_SOCKET,
+                       SO_KEEPALIVE,
+                       &keepalive,
+                       sizeof(keepalive)) < 0) {
+            ESP_LOGW(TAG, "Could not enable TCP keepalive, errno=%d", errno);
+        }
+        int keepalive_idle = CLIENT_KEEPALIVE_IDLE_SEC;
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE,
+                  &keepalive_idle, sizeof(keepalive_idle));
+        int keepalive_intvl = CLIENT_KEEPALIVE_INTVL_SEC;
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL,
+                  &keepalive_intvl, sizeof(keepalive_intvl));
+        int keepalive_cnt = CLIENT_KEEPALIVE_COUNT;
+        setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT,
+                  &keepalive_cnt, sizeof(keepalive_cnt));
 
         int nodelay = 1;
         if (setsockopt(fd,
