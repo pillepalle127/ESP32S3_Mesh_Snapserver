@@ -22,7 +22,7 @@ Das Ziel ist ein vollständig eigenständiger Audio-Server ohne Raspberry Pi ode
 
 
 ![Verdrahtungsplan](docs/Verdrahtungsplan.png)
-<img src="docs/Verdrahtungsplan.png" width="800">
+<img src="docs/Verdrahtungsplan.png" width="600">
 
 ---
 
