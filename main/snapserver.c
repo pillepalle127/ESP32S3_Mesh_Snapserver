@@ -741,6 +741,7 @@ static void close_client(client_t *client)
     uint32_t bytes = 0;
     uint32_t errors = 0;
     uint32_t times = 0;
+    char peer[sizeof(client->peer)];
 
     portENTER_CRITICAL(&s_clients_lock);
     fd = client->fd;
@@ -748,6 +749,7 @@ static void close_client(client_t *client)
     bytes = client->chunk_bytes;
     errors = client->chunk_errors;
     times = client->time_msgs;
+    strlcpy(peer, client->peer, sizeof(peer));
     client->ready = false;
     client->active = false;
     client->fd = -1;
@@ -764,7 +766,7 @@ static void close_client(client_t *client)
     ESP_LOGI(TAG,
              "Session summary %s: chunks_sent=%lu bytes=%lu send_errors=%lu "
              "time_msgs=%lu",
-             client->peer,
+             peer,
              (unsigned long)chunks,
              (unsigned long)bytes,
              (unsigned long)errors,
@@ -1136,6 +1138,9 @@ static void server_task(void *arg)
                 s_clients[i].arch[0] = '\0';
                 s_clients[i].os[0] = '\0';
                 s_clients[i].version[0] = '\0';
+                strlcpy(s_clients[i].peer,
+                       peer_ip,
+                       sizeof(s_clients[i].peer));
                 slot = i;
                 break;
             }
@@ -1148,8 +1153,6 @@ static void server_task(void *arg)
             close(fd);
             continue;
         }
-
-        strlcpy(s_clients[slot].peer, peer_ip, sizeof(s_clients[slot].peer));
 
         ESP_LOGI(TAG,
                  "Client connected slot=%d ip=%s fd=%d",
