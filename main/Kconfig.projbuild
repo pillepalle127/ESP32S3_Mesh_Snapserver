@@ -4,11 +4,6 @@ config SNAPSERVER_ENABLE_MESH_LITE
     bool "Enable ESP-Mesh-Lite"
     default n
 
-config SNAPSERVER_MESH_ROOT_ONLY
-    bool "Force Mesh-Lite root"
-    default y
-    depends on SNAPSERVER_ENABLE_MESH_LITE
-
 config MESH_SOFTAP_SSID_PREFIX
     string "Mesh-Lite SoftAP SSID prefix"
     default "SnapMesh_sr"
