@@ -173,7 +173,17 @@ static int64_t s_wall_offset_us = SNAP_EPOCH_BASE_SEC * 1000000LL;
 
 static int64_t now_us(void)
 {
-    return esp_timer_get_time() + s_wall_offset_us;
+    /*
+     * s_wall_offset_us is a 64-bit value re-anchored from handle_time() on
+     * another task; on this 32-bit target that write/read is not atomic, so
+     * both sides must go through the same critical section to avoid a torn
+     * value.
+     */
+    portENTER_CRITICAL(&s_clients_lock);
+    const int64_t offset = s_wall_offset_us;
+    portEXIT_CRITICAL(&s_clients_lock);
+
+    return esp_timer_get_time() + offset;
 }
 
 static void now_ts(int32_t *sec, int32_t *usec)
@@ -406,7 +416,10 @@ static int send_wire_chunk(client_t *client,
      * Adding the same offset to the monotonic capture timestamp keeps message
      * headers and audio chunks in one consistent time domain.
      */
-    const int64_t chunk_us = packet->timestamp_us + s_wall_offset_us;
+    portENTER_CRITICAL(&s_clients_lock);
+    const int64_t wall_offset_us = s_wall_offset_us;
+    portEXIT_CRITICAL(&s_clients_lock);
+    const int64_t chunk_us = packet->timestamp_us + wall_offset_us;
 
     const int32_t sec = (int32_t)(chunk_us / 1000000LL);
     const int32_t usec = (int32_t)(chunk_us % 1000000LL);
@@ -470,14 +483,27 @@ static int handle_time(client_t *client,
      * lies after SNAP_CLOCK_PLAUSIBLE_MIN_SEC. PC and Android clients qualify,
      * uptime-based ones do not.
      */
-    if (!s_clock_synced &&
-        base->sent_sec > SNAP_CLOCK_PLAUSIBLE_MIN_SEC) {
+    portENTER_CRITICAL(&s_clients_lock);
+    const bool already_synced = s_clock_synced;
+    if (!already_synced && base->sent_sec > SNAP_CLOCK_PLAUSIBLE_MIN_SEC) {
+        s_clock_synced = true;
+    }
+    portEXIT_CRITICAL(&s_clients_lock);
+
+    if (!already_synced && base->sent_sec > SNAP_CLOCK_PLAUSIBLE_MIN_SEC) {
 
         const int64_t skew_us = client_send_us - server_recv_us;
 
         if (skew_us > 60000000LL || skew_us < -60000000LL) {
-            /* Re-anchor the monotonic timebase; no POSIX clock involved. */
+            /*
+             * Re-anchor the monotonic timebase; no POSIX clock involved.
+             * s_clock_synced was already claimed above (still inside this
+             * function's single-threaded-per-client path but guarded
+             * against a second client racing the same adoption window).
+             */
+            portENTER_CRITICAL(&s_clients_lock);
             s_wall_offset_us = client_send_us - esp_timer_get_time();
+            portEXIT_CRITICAL(&s_clients_lock);
 
             ESP_LOGW(TAG,
                      "Adopted wall clock from %s: %ld s (skew was %lld s)",
@@ -489,8 +515,6 @@ static int handle_time(client_t *client,
             server_recv_us =
                 (int64_t)server_recv_sec * 1000000LL + server_recv_usec;
         }
-
-        s_clock_synced = true;
     }
 
     const int64_t delta = server_recv_us - client_send_us;
