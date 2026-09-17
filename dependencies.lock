@@ -91,6 +91,16 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.0.1
+  espressif/mdns:
+    component_hash: b679eafd0acae2066e2645bd91d073e33ca5be515e2545cd3c4e55a3e3bce3cb
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.13.1
   espressif/mesh_lite:
     component_hash: 3a19dbc45a795d9625ac8e3bc54189c51c36a72b5c12ba3ba8081ed71a0bbfac
     dependencies:
@@ -121,7 +131,7 @@ dependencies:
       type: service
     version: 0.1.0~2
   espressif/tinyusb:
-    component_hash: a72b7d67472914ab76309340fd50d578b31e310963d45ad0f81144bde3314752
+    component_hash: 16c8d774dab1f484d3e0c0f61105624d2424bbae864efd19818baf7b451b41e7
     dependencies:
     - name: idf
       require: private
@@ -135,7 +145,7 @@ dependencies:
     - esp32p4
     - esp32h4
     - esp32s31
-    version: 0.21.0~1
+    version: 0.21.0~2
   espressif/usb_host_cdc_acm:
     component_hash: 5bc1372b46de79ccae1dd17de48e30dfa1e8ab75269c2ebf54da01370f9e42fb
     dependencies:
@@ -166,8 +176,9 @@ dependencies:
     version: 5.4.3
 direct_dependencies:
 - esphome/micro-opus
+- espressif/mdns
 - espressif/mesh_lite
 - idf
-manifest_hash: e036a2532c2eee95a2381722a50ee5fe23b390294422a09fa335b56fdade8fab
+manifest_hash: 742fd53e261a8169265721ad1fb0fee7250e7e580e90fe4dc0b3301a9dc74620
 target: esp32s3
 version: 2.0.0

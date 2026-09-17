@@ -28,15 +28,6 @@ static const char *TAG = "AUDIO_I2S";
  */
 #define TIMESTAMP_RESYNC_THRESHOLD_US 100000LL
 
-#if SUBWOOFER_OUTPUT_CHANNEL == WIDEBAND_OUTPUT_CHANNEL
-#error "Subwoofer and wideband must use different PCM5102A channels"
-#endif
-
-#if (SUBWOOFER_OUTPUT_CHANNEL > PCM_CHANNEL_RIGHT) || \
-    (WIDEBAND_OUTPUT_CHANNEL > PCM_CHANNEL_RIGHT)
-#error "Invalid PCM5102A output channel"
-#endif
-
 typedef struct {
     float b0;
     float b1;
@@ -59,8 +50,22 @@ static bool s_started;
 static int16_t s_input_stereo[MAX_FRAME_SAMPLES * AUDIO_I2S_CHANNELS];
 static int16_t s_output_stereo[MAX_FRAME_SAMPLES * OUTPUT_CHANNELS];
 
+/*
+ * s_lowpass/s_highpass hold both the biquad coefficients (b0,b1,b2,a1,a2,
+ * changed only by audio_i2s_set_dsp_params(), from whatever task calls it)
+ * and the running filter state z1/z2 (changed only by audio_i2s_read_frame()
+ * in the audio task, every sample). s_dsp_lock guards both, but
+ * audio_i2s_read_frame() only holds it twice per frame -- once to snapshot
+ * everything into locals before the 960-sample loop, once to write the
+ * updated z1/z2 back afterwards -- never per sample, so the hot path never
+ * blocks on a task that might be preempted mid-update.
+ */
 static lr4_filter_t s_lowpass;
 static lr4_filter_t s_highpass;
+static audio_dsp_params_t s_dsp_params;
+static float s_sub_gain_linear = 1.0f;
+static float s_wideband_gain_linear = 1.0f;
+static portMUX_TYPE s_dsp_lock = portMUX_INITIALIZER_UNLOCKED;
 
 /*
  * Capture timeline.
@@ -139,33 +144,67 @@ static void configure_biquad_highpass(biquad_t *filter,
     filter->z2 = 0.0f;
 }
 
-static esp_err_t configure_crossover(void)
+esp_err_t audio_i2s_set_dsp_params(const audio_dsp_params_t *params)
 {
-    const float nyquist_hz = (float)AUDIO_I2S_SAMPLE_RATE * 0.5f;
-
-    if (AUDIO_CROSSOVER_FREQUENCY_HZ <= 0.0f ||
-        AUDIO_CROSSOVER_FREQUENCY_HZ >= nyquist_hz) {
-        ESP_LOGE(TAG,
-                 "Invalid crossover frequency: %.1f Hz",
-                 (double)AUDIO_CROSSOVER_FREQUENCY_HZ);
+    if (params == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    configure_biquad_lowpass(&s_lowpass.stage1,
-                             (float)AUDIO_I2S_SAMPLE_RATE,
-                             AUDIO_CROSSOVER_FREQUENCY_HZ);
-    configure_biquad_lowpass(&s_lowpass.stage2,
-                             (float)AUDIO_I2S_SAMPLE_RATE,
-                             AUDIO_CROSSOVER_FREQUENCY_HZ);
+    const float nyquist_hz = (float)AUDIO_I2S_SAMPLE_RATE * 0.5f;
+    if (params->crossover_hz <= 0.0f || params->crossover_hz >= nyquist_hz) {
+        ESP_LOGE(TAG,
+                 "Invalid crossover frequency: %.1f Hz",
+                 (double)params->crossover_hz);
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (params->sub_channel > PCM_CHANNEL_RIGHT ||
+        params->wideband_channel > PCM_CHANNEL_RIGHT ||
+        params->sub_channel == params->wideband_channel) {
+        ESP_LOGE(TAG,
+                 "Invalid output channel assignment: sub=%u wideband=%u",
+                 (unsigned)params->sub_channel,
+                 (unsigned)params->wideband_channel);
+        return ESP_ERR_INVALID_ARG;
+    }
 
-    configure_biquad_highpass(&s_highpass.stage1,
-                              (float)AUDIO_I2S_SAMPLE_RATE,
-                              AUDIO_CROSSOVER_FREQUENCY_HZ);
-    configure_biquad_highpass(&s_highpass.stage2,
-                              (float)AUDIO_I2S_SAMPLE_RATE,
-                              AUDIO_CROSSOVER_FREQUENCY_HZ);
+    /*
+     * Coefficient math (sinf/cosf/division) and the dB->linear conversion
+     * happen here, off the hot path, before anything is made visible to
+     * audio_i2s_read_frame(). configure_biquad_lowpass()/highpass() also
+     * reset z1/z2 to 0, so every param change starts the filter from a
+     * clean state -- a brief transient on the rare Save action, traded for
+     * not having to reconcile old filter memory against new coefficients.
+     */
+    lr4_filter_t new_lowpass;
+    lr4_filter_t new_highpass;
+    configure_biquad_lowpass(&new_lowpass.stage1, (float)AUDIO_I2S_SAMPLE_RATE, params->crossover_hz);
+    configure_biquad_lowpass(&new_lowpass.stage2, (float)AUDIO_I2S_SAMPLE_RATE, params->crossover_hz);
+    configure_biquad_highpass(&new_highpass.stage1, (float)AUDIO_I2S_SAMPLE_RATE, params->crossover_hz);
+    configure_biquad_highpass(&new_highpass.stage2, (float)AUDIO_I2S_SAMPLE_RATE, params->crossover_hz);
+
+    const float sub_gain_linear = powf(10.0f, params->sub_gain_db / 20.0f);
+    const float wideband_gain_linear = powf(10.0f, params->wideband_gain_db / 20.0f);
+
+    portENTER_CRITICAL(&s_dsp_lock);
+    s_lowpass = new_lowpass;
+    s_highpass = new_highpass;
+    s_dsp_params = *params;
+    s_sub_gain_linear = sub_gain_linear;
+    s_wideband_gain_linear = wideband_gain_linear;
+    portEXIT_CRITICAL(&s_dsp_lock);
 
     return ESP_OK;
+}
+
+void audio_i2s_get_dsp_params(audio_dsp_params_t *out)
+{
+    if (out == NULL) {
+        return;
+    }
+
+    portENTER_CRITICAL(&s_dsp_lock);
+    *out = s_dsp_params;
+    portEXIT_CRITICAL(&s_dsp_lock);
 }
 
 esp_err_t audio_i2s_start(void)
@@ -174,7 +213,15 @@ esp_err_t audio_i2s_start(void)
         return ESP_OK;
     }
 
-    esp_err_t result = configure_crossover();
+    const audio_dsp_params_t default_params = {
+        .bypass = false,
+        .crossover_hz = AUDIO_CROSSOVER_FREQUENCY_HZ,
+        .sub_gain_db = 0.0f,
+        .wideband_gain_db = 0.0f,
+        .sub_channel = SUBWOOFER_OUTPUT_CHANNEL,
+        .wideband_channel = WIDEBAND_OUTPUT_CHANNEL,
+    };
+    esp_err_t result = audio_i2s_set_dsp_params(&default_params);
     if (result != ESP_OK) {
         return result;
     }
@@ -349,6 +396,24 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
     *timestamp_us = frame_timestamp_us;
     s_samples_captured += (int64_t)mono_samples;
 
+    /*
+     * Snapshot the whole DSP state once per frame (not per sample) so the
+     * per-sample loop below runs lock-free. See the s_lowpass/s_highpass
+     * comment above for why only z1/z2 get written back afterwards.
+     */
+    lr4_filter_t lowpass;
+    lr4_filter_t highpass;
+    audio_dsp_params_t dsp;
+    float sub_gain_linear;
+    float wideband_gain_linear;
+    portENTER_CRITICAL(&s_dsp_lock);
+    lowpass = s_lowpass;
+    highpass = s_highpass;
+    dsp = s_dsp_params;
+    sub_gain_linear = s_sub_gain_linear;
+    wideband_gain_linear = s_wideband_gain_linear;
+    portEXIT_CRITICAL(&s_dsp_lock);
+
     for (size_t i = 0; i < mono_samples; ++i) {
         const int32_t left = s_input_stereo[2U * i];
         const int32_t right = s_input_stereo[2U * i + 1U];
@@ -356,14 +421,36 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
 
         mono[i] = mono_sample;
 
-        const float subwoofer = lr4_process(&s_lowpass, (float)mono_sample);
-        const float wideband = lr4_process(&s_highpass, (float)mono_sample);
+        float subwoofer;
+        float wideband;
+        if (dsp.bypass) {
+            subwoofer = (float)mono_sample;
+            wideband = (float)mono_sample;
+        } else {
+            subwoofer = lr4_process(&lowpass, (float)mono_sample) * sub_gain_linear;
+            wideband = lr4_process(&highpass, (float)mono_sample) * wideband_gain_linear;
+        }
 
-        s_output_stereo[2U * i + SUBWOOFER_OUTPUT_CHANNEL] =
-            float_to_int16(subwoofer);
-        s_output_stereo[2U * i + WIDEBAND_OUTPUT_CHANNEL] =
-            float_to_int16(wideband);
+        s_output_stereo[2U * i + dsp.sub_channel] = float_to_int16(subwoofer);
+        s_output_stereo[2U * i + dsp.wideband_channel] = float_to_int16(wideband);
     }
+
+    /*
+     * Write the updated filter memory back so the next frame continues from
+     * here. Coefficients are intentionally left untouched: if
+     * audio_i2s_set_dsp_params() swapped them in concurrently, this frame's
+     * (now-stale) copy must not clobber the fresh ones.
+     */
+    portENTER_CRITICAL(&s_dsp_lock);
+    s_lowpass.stage1.z1 = lowpass.stage1.z1;
+    s_lowpass.stage1.z2 = lowpass.stage1.z2;
+    s_lowpass.stage2.z1 = lowpass.stage2.z1;
+    s_lowpass.stage2.z2 = lowpass.stage2.z2;
+    s_highpass.stage1.z1 = highpass.stage1.z1;
+    s_highpass.stage1.z2 = highpass.stage1.z2;
+    s_highpass.stage2.z1 = highpass.stage2.z1;
+    s_highpass.stage2.z2 = highpass.stage2.z2;
+    portEXIT_CRITICAL(&s_dsp_lock);
 
     size_t bytes_written = 0;
     result = i2s_channel_write(
