@@ -27,8 +27,10 @@ extern "C" {
  * that boot as failed. */
 #define PROVISIONING_GRACE_WINDOW_US (60LL * 1000000LL)
 
-/* How long the provisioning AP stays up before the device reboots and
- * re-decides, regardless of which reason brought it up. */
+/* How long the open provisioning AP accepts connections before the radio
+ * shuts off entirely, regardless of which reason brought it up. There is no
+ * reboot and no fallback to a protected AP: only a power cycle re-opens a
+ * window. */
 #define PROVISIONING_AP_TIMEOUT_US (180LL * 1000000LL)
 
 #define PROVISIONING_AP_IP_ADDR "192.168.5.1"
@@ -68,12 +70,25 @@ esp_err_t provisioning_pin_ap_ip(esp_netif_t *ap_netif);
 esp_err_t provisioning_arm_grace_window(void);
 
 /* Arms the provisioning AP's unconditional 3-minute timeout. Call once the
- * provisioning AP is up, for any reason. On expiry, reboots the device. */
+ * provisioning AP is up, for any reason. On expiry, stops the Wi-Fi radio
+ * (esp_wifi_stop()) -- it does not reboot and does not fall back to any
+ * other AP. The device stays unreachable over Wi-Fi until either a power
+ * cycle re-opens a provisioning window, or a save made in time (see
+ * webconfig.c) reboots into the normal mesh-vs-provisioning decision. */
 esp_err_t provisioning_arm_ap_timeout(void);
 
 /* Cancels a pending AP timeout, e.g. right before a Save-triggered reboot
- * supersedes it. Safe to call even if no timeout is armed. */
+ * supersedes it. Safe to call even if no timeout is armed. Does not stop
+ * the underlying task early -- it just skips its action when it wakes up,
+ * which is fine since every caller reboots shortly after cancelling. */
 void provisioning_cancel_ap_timeout(void);
+
+/* Cancels a pending grace-window callback, e.g. right before a factory
+ * reset that must not have its NVS erase silently undone by the grace
+ * window writing device_config back a moment later. Safe to call even if
+ * no grace window is armed. Same "skips on wake, doesn't stop early"
+ * semantics as provisioning_cancel_ap_timeout(). */
+void provisioning_cancel_grace_window(void);
 
 #ifdef __cplusplus
 }

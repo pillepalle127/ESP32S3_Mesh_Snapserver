@@ -49,12 +49,17 @@ static void schedule_reboot(void)
      */
     provisioning_cancel_ap_timeout();
 
+    /*
+     * s_reboot_timer is created once in webconfig_start(), where a failure
+     * can be logged properly. If that creation failed, the handle stays
+     * NULL forever -- falling back to an immediate esp_restart() here means
+     * the in-flight HTTP response gets cut off, but that beats the UI
+     * claiming "rebooting..." while nothing happens.
+     */
     if (s_reboot_timer == NULL) {
-        const esp_timer_create_args_t args = {
-            .callback = &reboot_timer_cb,
-            .name = "webcfg_reboot",
-        };
-        esp_timer_create(&args, &s_reboot_timer);
+        ESP_LOGW(TAG, "No reboot timer available, restarting immediately");
+        esp_restart();
+        return;
     }
     esp_timer_start_once(s_reboot_timer, WEBCONFIG_REBOOT_DELAY_US);
 }
@@ -81,9 +86,12 @@ static bool parse_number_field(const cJSON *root, const char *key, double *out)
     return false;
 }
 
-/* Empty string means "leave unchanged" -- used for mesh_ssid/mesh_password
- * so an accidental blank submit can't wipe a saved value, and so the
- * password field can stay blank in the UI without clobbering it. */
+/* Empty string means "leave unchanged" -- used for mesh_ssid, since an SSID
+ * can never usefully be blank, so an accidental empty submit should not
+ * wipe a saved one. mesh_password uses parse_password_field() instead: an
+ * empty password is a valid, deliberate choice (an open network), so it
+ * must overwrite like any other value -- see config_is_valid() in
+ * device_config.c, which already accepts a zero-length password. */
 static void parse_string_field(const cJSON *root, const char *key, char *out, size_t out_len)
 {
     const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
@@ -92,6 +100,22 @@ static void parse_string_field(const cJSON *root, const char *key, char *out, si
     }
 }
 
+static void parse_password_field(const cJSON *root, const char *key, char *out, size_t out_len)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(root, key);
+    if (cJSON_IsString(item)) {
+        strlcpy(out, item->valuestring, out_len);
+    }
+}
+
+/*
+ * esp_http_server runs handlers on a single task by default, so a client
+ * that stalls mid-body would otherwise wedge every other request behind an
+ * unbounded retry loop. Give up after a handful of consecutive timeouts
+ * instead of retrying forever.
+ */
+#define WEBCONFIG_MAX_RECV_TIMEOUTS 5
+
 static esp_err_t read_body(httpd_req_t *req, char *buf, size_t buf_len)
 {
     if (req->content_len <= 0 || (size_t)req->content_len >= buf_len) {
@@ -99,15 +123,20 @@ static esp_err_t read_body(httpd_req_t *req, char *buf, size_t buf_len)
     }
 
     size_t received = 0;
+    int consecutive_timeouts = 0;
     while (received < (size_t)req->content_len) {
         const int ret = httpd_req_recv(req, buf + received,
                                        (size_t)req->content_len - received);
         if (ret <= 0) {
             if (ret == HTTPD_SOCK_ERR_TIMEOUT) {
+                if (++consecutive_timeouts >= WEBCONFIG_MAX_RECV_TIMEOUTS) {
+                    return ESP_FAIL;
+                }
                 continue;
             }
             return ESP_FAIL;
         }
+        consecutive_timeouts = 0;
         received += (size_t)ret;
     }
     buf[received] = '\0';
@@ -142,21 +171,22 @@ static esp_err_t root_get_handler(httpd_req_t *req)
 
 static esp_err_t api_config_get_handler(httpd_req_t *req)
 {
-    const device_config_t *cfg = device_config_get();
+    device_config_t cfg;
+    device_config_get(&cfg);
 
     cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "mesh_enable", cfg->mesh_enable);
-    cJSON_AddStringToObject(root, "mesh_ssid", cfg->mesh_ssid);
-    cJSON_AddNumberToObject(root, "mesh_channel", cfg->mesh_channel);
-    cJSON_AddNumberToObject(root, "mesh_max_level", cfg->mesh_max_level);
-    cJSON_AddBoolToObject(root, "dsp_bypass", cfg->dsp_bypass);
-    cJSON_AddNumberToObject(root, "crossover_hz", cfg->crossover_hz);
-    cJSON_AddNumberToObject(root, "sub_gain_db", cfg->sub_gain_db);
-    cJSON_AddNumberToObject(root, "wideband_gain_db", cfg->wideband_gain_db);
-    cJSON_AddNumberToObject(root, "sub_channel", cfg->sub_channel);
-    cJSON_AddNumberToObject(root, "wideband_channel", cfg->wideband_channel);
-    cJSON_AddNumberToObject(root, "opus_bitrate", cfg->opus_bitrate);
-    cJSON_AddNumberToObject(root, "opus_complexity", cfg->opus_complexity);
+    cJSON_AddBoolToObject(root, "mesh_enable", cfg.mesh_enable);
+    cJSON_AddStringToObject(root, "mesh_ssid", cfg.mesh_ssid);
+    cJSON_AddNumberToObject(root, "mesh_channel", cfg.mesh_channel);
+    cJSON_AddNumberToObject(root, "mesh_max_level", cfg.mesh_max_level);
+    cJSON_AddBoolToObject(root, "dsp_bypass", cfg.dsp_bypass);
+    cJSON_AddNumberToObject(root, "crossover_hz", cfg.crossover_hz);
+    cJSON_AddNumberToObject(root, "sub_gain_db", cfg.sub_gain_db);
+    cJSON_AddNumberToObject(root, "wideband_gain_db", cfg.wideband_gain_db);
+    cJSON_AddNumberToObject(root, "sub_channel", cfg.sub_channel);
+    cJSON_AddNumberToObject(root, "wideband_channel", cfg.wideband_channel);
+    cJSON_AddNumberToObject(root, "opus_bitrate", cfg.opus_bitrate);
+    cJSON_AddNumberToObject(root, "opus_complexity", cfg.opus_complexity);
 
     /*
      * Only echo the real password back while the password-protected mesh AP
@@ -166,9 +196,20 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
      * requires knowing the Wi-Fi password, so showing it back is no
      * additional exposure -- same trust model as an OS "show saved Wi-Fi
      * password" prompt.
+     *
+     * An empty password (a deliberately open network) isn't a secret --
+     * it's visible to anyone doing a Wi-Fi scan -- so it's always echoed.
+     * A length in [1,7] is the one case withheld: config_is_valid() now
+     * rejects saving that range, but a blob written before that check
+     * existed could still have one stored, and mesh_root.c falls back to
+     * WIFI_AUTH_OPEN for it -- so without this a config predating the
+     * validation could have this handler hand out a password for a network
+     * that isn't actually password-protected.
      */
-    if (provisioning_get_active_reason() == PROVISIONING_REASON_NONE) {
-        cJSON_AddStringToObject(root, "mesh_password", cfg->mesh_password);
+    const size_t password_len = strlen(cfg.mesh_password);
+    if (provisioning_get_active_reason() == PROVISIONING_REASON_NONE &&
+        (password_len == 0U || password_len >= 8U)) {
+        cJSON_AddStringToObject(root, "mesh_password", cfg.mesh_password);
     }
 
     return send_json(req, root);
@@ -214,13 +255,14 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    const device_config_t old_cfg = *device_config_get();
+    device_config_t old_cfg;
+    device_config_get(&old_cfg);
     device_config_t next = old_cfg;
     double num = 0.0;
 
     parse_bool_field(root, "mesh_enable", &next.mesh_enable);
     parse_string_field(root, "mesh_ssid", next.mesh_ssid, sizeof(next.mesh_ssid));
-    parse_string_field(root, "mesh_password", next.mesh_password, sizeof(next.mesh_password));
+    parse_password_field(root, "mesh_password", next.mesh_password, sizeof(next.mesh_password));
     if (parse_number_field(root, "mesh_channel", &num)) next.mesh_channel = (uint8_t)num;
     if (parse_number_field(root, "mesh_max_level", &num)) next.mesh_max_level = (uint8_t)num;
 
@@ -241,17 +283,27 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
         return ESP_OK;
     }
 
-    const device_config_t *saved = device_config_get();
-    apply_live_params(saved);
+    device_config_t saved;
+    device_config_get(&saved);
+    apply_live_params(&saved);
 
-    const bool needs_reboot = mesh_settings_changed(&old_cfg, saved);
+    /*
+     * A save while the (open, timeout-limited) provisioning AP is active
+     * always reboots, even for a DSP/Opus-only change: the provisioning AP
+     * no longer reboots on its own timeout (it just shuts the radio off,
+     * see provisioning.c), so a save handing back to the normal mesh-vs-
+     * provisioning boot decision is the only way out of provisioning mode
+     * short of a power cycle.
+     */
+    const bool needs_reboot = mesh_settings_changed(&old_cfg, &saved) ||
+        provisioning_get_active_reason() != PROVISIONING_REASON_NONE;
 
     cJSON *resp = cJSON_CreateObject();
     cJSON_AddBoolToObject(resp, "reboot", needs_reboot);
     const esp_err_t send_result = send_json(req, resp);
 
     if (needs_reboot) {
-        ESP_LOGW(TAG, "Mesh settings changed via config page, rebooting shortly");
+        ESP_LOGW(TAG, "Config saved, rebooting shortly");
         schedule_reboot();
     }
 
@@ -260,6 +312,13 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
 
 static esp_err_t api_factory_reset_post_handler(httpd_req_t *req)
 {
+    /*
+     * If a grace-window task is mid-wait, it would otherwise write
+     * device_config back to NVS a few seconds/minutes after this erase,
+     * silently undoing the reset. See device_config_factory_reset()'s own
+     * s_erased latch for the belt-and-suspenders half of this fix.
+     */
+    provisioning_cancel_grace_window();
     device_config_factory_reset();
 
     cJSON *resp = cJSON_CreateObject();
@@ -281,12 +340,13 @@ static esp_err_t api_status_get_handler(httpd_req_t *req)
         [PROVISIONING_REASON_MESH_DISABLED] = "mesh_disabled",
     };
 
-    const device_config_t *cfg = device_config_get();
+    device_config_t cfg;
+    device_config_get(&cfg);
     const provisioning_reason_t reason = provisioning_get_active_reason();
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "reason", reason_names[reason]);
-    cJSON_AddNumberToObject(root, "boot_fail_count", cfg->boot_fail_count);
+    cJSON_AddNumberToObject(root, "boot_fail_count", cfg.boot_fail_count);
     cJSON_AddNumberToObject(root, "uptime_s", esp_timer_get_time() / 1000000);
 
     return send_json(req, root);
@@ -310,6 +370,19 @@ esp_err_t webconfig_start(void)
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "httpd_start failed: %s", esp_err_to_name(result));
         return result;
+    }
+
+    const esp_timer_create_args_t reboot_timer_args = {
+        .callback = &reboot_timer_cb,
+        .name = "webcfg_reboot",
+    };
+    result = esp_timer_create(&reboot_timer_args, &s_reboot_timer);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "Creating reboot timer failed: %s -- Save will restart "
+                 "immediately instead of after the HTTP response flushes",
+                 esp_err_to_name(result));
+        s_reboot_timer = NULL;
     }
 
     static const httpd_uri_t routes[] = {

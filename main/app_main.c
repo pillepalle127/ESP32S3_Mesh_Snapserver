@@ -94,6 +94,15 @@ void app_main(void)
         ESP_ERROR_CHECK(result);
     }
 
+    /*
+     * Bring the config page up before audio: if I2S/Opus init fails below,
+     * ESP_ERROR_CHECK() still panics and reboots the device (that failure
+     * stays fatal, unchanged), but the panic-and-reboot loop at least
+     * leaves a window where the provisioning/mesh AP and config page were
+     * already reachable, instead of never existing at all.
+     */
+    ESP_ERROR_CHECK(webconfig_start());
+
     result = audio_opus_start();
     if (result != ESP_OK) {
         ESP_LOGE(
@@ -109,18 +118,19 @@ void app_main(void)
      * first-boot defaults, which are the same values anyway) on top before
      * any audio flows.
      */
-    const device_config_t *cfg = device_config_get();
+    device_config_t cfg;
+    device_config_get(&cfg);
     const audio_dsp_params_t dsp_params = {
-        .bypass = cfg->dsp_bypass,
-        .crossover_hz = (float)cfg->crossover_hz,
-        .sub_gain_db = cfg->sub_gain_db,
-        .wideband_gain_db = cfg->wideband_gain_db,
-        .sub_channel = cfg->sub_channel,
-        .wideband_channel = cfg->wideband_channel,
+        .bypass = cfg.dsp_bypass,
+        .crossover_hz = (float)cfg.crossover_hz,
+        .sub_gain_db = cfg.sub_gain_db,
+        .wideband_gain_db = cfg.wideband_gain_db,
+        .sub_channel = cfg.sub_channel,
+        .wideband_channel = cfg.wideband_channel,
     };
     ESP_ERROR_CHECK(audio_i2s_set_dsp_params(&dsp_params));
-    audio_opus_set_bitrate((int32_t)cfg->opus_bitrate);
-    audio_opus_set_complexity((int32_t)cfg->opus_complexity);
+    audio_opus_set_bitrate((int32_t)cfg.opus_bitrate);
+    audio_opus_set_complexity((int32_t)cfg.opus_complexity);
 
     result = snapserver_start();
 
@@ -132,7 +142,6 @@ void app_main(void)
         ESP_ERROR_CHECK(result);
     }
 	ESP_ERROR_CHECK(snapcontrol_start());
-    ESP_ERROR_CHECK(webconfig_start());
 
     ESP_LOGI(
         TAG,

@@ -24,6 +24,9 @@
   #factoryReset { background: #b03030; color: #fff; border: none; border-radius: 0.25rem; }
   #status { margin-top: 1rem; padding: 0.5rem; border-radius: 0.25rem; background: #eee; font-size: 0.85rem; white-space: pre-line; }
   .hint { font-size: 0.78rem; color: #666; margin-top: 0.1rem; }
+  input:disabled, select:disabled { opacity: 0.45; }
+  label.disabled { opacity: 0.45; }
+  footer { margin-top: 2rem; padding-top: 0.6rem; border-top: 1px solid #ccc; font-size: 0.75rem; color: #888; text-align: center; }
 </style>
 </head>
 <body>
@@ -36,10 +39,9 @@
 <input type="text" id="mesh_ssid" maxlength="32">
 <label for="mesh_password">Password</label>
 <div class="password-row">
-  <input type="password" id="mesh_password" maxlength="64" placeholder="leave blank to keep current">
+  <input type="password" id="mesh_password" maxlength="64" minlength="8">
   <button type="button" id="togglePassword">Show</button>
 </div>
-<div class="hint">A saved network can't be made passwordless from here -- use Factory Reset for that.</div>
 <div class="row">
   <div><label for="mesh_channel">Wi-Fi channel (1-13)</label><input type="number" id="mesh_channel" min="1" max="13"></div>
   <div><label for="mesh_max_level">Max mesh hops (1-15)</label><input type="number" id="mesh_max_level" min="1" max="15"></div>
@@ -47,14 +49,14 @@
 <div class="hint">Changing anything here reboots the device to apply it.</div>
 
 <h2>DSP / Crossover</h2>
-<div class="checkbox-row"><input type="checkbox" id="dsp_bypass"><label for="dsp_bypass">Bypass (mono passthrough, unity gain)</label></div>
-<label for="crossover_hz">Crossover frequency (40-500 Hz)</label>
+<div class="checkbox-row"><input type="checkbox" id="crossover_enabled"><label for="crossover_enabled">Crossover enabled</label></div>
+<label for="crossover_hz" id="crossover_hz_label">Crossover frequency (40-500 Hz)</label>
 <input type="number" id="crossover_hz" min="40" max="500">
 <div class="row">
-  <div><label for="sub_gain_db">Sub gain (dB)</label><input type="number" id="sub_gain_db" min="-24" max="12" step="0.5"></div>
-  <div><label for="wideband_gain_db">Wideband gain (dB)</label><input type="number" id="wideband_gain_db" min="-24" max="12" step="0.5"></div>
+  <div><label for="sub_gain_db" id="sub_gain_db_label">Sub gain (dB)</label><input type="number" id="sub_gain_db" min="-24" max="12" step="0.5"></div>
+  <div><label for="wideband_gain_db" id="wideband_gain_db_label">Wideband gain (dB)</label><input type="number" id="wideband_gain_db" min="-24" max="12" step="0.5"></div>
 </div>
-<label for="sub_channel">Sub output channel</label>
+<label for="sub_channel" id="sub_channel_label">Sub output channel</label>
 <select id="sub_channel"><option value="0">Left</option><option value="1">Right</option></select>
 <div class="hint">Wideband automatically uses the other channel.</div>
 
@@ -66,6 +68,8 @@
 
 <button id="save">Save</button>
 <button id="factoryReset">Factory Reset</button>
+
+<footer>ESP32-S3 Mesh Snapserver &mdash; MIT License &copy; 2026 pillepalle127</footer>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -89,24 +93,30 @@ async function loadConfig() {
   const hasRealPassword = typeof cfg.mesh_password === 'string';
   passwordField.value = hasRealPassword ? cfg.mesh_password : '';
   passwordField.type = 'password';
-  passwordField.placeholder = hasRealPassword
-    ? ''
-    : 'leave blank to keep current (hidden on open provisioning AP)';
   toggleButton.textContent = 'Show';
-  toggleButton.disabled = !hasRealPassword;
-  toggleButton.title = hasRealPassword
-    ? ''
-    : 'Only shown while connected through the password-protected mesh AP';
+  // Always enabled: this only reveals what's currently typed into the
+  // field, which is safe regardless of whether the server echoed a stored
+  // password -- the person typing it already knows what they typed.
 
   $('mesh_channel').value = cfg.mesh_channel;
   $('mesh_max_level').value = cfg.mesh_max_level;
-  $('dsp_bypass').checked = cfg.dsp_bypass;
+  $('crossover_enabled').checked = !cfg.dsp_bypass;
   $('crossover_hz').value = cfg.crossover_hz;
   $('sub_gain_db').value = cfg.sub_gain_db;
   $('wideband_gain_db').value = cfg.wideband_gain_db;
   $('sub_channel').value = String(cfg.sub_channel);
   $('opus_bitrate').value = cfg.opus_bitrate;
   $('opus_complexity').value = cfg.opus_complexity;
+  updateCrossoverFieldsEnabled();
+}
+
+function updateCrossoverFieldsEnabled() {
+  const enabled = $('crossover_enabled').checked;
+  const fields = ['crossover_hz', 'sub_gain_db', 'wideband_gain_db', 'sub_channel'];
+  for (const id of fields) {
+    $(id).disabled = !enabled;
+    $(id + '_label').classList.toggle('disabled', !enabled);
+  }
 }
 
 async function loadStatus() {
@@ -124,6 +134,8 @@ async function loadStatus() {
 
 $('sub_channel').addEventListener('change', () => {});
 
+$('crossover_enabled').addEventListener('change', updateCrossoverFieldsEnabled);
+
 $('togglePassword').addEventListener('click', () => {
   const field = $('mesh_password');
   const revealed = field.type === 'text';
@@ -132,13 +144,19 @@ $('togglePassword').addEventListener('click', () => {
 });
 
 $('save').addEventListener('click', async () => {
+  const passwordInput = $('mesh_password').value;
+  if (passwordInput.length > 0 && passwordInput.length < 8) {
+    $('status').textContent = 'Password must be empty (open network) or at least 8 characters.';
+    return;
+  }
+
   const payload = {
     mesh_enable: $('mesh_enable').checked,
     mesh_ssid: $('mesh_ssid').value,
     mesh_password: $('mesh_password').value,
     mesh_channel: Number($('mesh_channel').value),
     mesh_max_level: Number($('mesh_max_level').value),
-    dsp_bypass: $('dsp_bypass').checked,
+    dsp_bypass: !$('crossover_enabled').checked,
     crossover_hz: Number($('crossover_hz').value),
     sub_gain_db: Number($('sub_gain_db').value),
     wideband_gain_db: Number($('wideband_gain_db').value),

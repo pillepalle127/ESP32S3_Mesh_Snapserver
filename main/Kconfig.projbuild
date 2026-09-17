@@ -13,7 +13,7 @@ config SNAPSERVER_ENABLE_MESH_LITE
 
 config MESH_SOFTAP_SSID_PREFIX
     string "Mesh-Lite SoftAP SSID prefix"
-    default "SnapMesh_sr"
+    default "SnapMesh"
     depends on SNAPSERVER_ENABLE_MESH_LITE
     help
         First-boot / factory-reset default only. Once a device has booted

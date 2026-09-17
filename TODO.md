@@ -18,6 +18,32 @@ Bugs sind umgesetzt:
   übersprungen (`chunks_skipped`-Zähler) statt die Pipeline zu blockieren.
   Auf dem Gerät verifiziert: keine Drift-Warnungen mehr bei parallel
   belastetem Client.
+- Stufe 5 (Code-Review auf `test/provisioning`, 2026-09-17, Effort `high`,
+  12 Befunde): Passwort-Leak bei 1-7-Zeichen-Mesh-Passwort (offener AP,
+  aber `/api/config` gab das Passwort weiterhin heraus); Config-Server
+  konnte durch einen hängenden POST dauerhaft blockiert werden
+  (`esp_http_server` ist single-threaded); Build brach bei
+  `SNAPSERVER_ENABLE_MESH_LITE=n` (zwei verschiedene Ursachen: abhängige
+  Kconfig-Symbole existieren nicht, und ein bool-Kconfig-Symbol ist bei `n`
+  gar nicht definiert, nicht `0` — beides in `device_config.c` gefixt und
+  mit `idf.py build` bei deaktiviertem Mesh gegengeprüft); SSID-Länge bei
+  genau 32 Zeichen falsch berechnet (`strlcpy`-Ziel vs. Quelle); NVS-Writes
+  im knapp bemessenen `esp_timer`-Task-Stack statt eigenem Task;
+  `device_config_t`-Cache ohne Synchronisation zwischen HTTP- und
+  Timer-Task; Factory-Reset konnte durch einen noch laufenden
+  Grace-Window-Write still rückgängig gemacht werden; `schedule_reboot()`
+  konnte einen NULL-Timer starten; Config-Seite startete erst nach
+  Audio-Init (bei Audio-Fehler nie erreichbar); dazu zwei
+  Design-Entscheidungen: Provisioning-AP rebootet nicht mehr nach 3 Minuten
+  (schaltet nur noch den Funk ab, Wiedereinstieg nur per Power-Cycle oder
+  Save), und ein Save während aktivem Provisioning-AP rebootet jetzt immer.
+  Auf dem Gerät verifiziert: normaler Mesh-Boot ohne Regression, Config-Web-
+  server startet jetzt vor Audio-Init. Nicht auf dem Gerät verifizierbar
+  (kein WLAN-fähiges Zweitgerät in dieser Sandbox verfügbar): Passwort-
+  Ablehnung <8 Zeichen per curl, 32-Zeichen-SSID im WLAN-Scan, volles
+  3-Minuten-Timeout-ohne-Reboot-Fenster, Stresstest paralleler Saves
+  während des Grace-Windows — siehe Plan-Datei für den vollständigen
+  Verifikationsplan.
 
 ## Nicht als Bug, aber vorgemerkt
 

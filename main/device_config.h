@@ -79,8 +79,14 @@ esp_err_t device_config_set_boot_fail_count(uint8_t count);
  */
 esp_err_t device_config_factory_reset(void);
 
-/* Cached accessor; valid only after device_config_load() has returned. */
-const device_config_t *device_config_get(void);
+/*
+ * Copies the cached config into *out under a short critical section. Valid
+ * only after device_config_load() has returned. Copy-out rather than a
+ * pointer to the live struct: the cache can be written from a task other
+ * than the caller's (the provisioning grace-window task, or another HTTP
+ * request), so a returned pointer could be read mid-write.
+ */
+void device_config_get(device_config_t *out);
 
 /*
  * True if the most recent device_config_load() found no usable stored
