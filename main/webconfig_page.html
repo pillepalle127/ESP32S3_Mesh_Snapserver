@@ -33,6 +33,31 @@
 <h1>ESP32-S3 Snapserver Config</h1>
 <div id="status">Loading...</div>
 
+<h2>Role</h2>
+<label for="role">Device role</label>
+<select id="role">
+  <option value="0">Server (mesh root, captures &amp; encodes audio)</option>
+  <option value="1">Client (mesh relay, plays back from a server)</option>
+</select>
+<div class="hint">Changing this reboots the device to apply it.</div>
+
+<div id="client_fields">
+  <label for="source_mode">Playback source</label>
+  <select id="source_mode">
+    <option value="0">Auto (local I2S input has priority when present)</option>
+    <option value="1">Network only</option>
+    <option value="2">Local I2S input only</option>
+  </select>
+  <label for="local_input_threshold_db" id="local_input_threshold_db_label">Local input threshold (dBFS)</label>
+  <input type="number" id="local_input_threshold_db" min="-80" max="0">
+  <div class="row">
+    <div><label for="buffer_ms">Buffer (ms)</label><input type="number" id="buffer_ms" min="200" max="10000" step="100"></div>
+    <div><label for="delay_trim_ms">Delay trim (ms)</label><input type="number" id="delay_trim_ms" min="-2000" max="2000" step="10"></div>
+  </div>
+  <label for="server_host">Server address override</label>
+  <input type="text" id="server_host" maxlength="31" placeholder="auto (mesh root)">
+</div>
+
 <h2>Mesh / Wi-Fi</h2>
 <div class="checkbox-row"><input type="checkbox" id="mesh_enable"><label for="mesh_enable">Mesh enabled</label></div>
 <label for="mesh_ssid">SSID</label>
@@ -85,6 +110,14 @@ function otherChannel(v) { return v === '0' ? '1' : '0'; }
 async function loadConfig() {
   const res = await fetch('/api/config');
   const cfg = await res.json();
+  $('role').value = String(cfg.role);
+  $('source_mode').value = String(cfg.source_mode);
+  $('local_input_threshold_db').value = cfg.local_input_threshold_db;
+  $('buffer_ms').value = cfg.buffer_ms;
+  $('delay_trim_ms').value = cfg.delay_trim_ms;
+  $('server_host').value = cfg.server_host;
+  updateRoleFieldsEnabled();
+
   $('mesh_enable').checked = cfg.mesh_enable;
   $('mesh_ssid').value = cfg.mesh_ssid;
 
@@ -119,6 +152,15 @@ function updateCrossoverFieldsEnabled() {
   }
 }
 
+function updateRoleFieldsEnabled() {
+  const isClient = $('role').value === '1';
+  const fields = ['source_mode', 'local_input_threshold_db', 'buffer_ms', 'delay_trim_ms', 'server_host'];
+  for (const id of fields) {
+    $(id).disabled = !isClient;
+  }
+  $('local_input_threshold_db_label').classList.toggle('disabled', !isClient);
+}
+
 async function loadStatus() {
   try {
     const res = await fetch('/api/status');
@@ -136,6 +178,8 @@ $('sub_channel').addEventListener('change', () => {});
 
 $('crossover_enabled').addEventListener('change', updateCrossoverFieldsEnabled);
 
+$('role').addEventListener('change', updateRoleFieldsEnabled);
+
 $('togglePassword').addEventListener('click', () => {
   const field = $('mesh_password');
   const revealed = field.type === 'text';
@@ -151,6 +195,12 @@ $('save').addEventListener('click', async () => {
   }
 
   const payload = {
+    role: Number($('role').value),
+    source_mode: Number($('source_mode').value),
+    local_input_threshold_db: Number($('local_input_threshold_db').value),
+    buffer_ms: Number($('buffer_ms').value),
+    delay_trim_ms: Number($('delay_trim_ms').value),
+    server_host: $('server_host').value,
     mesh_enable: $('mesh_enable').checked,
     mesh_ssid: $('mesh_ssid').value,
     mesh_password: $('mesh_password').value,

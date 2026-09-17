@@ -18,7 +18,21 @@
 extern "C" {
 #endif
 
-#define DEVICE_CONFIG_VERSION 1
+#define DEVICE_CONFIG_VERSION 2
+
+/* device_config_t.role. Applying a change requires a reboot. */
+#define DEVICE_ROLE_SERVER 0U
+#define DEVICE_ROLE_CLIENT 1U
+
+/*
+ * device_config_t.source_mode (client role only). Applies live, no reboot.
+ * AUTO gives the local I2S input priority whenever a signal is present,
+ * falling back to the network stream otherwise -- the same rule the
+ * reference ESP32_Mesh_Snapclient project used for A2DP vs. Snapcast.
+ */
+#define SOURCE_MODE_AUTO         0U
+#define SOURCE_MODE_NETWORK_ONLY 1U
+#define SOURCE_MODE_LOCAL_ONLY   2U
 
 typedef struct {
     uint32_t version;
@@ -45,7 +59,25 @@ typedef struct {
     /* Provisioning bookkeeping, not user-editable via the config page. */
     uint8_t  boot_fail_count;
 
-    uint8_t  reserved[32];
+    /* Server/client role. Applying a change requires a reboot. */
+    uint8_t  role;
+
+    /*
+     * Client role only. Applies live, no reboot.
+     *
+     * buffer_ms is also used by the server as the announced Snapcast
+     * bufferMs (see snapserver.c) -- both roles read it from the same
+     * field so a server and its clients agree on one end-to-end latency
+     * budget without a separate setting.
+     */
+    uint16_t buffer_ms;
+    int16_t  delay_trim_ms;
+    uint8_t  source_mode;
+    int8_t   local_input_threshold_db;
+    /* Empty = auto-discover the server via esp_mesh_lite_get_root_ip(). */
+    char     server_host[32];
+
+    uint8_t  reserved[16];
 } device_config_t;
 
 /*

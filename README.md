@@ -19,12 +19,10 @@ Der ESP32-S3 übernimmt dabei mehrere Aufgaben:
 * lokale digitale Frequenzweiche für die angeschlossene Audiohardware
 * Web-Konfigurationsoberfläche für Mesh-, DSP- und Opus-Einstellungen
 * Provisioning-AP-Fallback, falls das Gerät sonst nicht erreichbar wäre
+* wahlweise auch als Snapcast-**Client** im selben Mesh einsetzbar (gleiche
+  Firmware, per Konfiguration umschaltbar)
 
 Das Ziel ist ein vollständig eigenständiger Audio-Server ohne Raspberry Pi oder PC im laufenden Betrieb.
-
-
-![Verdrahtungsplan](docs/Verdrahtungsplan.png)
-<img src="docs/Verdrahtungsplan.png" width="600">
 
 ---
 
@@ -52,6 +50,8 @@ Das Ziel ist ein vollständig eigenständiger Audio-Server ohne Raspberry Pi ode
 * Offener Provisioning-Access-Point (`ESP32_provisioning_<MAC>`) als Fallback bei
   Erstinbetriebnahme, nach Factory-Reset, bei deaktiviertem Mesh oder nach
   mehreren erfolglosen Mesh-Boots
+* Client-Rolle (Snapcast-Empfang, Mesh-Relay) über dieselbe Web-Konfiguration
+  wählbar, siehe [Client-Rolle](#client-rolle)
 
 ---
 
@@ -154,18 +154,24 @@ Die DSP-Verarbeitung benötigt für diesen Signalweg kein externes DSP-System un
 ## Web-Konfiguration
 
 Das Gerät stellt unter Port **80** eine Konfigurationsseite bereit, erreichbar über
-seine IP-Adresse oder per mDNS unter `http://snapserver.local/`.
+seine IP-Adresse oder per mDNS unter `http://snapserver.local/`. Dieselbe Seite
+läuft auf jedem Gerät, unabhängig von der Rolle — Screenshots beider Rollen
+in [Client-Rolle](#client-rolle).
 
-<img src="docs/webconfig-screenshot.png" width="360">
+<img src="docs/webconfig-server-screenshot.png" width="360">
 
 Konfigurierbar:
 
+* **Rolle:** Server oder Client (siehe [Client-Rolle](#client-rolle)). Änderung
+  löst einen Neustart aus.
 * **Mesh / Wi-Fi:** Enable, SSID, Passwort, Kanal, maximale Hop-Tiefe
   (`esp_mesh_lite`-Level). Änderungen an diesen Werten lösen einen Neustart aus, um
   sie zu übernehmen.
 * **DSP / Frequenzweiche:** Enable, Trennfrequenz, Gain pro Kanal, Kanalzuordnung
-  (Sub/Wideband). Wirkt sofort, ohne Neustart.
-* **Opus:** Bitrate, Complexity. Wirkt sofort, ohne Neustart.
+  (Sub/Wideband). Wirkt sofort, ohne Neustart. Gilt für beide Rollen — auch der
+  Client führt sein wiedergegebenes Signal durch dieselbe Weiche.
+* **Opus:** Bitrate, Complexity. Wirkt sofort, ohne Neustart. Nur in der
+  Server-Rolle relevant (Encoder-Einstellungen).
 
 Alle Werte werden persistent im NVS gespeichert und überleben Neustarts und
 Firmware-Updates (solange sich das Konfigurationsschema nicht ändert).
@@ -188,6 +194,42 @@ Der Provisioning-AP bleibt 3 Minuten aktiv; läuft dieses Fenster ab, ohne dass
 gespeichert wurde, schaltet sich der Funk komplett ab — ein erneutes Fenster öffnet
 sich erst nach einem Stromzyklus. Ein Speichern innerhalb des Fensters startet das
 Gerät neu und übergibt an die normale Mesh-Entscheidung.
+
+---
+
+## Client-Rolle
+
+Dieselbe Firmware kann statt als Server auch als Snapcast-**Client** laufen —
+z. B. auf einem zweiten ESP32-S3 an einem anderen Lautsprecher im selben
+Mesh. Umschaltbar über die Web-Konfiguration (Feld „Rolle", siehe
+[Web-Konfiguration](#web-konfiguration)), Übernahme per Neustart.
+
+<img src="docs/webconfig-client-screenshot.png" width="360">
+
+In der Client-Rolle:
+
+* Das Gerät tritt dem Mesh als **Non-Root-Relay** bei, niemals als Leaf —
+  ein Leaf könnte in einer langgestreckten, mehrere Hops tiefen Topologie
+  keine weiteren Kinder mehr annehmen und die Kette damit vorzeitig beenden.
+* Der Snapserver wird automatisch über `esp_mesh_lite_get_root_ip()`
+  gefunden (funktioniert auch über mehrere Hops und nach
+  Mesh-Umstrukturierungen hinweg, anders als das lokale DHCP-Gateway oder
+  mDNS, die beide nur bis zur ersten Ebene reichen). Alternativ ist in der
+  Web-Konfiguration eine feste Server-Adresse eintragbar.
+* Empfangenes Snapcast-Audio (Opus, mono) wird dekodiert und über dieselbe
+  DSP-/I2S-Ausgabekette wie beim Server wiedergegeben.
+* Der lokale I2S-Eingang steht als **alternative Audioquelle** zur
+  Verfügung (z. B. Aux-Eingang) — per Pegelerkennung automatisch priorisiert,
+  sobald dort ein Signal anliegt, oder über die Web-Konfiguration fest auf
+  „nur Netzwerk" oder „nur lokaler Eingang" erzwingbar.
+* Puffergröße (`bufferMs`) und ein zusätzlicher Delay-Trim sind konfigurierbar,
+  um Mesh-Umstrukturierungen in einem dynamischen Funkumfeld zu überbrücken.
+
+**Bekannte Einschränkung (Stand dieser Version):** Es findet noch kein
+Zeitabgleich mit dem Server statt (`SNAP_MSG_TIME` wird vom Client noch nicht
+gesendet). Ein einzelner Client spielt Audio flüssig ab, aber mehrere Clients
+gleichzeitig können über längere Zeit gegeneinander driften. Ein
+Drift-Ausgleich ist als nächster Schritt vorgesehen.
 
 ---
 
@@ -236,7 +278,12 @@ Der Snapserver selbst stellt seine Dienste über das lokale Netzwerk beziehungsw
 
 Ist das Mesh nicht erreichbar oder nicht konfiguriert, fällt das Gerät automatisch
 auf einen offenen Provisioning-Access-Point zurück (siehe [Web-Konfiguration](#web-konfiguration)),
-damit es niemals dauerhaft unerreichbar wird.
+damit es niemals dauerhaft unerreichbar wird. Das gilt für beide Rollen: auch
+ein als Client konfiguriertes Gerät, das keinen Parent findet, fällt auf den
+Provisioning-AP zurück statt dauerhaft unerreichbar zu bleiben.
+
+Weitere Geräte können dem Mesh als **Client** beitreten und dort empfangenes
+Audio wiedergeben, siehe [Client-Rolle](#client-rolle).
 
 ---
 

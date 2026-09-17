@@ -45,6 +45,34 @@ Bugs sind umgesetzt:
   während des Grace-Windows — siehe Plan-Datei für den vollständigen
   Verifikationsplan.
 
+- Stufe 6 (Feature auf `test/ServerClient`, Plan aus Analyse der Client-Rolle
+  und des Referenzprojekts `ESP32_Mesh_Snapclient`, Stufe 1 von 2): der
+  ESP32-S3 kann nun per NVS-Feld `role` wahlweise als Server (Mesh-Root, wie
+  bisher) oder als Client (Mesh-Non-Root-Relay, Snapcast-Empfang) booten,
+  umschaltbar über die Web-Config-Seite, Übernahme per Reboot. Neu:
+  `mesh_client.c` (Non-Root-Join, nie Leaf — ein Leaf könnte in der
+  schlauchförmigen Zieltopologie keine Kinder annehmen; Server-Adresse über
+  `esp_mesh_lite_get_root_ip()`, da lokales DHCP-Gateway ab Level 3 nur den
+  Elternknoten liefert und mDNS die NAPT-Grenze zwischen den Ebenen nicht
+  überquert), `snapclient.c` (Snapcast-Protokoll, portiert aus dem
+  Referenzprojekt, aber ohne A2DP/Bluetooth — der ESP32-S3 hat kein
+  Bluetooth Classic — und mit tatsächlicher Auswertung von Rate/Kanälen aus
+  dem CodecHeader statt hartcodiertem Stereo, da unser eigener Server mono
+  sendet), `audio_sink.c` (Quellen-Arbiter zwischen Netzwerk-Audio und
+  lokalem I2S-Eingang als Ersatz für die A2DP-Priorität der Referenz,
+  PSRAM-Ringpuffer). `audio_i2s.c` wurde dafür in Capture- und
+  DSP+Ausgabe-Hälfte aufgetrennt (`audio_i2s_capture_mono()`/
+  `audio_i2s_write_mono()`), ohne das bestehende Server-Verhalten zu ändern.
+  `bufferMs` ist jetzt konfigurierbar statt hart 1000 (Server sendet den
+  Wert aus `device_config`, Client dimensioniert seinen Ringpuffer danach).
+  Auf dem Gerät verifiziert: Build sauber, sowohl mit
+  `CONFIG_SNAPSERVER_ENABLE_MESH_LITE=y` als auch `=n`. Nicht verifiziert
+  (kein zweites WLAN-fähiges Testgerät in dieser Sandbox verfügbar):
+  tatsächlicher Mesh-Join als Non-Root, Snapcast-Wiedergabe, automatische
+  Quellenumschaltung auf den lokalen Eingang, Rollenwechsel per Reboot.
+  Stufe 2 (noch offen): Zeit-Sync (`SNAP_MSG_TIME`) und Drift-Kompensation,
+  damit mehrere Clients über Stunden synchron bleiben — siehe Plan-Datei.
+
 ## Nicht als Bug, aber vorgemerkt
 
 - `partitions.csv` hat keine OTA- oder Coredump-Partition. Kein Problem für

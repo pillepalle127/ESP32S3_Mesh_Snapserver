@@ -72,7 +72,29 @@ void audio_i2s_get_dsp_params(audio_dsp_params_t *out);
  * Das ungefilterte Mono wird dem Snapserver im Puffer "mono" bereitgestellt.
  * Lokal wird dasselbe Mono durch eine Linkwitz-Riley-Weiche 4. Ordnung
  * verarbeitet und als Tiefpass/Hochpass an den PCM5102A ausgegeben.
+ *
+ * Combines audio_i2s_capture_mono() and audio_i2s_write_mono() (see below)
+ * plus the server's own wall-clock capture timeline. Used only by the
+ * server role (audio_opus.c); the client role uses the two split calls
+ * directly since its output source isn't always the local capture.
  */
 esp_err_t audio_i2s_read_frame(int16_t *mono,
                                size_t mono_samples,
                                int64_t *timestamp_us);
+
+/*
+ * Reads one stereo frame from the RX side and mixes it to mono, without any
+ * DSP or TX output -- just the capture half of audio_i2s_read_frame(). Used
+ * by the client role (audio_sink.c) both as the substitute local-input
+ * source and as the frame it reads purely to keep pace with the I2S clock
+ * and to run its level detector on.
+ */
+esp_err_t audio_i2s_capture_mono(int16_t *mono, size_t mono_samples);
+
+/*
+ * Runs the mono input through the LR4 crossover (or bypasses it) and writes
+ * the resulting sub/wideband pair to the TX side -- just the DSP+output half
+ * of audio_i2s_read_frame(). Used by the client role (audio_sink.c) to play
+ * out whichever source (network or local input) is currently active.
+ */
+esp_err_t audio_i2s_write_mono(const int16_t *mono, size_t mono_samples);

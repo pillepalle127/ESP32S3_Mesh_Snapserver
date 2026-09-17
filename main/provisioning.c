@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_bridge.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -25,8 +26,10 @@ static TaskHandle_t s_grace_task;
 static TaskHandle_t s_ap_timeout_task;
 static volatile bool s_grace_cancelled;
 static volatile bool s_ap_timeout_cancelled;
-static esp_event_handler_instance_t s_sta_connect_handler;
-static volatile bool s_sta_connected_in_window;
+static esp_event_handler_instance_t s_grace_success_handler;
+static esp_event_base_t s_grace_success_event_base;
+static int32_t s_grace_success_event_id;
+static volatile bool s_grace_success_seen;
 static provisioning_reason_t s_active_reason = PROVISIONING_REASON_NONE;
 
 provisioning_reason_t provisioning_decide(const device_config_t *cfg)
@@ -94,16 +97,88 @@ esp_err_t provisioning_pin_ap_ip(esp_netif_t *ap_netif)
     return ESP_OK;
 }
 
-static void on_ap_sta_connected(void *arg,
-                                esp_event_base_t base,
-                                int32_t id,
-                                void *data)
+esp_err_t provisioning_pin_own_ap_ip(void)
+{
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    return provisioning_pin_ap_ip(ap_netif);
+}
+
+esp_err_t provisioning_clear_sta_wifi(void)
+{
+    wifi_config_t sta_config = {0};
+    return esp_bridge_wifi_set_config(WIFI_IF_STA, &sta_config);
+}
+
+esp_err_t provisioning_configure_ap_wifi(const char *ssid, const char *password, uint8_t channel)
+{
+    wifi_config_t ap_config = {
+        .ap = {
+            .channel = channel,
+            .max_connection = 10,
+        },
+    };
+
+    strlcpy((char *)ap_config.ap.ssid, ssid, sizeof(ap_config.ap.ssid));
+    /*
+     * Measure what strlcpy actually wrote, not the source: strlcpy always
+     * reserves one byte for the NUL terminator within a 32-byte
+     * destination, so a 32-char source (the UI allows up to that) is
+     * copied as 31 real characters + '\0' at index 31. Measuring the
+     * source would set ssid_len=32 and tell the driver to broadcast that
+     * trailing NUL byte as part of the SSID instead of just the 31
+     * characters that were actually copied.
+     */
+    ap_config.ap.ssid_len = strlen((char *)ap_config.ap.ssid);
+
+    if (password != NULL && strlen(password) >= 8U) {
+        strlcpy((char *)ap_config.ap.password, password, sizeof(ap_config.ap.password));
+        ap_config.ap.authmode = WIFI_AUTH_WPA2_PSK;
+    } else {
+        ap_config.ap.authmode = WIFI_AUTH_OPEN;
+    }
+
+    return esp_bridge_wifi_set_config(WIFI_IF_AP, &ap_config);
+}
+
+esp_err_t provisioning_start_fallback_ap(provisioning_reason_t reason)
+{
+    char ssid[33];
+    provisioning_build_ssid(ssid, sizeof(ssid));
+
+    ESP_LOGW(TAG,
+             "Starting provisioning AP (reason=%d): SSID=%s, open, no mesh",
+             (int)reason, ssid);
+
+    esp_bridge_create_all_netif();
+
+    esp_err_t err = provisioning_pin_own_ap_ip();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = provisioning_clear_sta_wifi();
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    err = provisioning_configure_ap_wifi(ssid, NULL, 1);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    return provisioning_arm_ap_timeout();
+}
+
+static void on_grace_window_success(void *arg,
+                                    esp_event_base_t base,
+                                    int32_t id,
+                                    void *data)
 {
     (void)arg;
     (void)base;
     (void)id;
     (void)data;
-    s_sta_connected_in_window = true;
+    s_grace_success_seen = true;
 }
 
 /*
@@ -125,14 +200,14 @@ static void grace_window_task(void *arg)
     (void)arg;
     vTaskDelay(pdMS_TO_TICKS(PROVISIONING_GRACE_WINDOW_US / 1000LL));
 
-    if (s_sta_connect_handler != NULL) {
+    if (s_grace_success_handler != NULL) {
         esp_event_handler_instance_unregister(
-            WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED, s_sta_connect_handler);
-        s_sta_connect_handler = NULL;
+            s_grace_success_event_base, s_grace_success_event_id, s_grace_success_handler);
+        s_grace_success_handler = NULL;
     }
 
     if (!s_grace_cancelled) {
-        if (s_sta_connected_in_window) {
+        if (s_grace_success_seen) {
             ESP_LOGI(TAG, "Station joined within grace window, resetting boot-fail streak");
             device_config_set_boot_fail_count(0);
         } else {
@@ -150,19 +225,22 @@ static void grace_window_task(void *arg)
     vTaskDelete(NULL);
 }
 
-esp_err_t provisioning_arm_grace_window(void)
+esp_err_t provisioning_arm_grace_window(esp_event_base_t success_event_base,
+                                        int32_t success_event_id)
 {
-    s_sta_connected_in_window = false;
+    s_grace_success_seen = false;
     s_grace_cancelled = false;
+    s_grace_success_event_base = success_event_base;
+    s_grace_success_event_id = success_event_id;
 
     esp_err_t result = esp_event_handler_instance_register(
-        WIFI_EVENT,
-        WIFI_EVENT_AP_STACONNECTED,
-        &on_ap_sta_connected,
+        success_event_base,
+        success_event_id,
+        &on_grace_window_success,
         NULL,
-        &s_sta_connect_handler);
+        &s_grace_success_handler);
     if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Registering AP-STA-connected handler failed: %s",
+        ESP_LOGE(TAG, "Registering grace-window success handler failed: %s",
                  esp_err_to_name(result));
         return result;
     }
