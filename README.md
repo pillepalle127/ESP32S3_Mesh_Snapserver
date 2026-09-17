@@ -1,6 +1,6 @@
 # ESP32-S3 Mini Snapserver
 
-**Stand:** 2026-09-09
+**Stand:** 2026-09-17
 
 ## Projektziel
 
@@ -17,6 +17,8 @@ Der ESP32-S3 übernimmt dabei mehrere Aufgaben:
 * eigenständiger ESP-Mesh-Lite-Root
 * Verteilung des Audiosignals an Snapclients
 * lokale digitale Frequenzweiche für die angeschlossene Audiohardware
+* Web-Konfigurationsoberfläche für Mesh-, DSP- und Opus-Einstellungen
+* Provisioning-AP-Fallback, falls das Gerät sonst nicht erreichbar wäre
 
 Das Ziel ist ein vollständig eigenständiger Audio-Server ohne Raspberry Pi oder PC im laufenden Betrieb.
 
@@ -42,6 +44,14 @@ Das Ziel ist ein vollständig eigenständiger Audio-Server ohne Raspberry Pi ode
 * lokale digitale Frequenzweiche
 * Ausgabe der getrennten Frequenzbereiche über I2S
 * vorgesehen für die Kombination mit externen I2S-DACs und Verstärkern
+* Web-Konfigurationsseite (HTTP, Port 80) für Mesh-Zugangsdaten, Mesh-Hop-Tiefe,
+  DSP-Frequenzweiche (Enable, Trennfrequenz, Kanal-Gains, Kanalzuordnung) und
+  Opus-Bitrate/Complexity, persistent in NVS gespeichert
+* mDNS-Erreichbarkeit unter `snapserver.local`
+* Factory-Reset über die Web-Oberfläche
+* Offener Provisioning-Access-Point (`ESP32_provisioning_<MAC>`) als Fallback bei
+  Erstinbetriebnahme, nach Factory-Reset, bei deaktiviertem Mesh oder nach
+  mehreren erfolglosen Mesh-Boots
 
 ---
 
@@ -132,9 +142,52 @@ Beispiel:
            Output Output
 ```
 
-Die konkrete Trennfrequenz wird über die Projektkonfiguration festgelegt.
+Trennfrequenz, Enable/Bypass, Kanal-Gains und Kanalzuordnung sind zur Laufzeit über
+die Web-Konfigurationsseite änderbar (siehe unten) und wirken sofort, ohne Neustart.
+Die Projektkonfiguration (Kconfig) legt dafür nur noch die Standardwerte für
+Erstinbetriebnahme und Factory-Reset fest.
 
 Die DSP-Verarbeitung benötigt für diesen Signalweg kein externes DSP-System und ist auf dem ESP32-S3 ohne zwingende Verwendung von PSRAM für die eigentliche Filterberechnung vorgesehen.
+
+---
+
+## Web-Konfiguration
+
+Das Gerät stellt unter Port **80** eine Konfigurationsseite bereit, erreichbar über
+seine IP-Adresse oder per mDNS unter `http://snapserver.local/`.
+
+<img src="docs/webconfig-screenshot.png" width="360">
+
+Konfigurierbar:
+
+* **Mesh / Wi-Fi:** Enable, SSID, Passwort, Kanal, maximale Hop-Tiefe
+  (`esp_mesh_lite`-Level). Änderungen an diesen Werten lösen einen Neustart aus, um
+  sie zu übernehmen.
+* **DSP / Frequenzweiche:** Enable, Trennfrequenz, Gain pro Kanal, Kanalzuordnung
+  (Sub/Wideband). Wirkt sofort, ohne Neustart.
+* **Opus:** Bitrate, Complexity. Wirkt sofort, ohne Neustart.
+
+Alle Werte werden persistent im NVS gespeichert und überleben Neustarts und
+Firmware-Updates (solange sich das Konfigurationsschema nicht ändert).
+
+Ein **Factory-Reset**-Button setzt die Konfiguration auf die Kconfig-Standardwerte
+zurück und startet das Gerät neu.
+
+### Provisioning-Access-Point
+
+Ist das Gerät über sein konfiguriertes Mesh nicht erreichbar, öffnet es automatisch
+einen offenen, unverschlüsselten Access Point (`ESP32_provisioning_<MAC>`), über
+den dieselbe Konfigurationsseite erreichbar ist. Auslöser sind:
+
+* Erstinbetriebnahme (noch keine gespeicherte Konfiguration)
+* Factory-Reset
+* Mesh in der Konfiguration deaktiviert
+* 7 aufeinanderfolgende Boots ohne dass sich eine Station am eigenen Mesh-AP anmeldet
+
+Der Provisioning-AP bleibt 3 Minuten aktiv; läuft dieses Fenster ab, ohne dass
+gespeichert wurde, schaltet sich der Funk komplett ab — ein erneutes Fenster öffnet
+sich erst nach einem Stromzyklus. Ein Speichern innerhalb des Fensters startet das
+Gerät neu und übergibt an die normale Mesh-Entscheidung.
 
 ---
 
@@ -175,11 +228,15 @@ Ziel ist ein sauberer **Abgleich mit der absoluten Client-Zeit**, ohne die Audio
 
 ## Netzwerk
 
-Der ESP32-S3 arbeitet als eigenständiger **ESP-Mesh-Lite-Root**.
+Im Normalbetrieb arbeitet der ESP32-S3 als eigenständiger **ESP-Mesh-Lite-Root**.
 
 Die Mesh-Struktur ermöglicht die Verbindung weiterer ESP-Geräte, ohne dass für die reine Audioverteilung zwingend ein separater Raspberry-Pi-Snapserver erforderlich ist.
 
 Der Snapserver selbst stellt seine Dienste über das lokale Netzwerk beziehungsweise Mesh-Netzwerk bereit.
+
+Ist das Mesh nicht erreichbar oder nicht konfiguriert, fällt das Gerät automatisch
+auf einen offenen Provisioning-Access-Point zurück (siehe [Web-Konfiguration](#web-konfiguration)),
+damit es niemals dauerhaft unerreichbar wird.
 
 ---
 
@@ -215,6 +272,7 @@ Dieses Projekt verwendet Komponenten aus dem ESP-IDF-Ökosystem, darunter:
 * **ESP-Mesh-Lite** — Apache License 2.0
 * **ESP-IoT-Bridge** — Apache License 2.0
 * **ESP-Modem** — Apache License 2.0
+* **ESP-mDNS** — Apache License 2.0
 * **CMake Utilities** — Apache License 2.0
 * **esp-opus** — MIT License
 
@@ -261,13 +319,13 @@ idf.py flash monitor
 
 ## Pining
 
-GPIO 7   ESP32-S3 -> PCM5102A BCK und TinySine BCLK
+GPIO 4   ESP32-S3 -> PCM5102A BCK und TinySine BCLK
 
-GPIO 8   ESP32-S3 -> PCM5102A LCK und TinySine LRCLK
+GPIO 6   ESP32-S3 -> PCM5102A LCK und TinySine LRCLK
 
-GPIO 9   TinySine DOUT -> ESP32-S3 DIN
+GPIO 5   TinySine DOUT -> ESP32-S3 DIN
 
-GPIO 10  ESP32-S3 DOUT -> PCM5102A DIN
+GPIO 7   ESP32-S3 DOUT -> PCM5102A DIN
 
 ---
 
