@@ -3,20 +3,31 @@ menu "Snapserver Mesh Project Configuration"
 config SNAPSERVER_ENABLE_MESH_LITE
     bool "Enable ESP-Mesh-Lite"
     default n
+    help
+        Build-time capability switch: whether this firmware image includes
+        ESP-Mesh-Lite support at all. Whether mesh is actually active on a
+        given device is a separate, runtime setting stored in NVS and
+        edited via the web config page; if this is off, that runtime
+        setting has no effect and the device always falls back to the
+        open provisioning AP, since no other network mode is compiled in.
 
 config MESH_SOFTAP_SSID_PREFIX
     string "Mesh-Lite SoftAP SSID prefix"
     default "SnapMesh_sr"
     depends on SNAPSERVER_ENABLE_MESH_LITE
     help
-        SSID-Prefix der Mesh-SoftAP, an die sich Child-Knoten anmelden.
-        Muss auf allen Knoten (Root und Clients) uebereinstimmen.
+        First-boot / factory-reset default only. Once a device has booted
+        once, the mesh SSID lives in NVS and is edited via the web config
+        page, not here; this value only seeds a fresh device.
+        Must match across all mesh nodes (root and clients) for a given
+        mesh network.
 
 config MESH_SOFTAP_PASSWORD
     string "Mesh-Lite SoftAP password"
     default "criticalmass"
     depends on SNAPSERVER_ENABLE_MESH_LITE
     help
+        First-boot / factory-reset default only (see MESH_SOFTAP_SSID_PREFIX).
         SoftAP-Passwort, das alle Mesh-Knoten teilen. Muss auf Root und
         jedem Client identisch sein, sonst scheitern Kinder mit
         WiFi reason 210/15 (security mismatch / handshake timeout).
@@ -27,25 +38,34 @@ config MESH_CHANNEL
     range 1 13
     depends on SNAPSERVER_ENABLE_MESH_LITE
     help
+        First-boot / factory-reset default only (see MESH_SOFTAP_SSID_PREFIX).
         Fester 2.4-GHz-WLAN-Kanal des autarken Mesh-Netzes.
         Root und alle Clients muessen denselben Kanal verwenden.
-		
+
 config SNAPSERVER_OPUS_BITRATE
     int "Opus bitrate (bit/s)"
     default 96000
     range 16000 192000
+    help
+        First-boot / factory-reset default only; editable live afterwards
+        via the web config page without a reboot.
 
 config SNAPSERVER_OPUS_COMPLEXITY
     int "Opus encoder complexity"
     default 5
     range 0 10
-	
+    help
+        First-boot / factory-reset default only; editable live afterwards
+        via the web config page without a reboot.
+
 config SNAPSERVER_CROSSOVER_HZ
     int "LR4 crossover frequency (Hz)"
     default 120
     range 40 500
     help
+        First-boot / factory-reset default only; editable live afterwards
+        via the web config page without a reboot.
         Trennfrequenz der Linkwitz-Riley-Frequenzweiche (4. Ordnung).
         sub = Tiefpass unterhalb, wideband = Hochpass oberhalb.
-		
+
 endmenu

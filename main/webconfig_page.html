@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32-S3 Snapserver Config</title>
+<style>
+  body { font-family: sans-serif; max-width: 32rem; margin: 1rem auto; padding: 0 1rem; color: #222; }
+  h1 { font-size: 1.3rem; }
+  h2 { font-size: 1rem; margin-top: 1.5rem; border-bottom: 1px solid #ccc; padding-bottom: 0.2rem; }
+  label { display: block; margin-top: 0.6rem; font-size: 0.9rem; }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%; box-sizing: border-box; padding: 0.3rem; margin-top: 0.15rem;
+  }
+  .row { display: flex; gap: 0.6rem; }
+  .row > div { flex: 1; }
+  .password-row { display: flex; gap: 0.4rem; align-items: stretch; }
+  .password-row input { flex: 1; margin-top: 0.15rem; }
+  .password-row button { margin-top: 0.15rem; padding: 0 0.6rem; font-size: 0.8rem; }
+  .checkbox-row { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.6rem; }
+  .checkbox-row label { margin-top: 0; }
+  button { margin-top: 1rem; padding: 0.5rem 1rem; font-size: 0.95rem; cursor: pointer; }
+  #save { background: #2b6cb0; color: #fff; border: none; border-radius: 0.25rem; }
+  #factoryReset { background: #b03030; color: #fff; border: none; border-radius: 0.25rem; }
+  #status { margin-top: 1rem; padding: 0.5rem; border-radius: 0.25rem; background: #eee; font-size: 0.85rem; white-space: pre-line; }
+  .hint { font-size: 0.78rem; color: #666; margin-top: 0.1rem; }
+</style>
+</head>
+<body>
+<h1>ESP32-S3 Snapserver Config</h1>
+<div id="status">Loading...</div>
+
+<h2>Mesh / Wi-Fi</h2>
+<div class="checkbox-row"><input type="checkbox" id="mesh_enable"><label for="mesh_enable">Mesh enabled</label></div>
+<label for="mesh_ssid">SSID</label>
+<input type="text" id="mesh_ssid" maxlength="32">
+<label for="mesh_password">Password</label>
+<div class="password-row">
+  <input type="password" id="mesh_password" maxlength="64" placeholder="leave blank to keep current">
+  <button type="button" id="togglePassword">Show</button>
+</div>
+<div class="hint">A saved network can't be made passwordless from here -- use Factory Reset for that.</div>
+<div class="row">
+  <div><label for="mesh_channel">Wi-Fi channel (1-13)</label><input type="number" id="mesh_channel" min="1" max="13"></div>
+  <div><label for="mesh_max_level">Max mesh hops (1-15)</label><input type="number" id="mesh_max_level" min="1" max="15"></div>
+</div>
+<div class="hint">Changing anything here reboots the device to apply it.</div>
+
+<h2>DSP / Crossover</h2>
+<div class="checkbox-row"><input type="checkbox" id="dsp_bypass"><label for="dsp_bypass">Bypass (mono passthrough, unity gain)</label></div>
+<label for="crossover_hz">Crossover frequency (40-500 Hz)</label>
+<input type="number" id="crossover_hz" min="40" max="500">
+<div class="row">
+  <div><label for="sub_gain_db">Sub gain (dB)</label><input type="number" id="sub_gain_db" min="-24" max="12" step="0.5"></div>
+  <div><label for="wideband_gain_db">Wideband gain (dB)</label><input type="number" id="wideband_gain_db" min="-24" max="12" step="0.5"></div>
+</div>
+<label for="sub_channel">Sub output channel</label>
+<select id="sub_channel"><option value="0">Left</option><option value="1">Right</option></select>
+<div class="hint">Wideband automatically uses the other channel.</div>
+
+<h2>Opus</h2>
+<div class="row">
+  <div><label for="opus_bitrate">Bitrate (16000-192000)</label><input type="number" id="opus_bitrate" min="16000" max="192000" step="1000"></div>
+  <div><label for="opus_complexity">Complexity (0-10)</label><input type="number" id="opus_complexity" min="0" max="10"></div>
+</div>
+
+<button id="save">Save</button>
+<button id="factoryReset">Factory Reset</button>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const REASON_LABEL = {
+  none: 'Mesh active',
+  no_config: 'Provisioning mode (no config saved yet)',
+  boot_fail_streak: 'Provisioning mode (no station joined the mesh AP for 7 boots)',
+  mesh_disabled: 'Provisioning mode (mesh disabled)',
+};
+
+function otherChannel(v) { return v === '0' ? '1' : '0'; }
+
+async function loadConfig() {
+  const res = await fetch('/api/config');
+  const cfg = await res.json();
+  $('mesh_enable').checked = cfg.mesh_enable;
+  $('mesh_ssid').value = cfg.mesh_ssid;
+
+  const passwordField = $('mesh_password');
+  const toggleButton = $('togglePassword');
+  const hasRealPassword = typeof cfg.mesh_password === 'string';
+  passwordField.value = hasRealPassword ? cfg.mesh_password : '';
+  passwordField.type = 'password';
+  passwordField.placeholder = hasRealPassword
+    ? ''
+    : 'leave blank to keep current (hidden on open provisioning AP)';
+  toggleButton.textContent = 'Show';
+  toggleButton.disabled = !hasRealPassword;
+  toggleButton.title = hasRealPassword
+    ? ''
+    : 'Only shown while connected through the password-protected mesh AP';
+
+  $('mesh_channel').value = cfg.mesh_channel;
+  $('mesh_max_level').value = cfg.mesh_max_level;
+  $('dsp_bypass').checked = cfg.dsp_bypass;
+  $('crossover_hz').value = cfg.crossover_hz;
+  $('sub_gain_db').value = cfg.sub_gain_db;
+  $('wideband_gain_db').value = cfg.wideband_gain_db;
+  $('sub_channel').value = String(cfg.sub_channel);
+  $('opus_bitrate').value = cfg.opus_bitrate;
+  $('opus_complexity').value = cfg.opus_complexity;
+}
+
+async function loadStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const s = await res.json();
+    $('status').textContent =
+      (REASON_LABEL[s.reason] || s.reason) +
+      '\nboot-fail streak: ' + s.boot_fail_count +
+      '\nuptime: ' + s.uptime_s + ' s';
+  } catch (e) {
+    $('status').textContent = 'Status unavailable';
+  }
+}
+
+$('sub_channel').addEventListener('change', () => {});
+
+$('togglePassword').addEventListener('click', () => {
+  const field = $('mesh_password');
+  const revealed = field.type === 'text';
+  field.type = revealed ? 'password' : 'text';
+  $('togglePassword').textContent = revealed ? 'Show' : 'Hide';
+});
+
+$('save').addEventListener('click', async () => {
+  const payload = {
+    mesh_enable: $('mesh_enable').checked,
+    mesh_ssid: $('mesh_ssid').value,
+    mesh_password: $('mesh_password').value,
+    mesh_channel: Number($('mesh_channel').value),
+    mesh_max_level: Number($('mesh_max_level').value),
+    dsp_bypass: $('dsp_bypass').checked,
+    crossover_hz: Number($('crossover_hz').value),
+    sub_gain_db: Number($('sub_gain_db').value),
+    wideband_gain_db: Number($('wideband_gain_db').value),
+    sub_channel: Number($('sub_channel').value),
+    wideband_channel: Number(otherChannel($('sub_channel').value)),
+    opus_bitrate: Number($('opus_bitrate').value),
+    opus_complexity: Number($('opus_complexity').value),
+  };
+
+  $('status').textContent = 'Saving...';
+  const res = await fetch('/api/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!res.ok) {
+    $('status').textContent = 'Save failed: ' + res.status;
+    return;
+  }
+  const result = await res.json();
+  $('status').textContent = result.reboot
+    ? 'Saved. Network settings changed, device is rebooting...'
+    : 'Saved.';
+  if (!result.reboot) {
+    loadConfig();
+    loadStatus();
+  }
+});
+
+$('factoryReset').addEventListener('click', async () => {
+  if (!confirm('Reset all settings to defaults and reboot?')) {
+    return;
+  }
+  $('status').textContent = 'Resetting...';
+  await fetch('/api/factory-reset', { method: 'POST' });
+  $('status').textContent = 'Factory reset done, device is rebooting...';
+});
+
+loadConfig();
+loadStatus();
+</script>
+</body>
+</html>

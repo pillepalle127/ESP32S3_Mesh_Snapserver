@@ -9,9 +9,12 @@
 #include "nvs_flash.h"
 #include "snapcontrol.h"
 
+#include "audio_i2s.h"
 #include "audio_opus.h"
+#include "device_config.h"
 #include "mesh_root.h"
 #include "snapserver.h"
+#include "webconfig.h"
 
 static const char *TAG = "APP";
 
@@ -80,6 +83,7 @@ void app_main(void)
 
     ESP_ERROR_CHECK(initialize_nvs());
     ESP_ERROR_CHECK(initialize_network_stack());
+    ESP_ERROR_CHECK(device_config_load());
 
     esp_err_t result = mesh_root_start();
     if (result != ESP_OK) {
@@ -99,8 +103,27 @@ void app_main(void)
         ESP_ERROR_CHECK(result);
     }
 
+    /*
+     * audio_opus_start()/audio_i2s_start() just seeded compile-time Kconfig
+     * defaults; apply whatever was actually loaded from NVS (or seeded as
+     * first-boot defaults, which are the same values anyway) on top before
+     * any audio flows.
+     */
+    const device_config_t *cfg = device_config_get();
+    const audio_dsp_params_t dsp_params = {
+        .bypass = cfg->dsp_bypass,
+        .crossover_hz = (float)cfg->crossover_hz,
+        .sub_gain_db = cfg->sub_gain_db,
+        .wideband_gain_db = cfg->wideband_gain_db,
+        .sub_channel = cfg->sub_channel,
+        .wideband_channel = cfg->wideband_channel,
+    };
+    ESP_ERROR_CHECK(audio_i2s_set_dsp_params(&dsp_params));
+    audio_opus_set_bitrate((int32_t)cfg->opus_bitrate);
+    audio_opus_set_complexity((int32_t)cfg->opus_complexity);
+
     result = snapserver_start();
-	
+
     if (result != ESP_OK) {
         ESP_LOGE(
             TAG,
@@ -109,6 +132,7 @@ void app_main(void)
         ESP_ERROR_CHECK(result);
     }
 	ESP_ERROR_CHECK(snapcontrol_start());
+    ESP_ERROR_CHECK(webconfig_start());
 
     ESP_LOGI(
         TAG,

@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
@@ -25,20 +26,46 @@
 
 /*
  * Lokale Linkwitz-Riley-Frequenzweiche 4. Ordnung.
- * Die Trennfrequenz kann im menuconfig zentral angepasst werden.
+ * Kconfig liefert nur noch die Startwerte fuer den allerersten Frame, bevor
+ * app_main() die tatsaechlich gespeicherte Konfiguration per
+ * audio_i2s_set_dsp_params() einspielt (siehe device_config.h).
  */
 #include "sdkconfig.h"
 
 /* Trennfrequenz aus menuconfig (int Hz) -> float fuer die Filterberechnung. */
 #define AUDIO_CROSSOVER_FREQUENCY_HZ ((float)CONFIG_SNAPSERVER_CROSSOVER_HZ)
-/* PCM5102A-Ausgangskanaele. Zum Tauschen einfach 0 und 1 vertauschen. */
+/* PCM5102A-Ausgangskanaele, Startwert. Zum Tauschen 0 und 1 vertauschen. */
 #define PCM_CHANNEL_LEFT              0
 #define PCM_CHANNEL_RIGHT             1
 #define SUBWOOFER_OUTPUT_CHANNEL      PCM_CHANNEL_LEFT
 #define WIDEBAND_OUTPUT_CHANNEL       PCM_CHANNEL_RIGHT
 
+/*
+ * Runtime-DSP-Parameter. bypass=true schaltet die Weiche aus (Mono direkt
+ * auf beide Ausgaenge, Unity-Gain). sub_channel/wideband_channel sind 0
+ * (links) oder 1 (rechts) und muessen sich unterscheiden.
+ */
+typedef struct {
+    bool  bypass;
+    float crossover_hz;
+    float sub_gain_db;
+    float wideband_gain_db;
+    uint8_t sub_channel;
+    uint8_t wideband_channel;
+} audio_dsp_params_t;
 
 esp_err_t audio_i2s_start(void);
+
+/*
+ * Validiert und uebernimmt neue DSP-Parameter. Rechnet Koeffizienten und
+ * linearen Gain ausserhalb des Hot-Path neu, tauscht sie dann kurz
+ * kritisch-section-geschuetzt ein. Aus einem beliebigen Task aufrufbar
+ * (z.B. dem HTTP-Config-Handler), nicht nur aus dem audio_task.
+ */
+esp_err_t audio_i2s_set_dsp_params(const audio_dsp_params_t *params);
+
+/* Liest die aktuell aktiven DSP-Parameter zurueck (z.B. fuer die Config-API). */
+void audio_i2s_get_dsp_params(audio_dsp_params_t *out);
 
 /*
  * Liest Stereo vom TinySine und bildet daraus Mono.

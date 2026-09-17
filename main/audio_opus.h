@@ -23,3 +23,14 @@ typedef struct {
 
 esp_err_t audio_opus_start(void);
 esp_err_t audio_opus_get_packet(audio_opus_packet_t *packet);
+
+/*
+ * Requests a new bitrate/complexity, applied by audio_opus_get_packet()
+ * itself at the top of its next frame (so opus_encoder_ctl() only ever runs
+ * from the audio task, never concurrently with opus_encode()). Safe to call
+ * from any other task, e.g. the HTTP config handler. Returns ESP_ERR_
+ * INVALID_ARG if out of range; ESP_OK just means "queued", not "applied
+ * yet".
+ */
+esp_err_t audio_opus_set_bitrate(int32_t bitrate);
+esp_err_t audio_opus_set_complexity(int32_t complexity);
