@@ -4,9 +4,11 @@
 
 ## Projektziel
 
-Dieses Projekt implementiert einen eigenständigen **Snapcast-kompatiblen Audio-Server auf einem ESP32-S3**.
+Dieses Projekt implementiert ein eigenständiges **Snapcast-kompatibles Audiosystem auf ESP32-S3**,
+das in einem eigenen ESP-Mesh-Lite-Netzwerk sowohl als **Server** als auch als **Client**
+laufen kann — dieselbe Firmware, die Rolle wird per Web-Konfiguration gewählt.
 
-Der ESP32-S3 übernimmt dabei mehrere Aufgaben:
+Als **Server** übernimmt der ESP32-S3 mehrere Aufgaben:
 
 * Audioeingang über I2S
 * Stereo-zu-Mono-Mischung
@@ -19,10 +21,14 @@ Der ESP32-S3 übernimmt dabei mehrere Aufgaben:
 * lokale digitale Frequenzweiche für die angeschlossene Audiohardware
 * Web-Konfigurationsoberfläche für Mesh-, DSP- und Opus-Einstellungen
 * Provisioning-AP-Fallback, falls das Gerät sonst nicht erreichbar wäre
-* wahlweise auch als Snapcast-**Client** im selben Mesh einsetzbar (gleiche
-  Firmware, per Konfiguration umschaltbar)
 
-Das Ziel ist ein vollständig eigenständiger Audio-Server ohne Raspberry Pi oder PC im laufenden Betrieb.
+Als **Client** (siehe [Client-Rolle](#client-rolle)) tritt ein weiterer ESP32-S3 demselben
+Mesh als Relay bei, empfängt den Snapcast-Stream des Servers und gibt ihn über dieselbe
+DSP-/I2S-Kette an einem eigenen Lautsprecher wieder — wahlweise mit lokalem I2S-Eingang
+als Alternativquelle.
+
+Das Ziel ist ein vollständig eigenständiges Mehr-Lautsprecher-Audiosystem ohne Raspberry Pi
+oder PC im laufenden Betrieb.
 
 ---
 
