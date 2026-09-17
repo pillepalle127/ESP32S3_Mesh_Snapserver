@@ -30,7 +30,7 @@
 </style>
 </head>
 <body>
-<h1>ESP32-S3 Snapserver Config</h1>
+<h1 id="pageTitle">ESP32-S3 Snapserver Config</h1>
 <div id="status">Loading...</div>
 
 <h2>Role</h2>
@@ -107,9 +107,26 @@ const REASON_LABEL = {
 
 function otherChannel(v) { return v === '0' ? '1' : '0'; }
 
+let currentRole = null;
+let currentDeviceId = null;
+
+/* Both fields come from separate endpoints (loadConfig/loadStatus, fetched
+ * in parallel), so the title is only updated once both have arrived at
+ * least once -- otherwise a server and a client tab are indistinguishable
+ * at a glance. */
+function updatePageTitle() {
+  if (currentDeviceId === null || currentRole === null) return;
+  const roleLabel = currentRole === 1 ? 'Client' : 'Server';
+  const suffix = `${roleLabel} ${currentDeviceId}`;
+  document.title = `ESP32-S3 Snapserver Config — ${suffix}`;
+  $('pageTitle').textContent = `ESP32-S3 Snapserver Config — ${suffix}`;
+}
+
 async function loadConfig() {
   const res = await fetch('/api/config');
   const cfg = await res.json();
+  currentRole = cfg.role;
+  updatePageTitle();
   $('role').value = String(cfg.role);
   $('source_mode').value = String(cfg.source_mode);
   $('local_input_threshold_db').value = cfg.local_input_threshold_db;
@@ -165,6 +182,8 @@ async function loadStatus() {
   try {
     const res = await fetch('/api/status');
     const s = await res.json();
+    currentDeviceId = s.device_id;
+    updatePageTitle();
     $('status').textContent =
       (REASON_LABEL[s.reason] || s.reason) +
       '\nboot-fail streak: ' + s.boot_fail_count +

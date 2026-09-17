@@ -10,7 +10,6 @@
 #include "device_config.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_wifi.h"
 #include "provisioning.h"
@@ -28,22 +27,6 @@ static const char *TAG = "MESH_CLIENT";
 #if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
 
 static bool s_snapclient_started;
-
-static void build_relay_ssid(const char *mesh_ssid, char *out, size_t out_len)
-{
-    uint8_t mac[6] = {0};
-    if (esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP) != ESP_OK) {
-        memset(mac, 0, sizeof(mac));
-    }
-    /*
-     * Just the broadcast SSID shown to a Wi-Fi scan for identifying this
-     * physical relay; the "_XXXXXX" MAC suffix is 7 bytes, so the mesh_ssid
-     * portion is capped to leave room for it within out_len (33 bytes here).
-     * Mesh-Lite's own parent matching uses the untruncated cfg->mesh_ssid
-     * via esp_mesh_lite_set_softap_info() below, not this display string.
-     */
-    snprintf(out, out_len, "%.25s_%02X%02X%02X", mesh_ssid, mac[3], mac[4], mac[5]);
-}
 
 /*
  * Resolves which Snapserver to connect to: an explicit override from
@@ -65,6 +48,14 @@ static void resolve_server_host(char *out, size_t out_len)
 
     esp_ip_addr_t root_ip;
     if (esp_mesh_lite_get_root_ip(ESP_IPADDR_TYPE_V4, &root_ip) == ESP_OK) {
+        /*
+         * esp_mesh_lite_get_root_ip() (precompiled, no source available)
+         * hands the address back with its bytes in the opposite order from
+         * what esp_ip4addr_ntoa() expects -- confirmed on-device: a root at
+         * 192.168.5.1 came out as "1.5.168.192", the exact byte-reversal.
+         * Swap it back before formatting.
+         */
+        root_ip.u_addr.ip4.addr = __builtin_bswap32(root_ip.u_addr.ip4.addr);
         esp_ip4addr_ntoa(&root_ip.u_addr.ip4, out, (int)out_len);
         return;
     }
@@ -121,16 +112,20 @@ static esp_err_t start_client_mesh(const device_config_t *cfg)
         return err;
     }
 
-    char relay_ssid[33];
-    build_relay_ssid(cfg->mesh_ssid, relay_ssid, sizeof(relay_ssid));
-
     /*
+     * Same SSID/password as the root, not a per-device suffix: Mesh-Lite
+     * identifies a valid parent through a vendor IE embedded in the beacon
+     * (see the "[vendor_ie]" log lines), not by matching the SSID text, so a
+     * shared name across every node doesn't affect mesh joining at all --
+     * it just means every relay behaves like one seamless network name
+     * instead of a growing list of per-device SSIDs to sort through.
+     *
      * Channel 1 here is a placeholder: once this node's STA side associates
      * with a parent, esp_wifi keeps AP and STA on the same radio channel
      * automatically (single-radio concurrent AP+STA), so whatever the
      * parent actually uses wins regardless of what's configured up front.
      */
-    err = provisioning_configure_ap_wifi(relay_ssid, cfg->mesh_password, 1);
+    err = provisioning_configure_ap_wifi(cfg->mesh_ssid, cfg->mesh_password, 1);
     if (err != ESP_OK) {
         return err;
     }
@@ -181,8 +176,7 @@ static esp_err_t start_client_mesh(const device_config_t *cfg)
     esp_mesh_lite_connect();
     esp_mesh_lite_start();
 
-    ESP_LOGI(TAG, "Mesh client started: relay SSID=%s, mesh identity=%s",
-             relay_ssid, cfg->mesh_ssid);
+    ESP_LOGI(TAG, "Mesh client started: relay SSID=%s (shared with root)", cfg->mesh_ssid);
 
     return provisioning_arm_grace_window(IP_EVENT, IP_EVENT_STA_GOT_IP);
 }
