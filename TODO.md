@@ -79,3 +79,68 @@ Bugs sind umgesetzt:
   den aktuellen Funktionsumfang, aber falls OTA-Updates oder
   Crash-Diagnose per Coredump später gewünscht sind, fehlt dafür die
   Partitionierung.
+
+- **Root-Failover-Risiko im Client-Modus (aus Analysegespräch 2026-09-17,
+  zurückgestellt):** `esp_mesh_lite_set_disallowed_level(1)` in
+  `mesh_client.c` schließt den Client beim regulären Beitritt sicher von
+  der Root-Rolle aus (API-Vertrag, keine Timeout-basierte Übernahme). Die
+  Mesh-Lite-Doku beschreibt aber einen separaten Selbstheilungspfad bei
+  Root-Ausfall ("Root Node Failure"), bei dem ein Kind-Knoten nach
+  mehreren fehlgeschlagenen Reconnect-Versuchen selbst Root werden kann —
+  dort beschrieben für den Router-verbundenen Modus ("connect directly to
+  the router"), was auf unser No-Router-Setup (Client hat keine
+  Router-Config) vermutlich nicht direkt zutrifft. `esp_mesh_lite_core`
+  liegt nur als vorkompilierte `.a` vor (`lib/libesp_mesh_lite_esp32s3.a`),
+  daher nicht quellcodeseitig verifizierbar, ob `disallowed_level` auch in
+  diesem Pfad greift. Risiko laut Nutzer als kritisch eingestuft: würde
+  der Client dennoch Root werden, kollidiert er mit dem echten Server-Root
+  und bleibt es dauerhaft, da nichts in unserem eigenen Code den
+  Mesh-Level nach dem Boot überprüft.
+
+  Vorgeschlagene Absicherung (noch nicht umgesetzt, zurückgestellt):
+  periodischer Wächter in `mesh_client.c`, der `esp_mesh_lite_get_level()`
+  zyklisch abfragt und bei Level 1 sofort `esp_wifi_stop()` auslöst
+  (gleiches Muster wie der Provisioning-AP-Timeout) statt den Client
+  stillschweigend als Root weiterlaufen zu lassen.
+
+  Pflicht-Testszenario vor Stufe 2: Server im laufenden Betrieb
+  ausschalten, während ein Client verbunden ist, und das Client-Log
+  beobachten — aktuell ungetestet (kein zweites WLAN-fähiges Testgerät in
+  dieser Sandbox verfügbar).
+
+- Stufe 6 Nachbesserungen (erster echter Zwei-Geräte-Test auf `test/
+  ServerClient`, 2026-09-17): vier Bugs beim tatsächlichen Betrieb
+  gefunden und gefixt: (1) `esp_mesh_lite_get_root_ip()` liefert die IP
+  mit vertauschter Byte-Reihenfolge zurück (`192.168.5.1` kam als
+  `1.5.168.192` an) — Client fand den Server dadurch nie; Fix per
+  `__builtin_bswap32()` in `mesh_client.c`. (2) Jeder Client hatte eine
+  eigene, MAC-suffigierte SSID (`SnapMesh_XXXXXX`), was bei mehreren
+  Clients zu SSID-Wildwuchs führte; Mesh-Lite erkennt Eltern-Knoten aber
+  über eine Vendor-IE-Kennung im Beacon, nicht über den SSID-Text, daher
+  jetzt einheitliche SSID (identisch zum Server) für alle Rollen. (3)
+  Jedes Gerät (Server und alle Clients) meldete denselben mDNS-Namen
+  `snapserver.local`, wodurch DNS/mDNS-Caches beim Wechsel zwischen
+  Geräten auf der falschen Config-Seite landen konnten; jetzt eindeutiger
+  Name pro Rolle+MAC (`snapserver-XXXXXX`/`snapclient-XXXXXX`). (4) Der
+  Server trennt einen Client nach 30s Funkstille von dessen Seite
+  (`CLIENT_RECV_TIMEOUT_US`, gedacht um tote Verbindungen zu erkennen) —
+  unser eigener Snapclient sendet aber (Zeit-Sync ist ja erst Stufe 2)
+  nichts zurück und wurde dadurch zuverlässig alle ~31s getrennt; Fix:
+  `snapclient.c` sendet jetzt alle 2s eine leere `SNAP_MSG_TIME`-Anfrage
+  rein als Herzschlag (Antwort wird ignoriert). Zusätzlich fiel auf, dass
+  der Ringpuffer trotz `buffer_ms=3000` in der Praxis nur 40-120ms Füllstand
+  hielt, weil `audio_sink.c` sofort bei der ersten eintreffenden
+  Netzwerk-Anfrage umschaltete statt erst ein Polster aufzubauen — jede
+  kleine Timing-Schwankung erzeugte dadurch einen hörbaren Underrun; Fix:
+  Umschalten auf Netzwerkquelle erst ab 80% Füllstand
+  (`NETWORK_PREBUFFER_PERCENT`), spätere Einbrüche lösen kein erneutes
+  Prebuffering mehr aus.
+
+  Auf dem Gerät verifiziert: Client verbindet nach den Fixes zuverlässig
+  zum Server, Ringpuffer füllt sich wie erwartet, `output_rms`-Log
+  bestätigt echtes Signal am Ausgang. Nicht behoben: deutliches Knistern
+  im Audio, das laut Nutzer auch am **Server** selbst auftritt (dort ohne
+  jede Code-/HW-Änderung an diesem Pfad) und nur bei aktivem Stream zu
+  hören ist, nicht bei Stille — daher software-, nicht hardwarebedingt.
+  Klingt nach ca. einer Minute Laufzeit spürbar ab. Ursache nicht
+  identifiziert, auf Nutzerwunsch zurückgestellt statt weiter untersucht.

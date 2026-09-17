@@ -6,9 +6,16 @@
  * See snapclient.h for provenance. Our own server never sends the ready
  * flag conditional on a client Time message (see snapserver.c's
  * client_task(): ready is set right after CodecHeader, before any Time
- * exchange), so this client does not send SNAP_MSG_TIME at all yet --
- * that is Stufe 2's job (drift compensation needs it, plain playback
- * doesn't).
+ * exchange), so this client does not use SNAP_MSG_TIME for drift
+ * compensation yet -- that is Stufe 2's job. It does send an empty Time
+ * request periodically (send_time_heartbeat()) purely as a keepalive: the
+ * server's client_task() closes a connection after
+ * CLIENT_RECV_TIMEOUT_US (30 s, see snapserver.c) of silence *from* the
+ * client, which a real Snapcast client never triggers because its own
+ * periodic Time requests count as inbound traffic. Without this, our
+ * client got disconnected every ~30 s despite the stream being perfectly
+ * healthy (confirmed on-device, 2026-09-17). The reply is intentionally
+ * ignored here.
  */
 #include "snapclient.h"
 
@@ -29,6 +36,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_timer.h"
 #include "opus.h"
 
 static const char *TAG = "SNAPCLIENT";
@@ -75,6 +83,12 @@ typedef struct __attribute__((packed)) {
 #define SNAP_CONNECT_TIMEOUT_MS  1500
 #define SNAP_CONNECT_RETRY_MS     500
 #define SNAP_RECONNECT_DELAY_MS  1000
+
+/*
+ * Well under CLIENT_RECV_TIMEOUT_US (30 s, snapserver.c) so a single lost
+ * heartbeat can't cause a false disconnect.
+ */
+#define SNAP_TIME_HEARTBEAT_INTERVAL_US (2LL * 1000000LL)
 
 static int s_sock = -1;
 static volatile bool s_run = true;
@@ -285,6 +299,33 @@ static int send_hello(int socket_fd)
     return 0;
 }
 
+/*
+ * Keepalive only (see the file header comment): a Time request whose reply
+ * is never read here. sent_sec/sent_usec carry esp_timer uptime, not a real
+ * wall clock -- the server's handle_time() already only adopts a client
+ * timestamp past SNAP_CLOCK_PLAUSIBLE_MIN_SEC, so this can never corrupt
+ * its wall-clock base. Payload is the 8-byte {latency_sec, latency_usec}
+ * the protocol expects, sent as zero since nothing here consumes it.
+ */
+static int send_time_heartbeat(int socket_fd)
+{
+    const int64_t now_us = esp_timer_get_time();
+
+    snap_base_t header = {0};
+    header.type = SNAP_MSG_TIME;
+    header.sent_sec = (int32_t)(now_us / 1000000LL);
+    header.sent_usec = (int32_t)(now_us % 1000000LL);
+    header.size = 8U;
+
+    const int32_t latency[2] = {0, 0};
+
+    if (send_full(socket_fd, &header, sizeof(header)) != 0 ||
+        send_full(socket_fd, latency, sizeof(latency)) != 0) {
+        return -1;
+    }
+    return 0;
+}
+
 static esp_err_t opus_decoder_prepare(void)
 {
     if (s_opus_decoder != NULL && s_opus_pcm != NULL) {
@@ -484,8 +525,25 @@ static void connection_loop(int socket_fd)
     static uint8_t message_buffer[SNAP_MESSAGE_BUFFER_SIZE];
 
     audio_sink_set_network_active(true);
+    int64_t last_heartbeat_us = esp_timer_get_time();
 
     while (s_run) {
+        /*
+         * Checked once per loop iteration rather than on its own timer:
+         * WireChunks arrive roughly every 20 ms under normal operation, so
+         * read_full() below returns often enough that this fires close to
+         * on schedule without needing select()/non-blocking I/O. A truly
+         * stalled connection (no data at all) never gets to send a
+         * heartbeat either, but that case is already fatal on its own.
+         */
+        const int64_t now_us = esp_timer_get_time();
+        if (now_us - last_heartbeat_us >= SNAP_TIME_HEARTBEAT_INTERVAL_US) {
+            if (send_time_heartbeat(socket_fd) != 0) {
+                break;
+            }
+            last_heartbeat_us = now_us;
+        }
+
         snap_base_t header;
         if (read_full(socket_fd, &header, sizeof(header)) != 0) {
             break;

@@ -18,7 +18,7 @@
 
 static const char *TAG = "AUDIO_SINK";
 
-#define PLAYER_TASK_STACK   4096
+#define PLAYER_TASK_STACK   8192
 #define PLAYER_TASK_PRIORITY   5
 #define PLAYER_TASK_CORE       1
 
@@ -32,6 +32,19 @@ static const char *TAG = "AUDIO_SINK";
 #define LOCAL_SIGNAL_ATTACK_FRAMES 2
 
 #define STATS_INTERVAL_US (5LL * 1000000LL)
+
+/*
+ * Percentage of the ring's capacity (== buffer_ms) that must be buffered
+ * before playback switches onto the network source. Without this gate the
+ * ring only ever holds a few tens of ms in practice -- playback starts the
+ * instant any data arrives and drains it about as fast as it fills, so the
+ * large buffer_ms cushion meant to absorb mesh rearrangements/jitter never
+ * actually accumulates, and every minor timing hiccup is an audible
+ * underrun. Once already playing from the network, transient dips below
+ * this level do not re-trigger prebuffering -- only a real drop out of the
+ * network source (disconnect, or local input pre-empting it) does.
+ */
+#define NETWORK_PREBUFFER_PERCENT 80U
 
 typedef struct {
     uint8_t *data;
@@ -51,6 +64,15 @@ static volatile int8_t s_local_threshold_db = -40;
 static volatile int16_t s_delay_trim_ms;
 
 static volatile audio_sink_source_t s_active_source = AUDIO_SINK_SOURCE_NONE;
+/*
+ * True once the ring has reached NETWORK_PREBUFFER_PERCENT during the
+ * current network-active session, i.e. playback is allowed to (keep)
+ * running from the network source without re-buffering first. Reset
+ * whenever the network is no longer active, so a fresh connection
+ * re-buffers from scratch instead of starting on whatever few bytes have
+ * trickled in so far.
+ */
+static bool s_network_ready;
 
 static bool s_local_signal_present;
 static uint32_t s_local_attack_count;
@@ -171,12 +193,41 @@ static void update_local_signal_state(float rms_db)
     }
 }
 
+/*
+ * Network source, gated by NETWORK_PREBUFFER_PERCENT: once s_active_source
+ * is already NETWORK this just keeps it there (no re-buffering on a
+ * transient dip), otherwise it only switches in once the ring has actually
+ * accumulated a real cushion. Falls back to NONE (silence) while waiting or
+ * while the network isn't active at all.
+ */
+static audio_sink_source_t network_source_or_none(void)
+{
+    if (!s_network_active) {
+        s_network_ready = false;
+        return AUDIO_SINK_SOURCE_NONE;
+    }
+    if (s_active_source == AUDIO_SINK_SOURCE_NETWORK) {
+        return AUDIO_SINK_SOURCE_NETWORK;
+    }
+    if (!s_network_ready) {
+        xSemaphoreTake(s_ring.lock, portMAX_DELAY);
+        const size_t fill = s_ring.fill;
+        const size_t capacity = s_ring.capacity;
+        xSemaphoreGive(s_ring.lock);
+        if (fill * 100U < capacity * NETWORK_PREBUFFER_PERCENT) {
+            return AUDIO_SINK_SOURCE_NONE;
+        }
+        s_network_ready = true;
+    }
+    return AUDIO_SINK_SOURCE_NETWORK;
+}
+
 static audio_sink_source_t decide_source(void)
 {
     const uint8_t mode = s_source_mode;
 
     if (mode == SOURCE_MODE_NETWORK_ONLY) {
-        return s_network_active ? AUDIO_SINK_SOURCE_NETWORK : AUDIO_SINK_SOURCE_NONE;
+        return network_source_or_none();
     }
     if (mode == SOURCE_MODE_LOCAL_ONLY) {
         return AUDIO_SINK_SOURCE_LOCAL_INPUT;
@@ -188,13 +239,17 @@ static audio_sink_source_t decide_source(void)
     if (s_local_signal_present) {
         return AUDIO_SINK_SOURCE_LOCAL_INPUT;
     }
-    if (s_network_active) {
-        return AUDIO_SINK_SOURCE_NETWORK;
-    }
-    return AUDIO_SINK_SOURCE_NONE;
+    return network_source_or_none();
 }
 
-static void maybe_log_stats(void)
+/*
+ * Temporary diagnostic (2026-09-17): reports the RMS level of the samples
+ * actually handed to audio_i2s_write_mono() every frame, so we can tell from
+ * the log alone whether real signal is reaching the DSP/output stage on the
+ * client -- as opposed to fed/dropped/underrun, which only ever prove bytes
+ * moved through the ring, not that they carried audio.
+ */
+static void maybe_log_stats(float output_rms_db)
 {
     const int64_t now = esp_timer_get_time();
     if (s_last_stats_us == 0) {
@@ -211,13 +266,15 @@ static void maybe_log_stats(void)
     xSemaphoreGive(s_ring.lock);
 
     ESP_LOGI(TAG,
-             "src=%d ring=%u/%u B fed=%llu B dropped=%llu B underrun=%llu samples",
+             "src=%d ring=%u/%u B fed=%llu B dropped=%llu B underrun=%llu samples "
+             "output_rms=%.1f dBFS",
              (int)s_active_source,
              (unsigned)fill,
              (unsigned)capacity,
              (unsigned long long)s_network_bytes_fed,
              (unsigned long long)s_network_bytes_dropped,
-             (unsigned long long)s_network_underrun_samples);
+             (unsigned long long)s_network_underrun_samples,
+             (double)output_rms_db);
 
     s_network_bytes_fed = 0;
     s_network_bytes_dropped = 0;
@@ -245,13 +302,18 @@ static void player_task(void *arg)
         if (desired != s_active_source) {
             ESP_LOGI(TAG, "Switching source %d -> %d", (int)s_active_source, (int)desired);
             /*
-             * Only the network path is ever queued ahead of time (see
-             * audio_sink_feed_network()'s drop-when-inactive rule below), so
-             * flushing here just discards the handful of frames that arrived
-             * in the brief window before this switch took effect -- never a
-             * multi-second backlog.
+             * Only flush when *leaving* the network source: its queued
+             * audio is now stale (there was a gap while something else
+             * played) and must not be played back out of order. Do NOT
+             * flush when *entering* it -- that ring content is exactly the
+             * prebuffer network_source_or_none() just required before
+             * allowing this switch, and discarding it here would
+             * immediately re-empty the ring and undo the whole point of
+             * prebuffering.
              */
-            ring_flush(&s_ring);
+            if (s_active_source == AUDIO_SINK_SOURCE_NETWORK) {
+                ring_flush(&s_ring);
+            }
             s_active_source = desired;
         }
 
@@ -274,7 +336,7 @@ static void player_task(void *arg)
         }
 
         audio_i2s_write_mono(chosen, AUDIO_SINK_FRAME_SAMPLES);
-        maybe_log_stats();
+        maybe_log_stats(rms_dbfs(chosen, AUDIO_SINK_FRAME_SAMPLES));
     }
 }
 
@@ -322,7 +384,16 @@ void audio_sink_set_network_active(bool active)
 
 size_t audio_sink_feed_network(const int16_t *mono_pcm, size_t sample_count)
 {
-    if (!s_started || s_active_source != AUDIO_SINK_SOURCE_NETWORK) {
+    /*
+     * Accepted while playing from the network AND while merely prebuffering
+     * for it (source is NONE, network active, not yet past
+     * NETWORK_PREBUFFER_PERCENT -- see network_source_or_none()): the ring
+     * must be allowed to fill during that wait, or prebuffering could never
+     * complete. Only actually dropped while local input is the active
+     * source, matching the original source-arbitration intent of this
+     * check.
+     */
+    if (!s_started || s_active_source == AUDIO_SINK_SOURCE_LOCAL_INPUT) {
         s_network_bytes_dropped += sample_count * sizeof(int16_t);
         return 0;
     }

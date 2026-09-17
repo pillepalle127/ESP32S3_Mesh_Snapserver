@@ -15,6 +15,7 @@
 #include "device_config.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "mdns.h"
@@ -367,6 +368,19 @@ static esp_err_t api_factory_reset_post_handler(httpd_req_t *req)
     return send_result;
 }
 
+/*
+ * Same MAC-suffix convention as the mesh/relay SSIDs (e.g. "SnapMesh_
+ * E314E5"), so the value shown here (and used for the mDNS hostname below)
+ * lets you match a browser tab back to a specific physical board instead of
+ * every device showing/advertising the identical name.
+ */
+static void get_device_id_suffix(char *out, size_t out_len)
+{
+    uint8_t mac[6] = {0};
+    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    snprintf(out, out_len, "%02X%02X%02X", mac[3], mac[4], mac[5]);
+}
+
 static esp_err_t api_status_get_handler(httpd_req_t *req)
 {
     static const char *const reason_names[] = {
@@ -380,10 +394,14 @@ static esp_err_t api_status_get_handler(httpd_req_t *req)
     device_config_get(&cfg);
     const provisioning_reason_t reason = provisioning_get_active_reason();
 
+    char device_id[7];
+    get_device_id_suffix(device_id, sizeof(device_id));
+
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "reason", reason_names[reason]);
     cJSON_AddNumberToObject(root, "boot_fail_count", cfg.boot_fail_count);
     cJSON_AddNumberToObject(root, "uptime_s", esp_timer_get_time() / 1000000);
+    cJSON_AddStringToObject(root, "device_id", device_id);
 
     return send_json(req, root);
 }
@@ -444,10 +462,28 @@ esp_err_t webconfig_start(void)
         ESP_LOGW(TAG, "mdns_init failed: %s", esp_err_to_name(result));
         return ESP_OK;
     }
-    mdns_hostname_set("snapserver");
-    mdns_instance_name_set("ESP32-S3 Snapserver");
+
+    /*
+     * Every node used to advertise the identical "snapserver.local", which
+     * is indistinguishable to mDNS/DNS caches once you've visited more than
+     * one device -- a stale resolution silently keeps pointing at whichever
+     * one you looked at first. A unique per-role, per-MAC hostname avoids
+     * that collision entirely.
+     */
+    device_config_t cfg;
+    device_config_get(&cfg);
+    char device_id[7];
+    get_device_id_suffix(device_id, sizeof(device_id));
+
+    char hostname[24];
+    snprintf(hostname, sizeof(hostname), "%s-%s",
+             (cfg.role == DEVICE_ROLE_CLIENT) ? "snapclient" : "snapserver",
+             device_id);
+
+    mdns_hostname_set(hostname);
+    mdns_instance_name_set((cfg.role == DEVICE_ROLE_CLIENT) ? "ESP32-S3 Snapclient" : "ESP32-S3 Snapserver");
     mdns_service_add(NULL, "_http", "_tcp", WEBCONFIG_PORT, NULL, 0);
-    ESP_LOGI(TAG, "mDNS ready: http://snapserver.local/");
+    ESP_LOGI(TAG, "mDNS ready: http://%s.local/", hostname);
 
     return ESP_OK;
 }

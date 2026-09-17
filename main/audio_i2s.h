@@ -15,10 +15,15 @@
  * RX und TX teilen BCLK und LRCLK. Die Datenleitungen sind getrennt.
  * MCLK wird nicht verwendet.
  */
+/*#define AUDIO_I2S_GPIO_BCLK       17 //4
+#define AUDIO_I2S_GPIO_LRCLK      8 //6
+#define AUDIO_I2S_GPIO_DIN        5   // TinySine SD OUT -> ESP32-S3 
+#define AUDIO_I2S_GPIO_DOUT       18 //7   // ESP32-S3 -> PCM5102A DIN */
+
 #define AUDIO_I2S_GPIO_BCLK       4
 #define AUDIO_I2S_GPIO_LRCLK      6
-#define AUDIO_I2S_GPIO_DIN        5   /* TinySine SD OUT -> ESP32-S3 */
-#define AUDIO_I2S_GPIO_DOUT       7   /* ESP32-S3 -> PCM5102A DIN */
+#define AUDIO_I2S_GPIO_DIN        5   // TinySine SD OUT -> ESP32-S3 
+#define AUDIO_I2S_GPIO_DOUT       7   // ESP32-S3 -> PCM5102A DIN */
 
 #define AUDIO_I2S_SAMPLE_RATE 48000
 #define AUDIO_I2S_CHANNELS        2
