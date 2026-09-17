@@ -80,6 +80,13 @@ static void seed_defaults(device_config_t *cfg)
     cfg->opus_complexity = CONFIG_SNAPSERVER_OPUS_COMPLEXITY;
 
     cfg->boot_fail_count = 0;
+
+    cfg->role = DEVICE_ROLE_SERVER;
+    cfg->buffer_ms = 3000;
+    cfg->delay_trim_ms = 0;
+    cfg->source_mode = SOURCE_MODE_AUTO;
+    cfg->local_input_threshold_db = -40;
+    cfg->server_host[0] = '\0';
 }
 
 static bool config_is_valid(const device_config_t *cfg)
@@ -117,6 +124,30 @@ static bool config_is_valid(const device_config_t *cfg)
         return false;
     }
     if (cfg->opus_complexity > 10U) {
+        return false;
+    }
+    if (cfg->role != DEVICE_ROLE_SERVER && cfg->role != DEVICE_ROLE_CLIENT) {
+        return false;
+    }
+    if (cfg->source_mode != SOURCE_MODE_AUTO &&
+        cfg->source_mode != SOURCE_MODE_NETWORK_ONLY &&
+        cfg->source_mode != SOURCE_MODE_LOCAL_ONLY) {
+        return false;
+    }
+    /*
+     * buffer_ms is the end-to-end Snapcast latency (announced to clients as
+     * bufferMs, see snapserver.c) as well as the client's own playback
+     * ring-buffer size. Lower bound keeps the ring buffer from being too
+     * small to absorb normal jitter; upper bound is a sanity cap, not a
+     * hardware limit.
+     */
+    if (cfg->buffer_ms < 200U || cfg->buffer_ms > 10000U) {
+        return false;
+    }
+    if (cfg->delay_trim_ms < -2000 || cfg->delay_trim_ms > 2000) {
+        return false;
+    }
+    if (cfg->local_input_threshold_db < -80 || cfg->local_input_threshold_db > 0) {
         return false;
     }
     return true;

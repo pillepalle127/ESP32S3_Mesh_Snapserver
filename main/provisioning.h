@@ -11,9 +11,11 @@
 #pragma once
 
 #include <stddef.h>
+#include <stdint.h>
 
 #include "device_config.h"
 #include "esp_err.h"
+#include "esp_event_base.h"
 #include "esp_netif.h"
 
 #ifdef __cplusplus
@@ -63,11 +65,44 @@ void provisioning_build_ssid(char *out, size_t out_len);
  * reachable at the same address. */
 esp_err_t provisioning_pin_ap_ip(esp_netif_t *ap_netif);
 
+/* Convenience wrapper around provisioning_pin_ap_ip() that looks up this
+ * device's own "WIFI_AP_DEF" netif itself. Used by both mesh_root.c (the
+ * server's mesh AP) and mesh_client.c (the provisioning fallback only --
+ * the client's mesh-relay AP is left unpinned, its address is assigned by
+ * ESP-Mesh-Lite/NAPT per level). */
+esp_err_t provisioning_pin_own_ap_ip(void);
+
+/* Clears any STA Wi-Fi credentials from the driver. Both roles start from a
+ * clean STA config before setting up their own AP: the server never uses
+ * STA at all, and the client's STA side is driven entirely by ESP-Mesh-Lite's
+ * own parent search rather than a fixed SSID/password. */
+esp_err_t provisioning_clear_sta_wifi(void);
+
+/* Configures this device's own SoftAP (SSID/password/channel). password ==
+ * NULL or shorter than 8 characters falls back to WIFI_AUTH_OPEN. Shared by
+ * the provisioning AP, the server's mesh-root AP and the client's mesh-relay
+ * AP -- all three are just a physical SoftAP with different SSID/password. */
+esp_err_t provisioning_configure_ap_wifi(const char *ssid, const char *password, uint8_t channel);
+
+/* Full provisioning-AP fallback flow: builds the SSID, brings up netifs,
+ * pins the AP IP, clears STA config, configures the open AP and arms the
+ * 3-minute timeout. Shared by mesh_root.c and mesh_client.c -- both call
+ * this identically whenever provisioning_decide() returns a reason other
+ * than PROVISIONING_REASON_NONE. */
+esp_err_t provisioning_start_fallback_ap(provisioning_reason_t reason);
+
 /* Arms the post-boot join grace window. Call only for a PROVISIONING_REASON_
  * NONE boot, once the mesh AP's Wi-Fi driver is up. On expiry, resets or
  * increments the persisted boot-fail counter depending on whether any
- * station joined in the meantime. */
-esp_err_t provisioning_arm_grace_window(void);
+ * station joined in the meantime.
+ *
+ * success_event_base/success_event_id name the event that counts as "a
+ * station successfully joined this boot": the server passes
+ * (WIFI_EVENT, WIFI_EVENT_AP_STACONNECTED) since it waits for a child to
+ * join its own AP, the client passes (IP_EVENT, IP_EVENT_STA_GOT_IP) since
+ * it waits for itself to join a parent. */
+esp_err_t provisioning_arm_grace_window(esp_event_base_t success_event_base,
+                                        int32_t success_event_id);
 
 /* Arms the provisioning AP's unconditional 3-minute timeout. Call once the
  * provisioning AP is up, for any reason. On expiry, stops the Wi-Fi radio

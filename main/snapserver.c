@@ -26,6 +26,7 @@
 #include <arpa/inet.h>
 
 #include "cJSON.h"
+#include "device_config.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -323,10 +324,15 @@ static int send_server_settings(client_t *client, uint16_t refers_to)
     latency = client->latency_ms;
     portEXIT_CRITICAL(&s_clients_lock);
 
+    device_config_t cfg;
+    device_config_get(&cfg);
+    const uint16_t buffer_ms = cfg.buffer_ms;
+
     const int json_len = snprintf(
         json,
         sizeof(json),
-        "{\"bufferMs\":1000,\"latency\":%ld,\"muted\":%s,\"volume\":%ld}",
+        "{\"bufferMs\":%u,\"latency\":%ld,\"muted\":%s,\"volume\":%ld}",
+        (unsigned)buffer_ms,
         (long)latency,
         muted ? "true" : "false",
         (long)volume);
@@ -342,7 +348,8 @@ static int send_server_settings(client_t *client, uint16_t refers_to)
     memcpy(payload + sizeof(len), json, len);
 
     ESP_LOGI(TAG,
-             "Sending ServerSettings: bufferMs=1000 latency=%ld muted=%s volume=%ld",
+             "Sending ServerSettings: bufferMs=%u latency=%ld muted=%s volume=%ld",
+             (unsigned)buffer_ms,
              (long)latency,
              muted ? "true" : "false",
              (long)volume);

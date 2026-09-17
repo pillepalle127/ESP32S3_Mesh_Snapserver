@@ -11,7 +11,9 @@
 
 #include "audio_i2s.h"
 #include "audio_opus.h"
+#include "audio_sink.h"
 #include "device_config.h"
+#include "mesh_client.h"
 #include "mesh_root.h"
 #include "snapserver.h"
 #include "webconfig.h"
@@ -85,11 +87,16 @@ void app_main(void)
     ESP_ERROR_CHECK(initialize_network_stack());
     ESP_ERROR_CHECK(device_config_load());
 
-    esp_err_t result = mesh_root_start();
+    device_config_t cfg;
+    device_config_get(&cfg);
+    const bool client_role = (cfg.role == DEVICE_ROLE_CLIENT);
+
+    esp_err_t result = client_role ? mesh_client_start() : mesh_root_start();
     if (result != ESP_OK) {
         ESP_LOGE(
             TAG,
-            "Mesh root initialization failed: %s",
+            "Mesh %s initialization failed: %s",
+            client_role ? "client" : "root",
             esp_err_to_name(result));
         ESP_ERROR_CHECK(result);
     }
@@ -103,23 +110,15 @@ void app_main(void)
      */
     ESP_ERROR_CHECK(webconfig_start());
 
-    result = audio_opus_start();
-    if (result != ESP_OK) {
-        ESP_LOGE(
-            TAG,
-            "Opus audio initialization failed: %s",
-            esp_err_to_name(result));
-        ESP_ERROR_CHECK(result);
-    }
-
     /*
-     * audio_opus_start()/audio_i2s_start() just seeded compile-time Kconfig
-     * defaults; apply whatever was actually loaded from NVS (or seeded as
-     * first-boot defaults, which are the same values anyway) on top before
-     * any audio flows.
+     * Both roles need the physical I2S bus (the client plays out over the
+     * same DSP/output stage the server uses, and also captures its own
+     * local-input substitute source from it). audio_i2s_start() is
+     * idempotent, so the server's subsequent audio_opus_start() -- which
+     * also calls it -- is a harmless no-op the second time.
      */
-    device_config_t cfg;
-    device_config_get(&cfg);
+    ESP_ERROR_CHECK(audio_i2s_start());
+
     const audio_dsp_params_t dsp_params = {
         .bypass = cfg.dsp_bypass,
         .crossover_hz = (float)cfg.crossover_hz,
@@ -129,6 +128,28 @@ void app_main(void)
         .wideband_channel = cfg.wideband_channel,
     };
     ESP_ERROR_CHECK(audio_i2s_set_dsp_params(&dsp_params));
+
+    if (client_role) {
+        ESP_ERROR_CHECK(audio_sink_start(cfg.buffer_ms));
+        audio_sink_set_source_mode(cfg.source_mode);
+        audio_sink_set_local_input_threshold_db(cfg.local_input_threshold_db);
+        audio_sink_set_delay_trim_ms(cfg.delay_trim_ms);
+
+        ESP_LOGI(
+            TAG,
+            "ESP32-S3 Snapclient started: mesh relay, local I2S input as "
+            "alternate source, Snapcast mono Opus playback");
+        return;
+    }
+
+    result = audio_opus_start();
+    if (result != ESP_OK) {
+        ESP_LOGE(
+            TAG,
+            "Opus audio initialization failed: %s",
+            esp_err_to_name(result));
+        ESP_ERROR_CHECK(result);
+    }
     audio_opus_set_bitrate((int32_t)cfg.opus_bitrate);
     audio_opus_set_complexity((int32_t)cfg.opus_complexity);
 

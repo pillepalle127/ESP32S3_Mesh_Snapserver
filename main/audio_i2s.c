@@ -335,15 +335,8 @@ fail:
     return result;
 }
 
-esp_err_t audio_i2s_read_frame(int16_t *mono,
-                               size_t mono_samples,
-                               int64_t *timestamp_us)
+static esp_err_t capture_mono_from_rx(int16_t *mono, size_t mono_samples)
 {
-    if (!s_started || mono == NULL || timestamp_us == NULL ||
-        mono_samples == 0U || mono_samples > MAX_FRAME_SAMPLES) {
-        return ESP_ERR_INVALID_ARG;
-    }
-
     const size_t stereo_bytes =
         mono_samples * AUDIO_I2S_CHANNELS * sizeof(int16_t);
     size_t bytes_read = 0;
@@ -367,45 +360,17 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
         return ESP_FAIL;
     }
 
-    const int64_t frame_duration_us =
-        ((int64_t)mono_samples * 1000000LL) / AUDIO_I2S_SAMPLE_RATE;
-
-    /*
-     * Anchor the timeline on the first frame. The data returned now was
-     * captured one frame duration ago at the earliest, so shift the anchor
-     * back by exactly that amount.
-     */
-    if (s_stream_anchor_us == 0) {
-        s_stream_anchor_us = esp_timer_get_time() - frame_duration_us;
-        s_samples_captured = 0;
+    for (size_t i = 0; i < mono_samples; ++i) {
+        const int32_t left = s_input_stereo[2U * i];
+        const int32_t right = s_input_stereo[2U * i + 1U];
+        mono[i] = (int16_t)((left + right) / 2);
     }
 
-    int64_t frame_timestamp_us =
-        s_stream_anchor_us +
-        (s_samples_captured * 1000000LL) / AUDIO_I2S_SAMPLE_RATE;
+    return ESP_OK;
+}
 
-    /*
-     * Guard against a lost sync, e.g. after a DMA overflow: if the counted
-     * timeline runs away from the hardware timer, re-anchor once instead of
-     * accumulating the error forever.
-     */
-    const int64_t expected_now_us = frame_timestamp_us + frame_duration_us;
-    const int64_t drift_us = esp_timer_get_time() - expected_now_us;
-
-    if (drift_us > TIMESTAMP_RESYNC_THRESHOLD_US ||
-        drift_us < -TIMESTAMP_RESYNC_THRESHOLD_US) {
-        ESP_LOGW(TAG,
-                 "Capture timeline drifted %lld us, re-anchoring",
-                 (long long)drift_us);
-
-        s_stream_anchor_us = esp_timer_get_time() - frame_duration_us;
-        s_samples_captured = 0;
-        frame_timestamp_us = s_stream_anchor_us;
-    }
-
-    *timestamp_us = frame_timestamp_us;
-    s_samples_captured += (int64_t)mono_samples;
-
+static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
+{
     /*
      * Snapshot the whole DSP state once per frame (not per sample) so the
      * per-sample loop below runs lock-free. See the s_lowpass/s_highpass
@@ -427,11 +392,7 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
     portEXIT_CRITICAL(&s_dsp_lock);
 
     for (size_t i = 0; i < mono_samples; ++i) {
-        const int32_t left = s_input_stereo[2U * i];
-        const int32_t right = s_input_stereo[2U * i + 1U];
-        const int16_t mono_sample = (int16_t)((left + right) / 2);
-
-        mono[i] = mono_sample;
+        const int16_t mono_sample = mono[i];
 
         float subwoofer;
         float wideband;
@@ -473,8 +434,10 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
     }
     portEXIT_CRITICAL(&s_dsp_lock);
 
+    const size_t stereo_bytes =
+        mono_samples * OUTPUT_CHANNELS * sizeof(int16_t);
     size_t bytes_written = 0;
-    result = i2s_channel_write(
+    esp_err_t result = i2s_channel_write(
         s_tx_channel,
         s_output_stereo,
         stereo_bytes,
@@ -494,4 +457,80 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
     }
 
     return ESP_OK;
+}
+
+esp_err_t audio_i2s_capture_mono(int16_t *mono, size_t mono_samples)
+{
+    if (!s_started || mono == NULL ||
+        mono_samples == 0U || mono_samples > MAX_FRAME_SAMPLES) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return capture_mono_from_rx(mono, mono_samples);
+}
+
+esp_err_t audio_i2s_write_mono(const int16_t *mono, size_t mono_samples)
+{
+    if (!s_started || mono == NULL ||
+        mono_samples == 0U || mono_samples > MAX_FRAME_SAMPLES) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    return apply_dsp_and_output(mono, mono_samples);
+}
+
+esp_err_t audio_i2s_read_frame(int16_t *mono,
+                               size_t mono_samples,
+                               int64_t *timestamp_us)
+{
+    if (!s_started || mono == NULL || timestamp_us == NULL ||
+        mono_samples == 0U || mono_samples > MAX_FRAME_SAMPLES) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t result = capture_mono_from_rx(mono, mono_samples);
+    if (result != ESP_OK) {
+        return result;
+    }
+
+    const int64_t frame_duration_us =
+        ((int64_t)mono_samples * 1000000LL) / AUDIO_I2S_SAMPLE_RATE;
+
+    /*
+     * Anchor the timeline on the first frame. The data returned now was
+     * captured one frame duration ago at the earliest, so shift the anchor
+     * back by exactly that amount.
+     */
+    if (s_stream_anchor_us == 0) {
+        s_stream_anchor_us = esp_timer_get_time() - frame_duration_us;
+        s_samples_captured = 0;
+    }
+
+    int64_t frame_timestamp_us =
+        s_stream_anchor_us +
+        (s_samples_captured * 1000000LL) / AUDIO_I2S_SAMPLE_RATE;
+
+    /*
+     * Guard against a lost sync, e.g. after a DMA overflow: if the counted
+     * timeline runs away from the hardware timer, re-anchor once instead of
+     * accumulating the error forever.
+     */
+    const int64_t expected_now_us = frame_timestamp_us + frame_duration_us;
+    const int64_t drift_us = esp_timer_get_time() - expected_now_us;
+
+    if (drift_us > TIMESTAMP_RESYNC_THRESHOLD_US ||
+        drift_us < -TIMESTAMP_RESYNC_THRESHOLD_US) {
+        ESP_LOGW(TAG,
+                 "Capture timeline drifted %lld us, re-anchoring",
+                 (long long)drift_us);
+
+        s_stream_anchor_us = esp_timer_get_time() - frame_duration_us;
+        s_samples_captured = 0;
+        frame_timestamp_us = s_stream_anchor_us;
+    }
+
+    *timestamp_us = frame_timestamp_us;
+    s_samples_captured += (int64_t)mono_samples;
+
+    return apply_dsp_and_output(mono, mono_samples);
 }

@@ -10,6 +10,7 @@
 
 #include "audio_i2s.h"
 #include "audio_opus.h"
+#include "audio_sink.h"
 #include "cJSON.h"
 #include "device_config.h"
 #include "esp_http_server.h"
@@ -188,6 +189,13 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "opus_bitrate", cfg.opus_bitrate);
     cJSON_AddNumberToObject(root, "opus_complexity", cfg.opus_complexity);
 
+    cJSON_AddNumberToObject(root, "role", cfg.role);
+    cJSON_AddNumberToObject(root, "buffer_ms", cfg.buffer_ms);
+    cJSON_AddNumberToObject(root, "delay_trim_ms", cfg.delay_trim_ms);
+    cJSON_AddNumberToObject(root, "source_mode", cfg.source_mode);
+    cJSON_AddNumberToObject(root, "local_input_threshold_db", cfg.local_input_threshold_db);
+    cJSON_AddStringToObject(root, "server_host", cfg.server_host);
+
     /*
      * Only echo the real password back while the password-protected mesh AP
      * is the active network: anyone reaching this over the open, unprotected
@@ -215,13 +223,20 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
     return send_json(req, root);
 }
 
-static bool mesh_settings_changed(const device_config_t *a, const device_config_t *b)
+/*
+ * Settings that only take effect after a reboot: the mesh identity (root
+ * SoftAP config and what the client looks for in a parent) and the role
+ * itself (server vs. client starts a completely different set of tasks in
+ * app_main.c).
+ */
+static bool settings_changed_needing_reboot(const device_config_t *a, const device_config_t *b)
 {
     return a->mesh_enable != b->mesh_enable ||
            strcmp(a->mesh_ssid, b->mesh_ssid) != 0 ||
            strcmp(a->mesh_password, b->mesh_password) != 0 ||
            a->mesh_channel != b->mesh_channel ||
-           a->mesh_max_level != b->mesh_max_level;
+           a->mesh_max_level != b->mesh_max_level ||
+           a->role != b->role;
 }
 
 static void apply_live_params(const device_config_t *cfg)
@@ -239,6 +254,15 @@ static void apply_live_params(const device_config_t *cfg)
     }
     audio_opus_set_bitrate((int32_t)cfg->opus_bitrate);
     audio_opus_set_complexity((int32_t)cfg->opus_complexity);
+
+    /*
+     * No-ops unless the client role's audio_sink is actually running (it
+     * guards every setter on its own s_started flag), so it's safe to call
+     * these unconditionally regardless of which role is currently active.
+     */
+    audio_sink_set_source_mode(cfg->source_mode);
+    audio_sink_set_local_input_threshold_db(cfg->local_input_threshold_db);
+    audio_sink_set_delay_trim_ms(cfg->delay_trim_ms);
 }
 
 static esp_err_t api_config_post_handler(httpd_req_t *req)
@@ -276,6 +300,18 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
     if (parse_number_field(root, "opus_bitrate", &num)) next.opus_bitrate = (uint32_t)num;
     if (parse_number_field(root, "opus_complexity", &num)) next.opus_complexity = (uint8_t)num;
 
+    if (parse_number_field(root, "role", &num)) next.role = (uint8_t)num;
+    if (parse_number_field(root, "buffer_ms", &num)) next.buffer_ms = (uint16_t)num;
+    if (parse_number_field(root, "delay_trim_ms", &num)) next.delay_trim_ms = (int16_t)num;
+    if (parse_number_field(root, "source_mode", &num)) next.source_mode = (uint8_t)num;
+    if (parse_number_field(root, "local_input_threshold_db", &num)) {
+        next.local_input_threshold_db = (int8_t)num;
+    }
+    /* server_host uses the password-style always-overwrite parser: an empty
+     * value is meaningful here too (auto-discover via Mesh-Lite), same as
+     * an empty mesh_password means "open network". */
+    parse_password_field(root, "server_host", next.server_host, sizeof(next.server_host));
+
     cJSON_Delete(root);
 
     if (device_config_save(&next) != ESP_OK) {
@@ -295,7 +331,7 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
      * provisioning boot decision is the only way out of provisioning mode
      * short of a power cycle.
      */
-    const bool needs_reboot = mesh_settings_changed(&old_cfg, &saved) ||
+    const bool needs_reboot = settings_changed_needing_reboot(&old_cfg, &saved) ||
         provisioning_get_active_reason() != PROVISIONING_REASON_NONE;
 
     cJSON *resp = cJSON_CreateObject();
