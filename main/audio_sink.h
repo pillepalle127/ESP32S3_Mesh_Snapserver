@@ -45,11 +45,27 @@ esp_err_t audio_sink_start(uint16_t buffer_ms);
 void audio_sink_set_network_active(bool active);
 
 /*
- * Feeds one frame of decoded mono network PCM. Dropped (and not queued) if
- * the network path isn't the currently active source -- see the header
- * comment above. Returns the number of samples actually accepted.
+ * Feeds one frame of decoded mono network PCM. chunk_ts_us is the
+ * server-clock timestamp of its first sample (from the WireChunk header)
+ * and anchors the playback scheduler; a timestamp that doesn't continue
+ * the buffered stream re-anchors it. Dropped (and not queued) while the
+ * local input is the active source -- see the header comment above.
+ * Returns the number of samples actually accepted.
  */
-size_t audio_sink_feed_network(const int16_t *mono_pcm, size_t sample_count);
+size_t audio_sink_feed_network(const int16_t *mono_pcm,
+                               size_t sample_count,
+                               int64_t chunk_ts_us);
+
+/*
+ * Clock synchronisation result from snapclient.c: offset_us is
+ * server_clock - local_esp_timer_clock. While valid is false the scheduler
+ * stays disengaged and playback just follows the ring buffer.
+ */
+void audio_sink_set_server_time_offset(int64_t offset_us, bool valid);
+
+/* bufferMs/latency from the server's ServerSettings message. Together with
+ * delay_trim_ms they define when a chunk is due on the local clock. */
+void audio_sink_set_stream_timing(uint32_t buffer_ms, int32_t latency_ms);
 
 /* SOURCE_MODE_AUTO / _NETWORK_ONLY / _LOCAL_ONLY from device_config.h.
  * Safe to call before audio_sink_start(); the value just isn't used yet. */
@@ -59,9 +75,9 @@ void audio_sink_set_source_mode(uint8_t mode);
  * for SOURCE_MODE_AUTO. Safe to call before audio_sink_start(). */
 void audio_sink_set_local_input_threshold_db(int8_t threshold_db);
 
-/* Device-local playback delay trim in milliseconds, positive or negative.
- * Recorded here for the Stufe-2 playback scheduler to apply; has no
- * observable effect yet on its own. Safe to call before audio_sink_start(). */
+/* Device-local playback delay trim in milliseconds, positive or negative,
+ * applied on top of bufferMs/latency by the playback scheduler. Safe to
+ * call before audio_sink_start(). */
 void audio_sink_set_delay_trim_ms(int16_t delay_trim_ms);
 
 /* Currently active output source (diagnostics/status API). */

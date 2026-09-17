@@ -142,6 +142,20 @@ void app_main(void)
         return;
     }
 
+    /*
+     * Hold this device's own speaker back by the same amount every client
+     * delays the stream, otherwise the server -- which hears a frame right
+     * after capturing it -- runs a full bufferMs ahead of them in the same
+     * room. The clients' scheduler uses chunk_ts + bufferMs - latency +
+     * delay_trim_ms; latency is per-client and always 0 today, so the same
+     * rule here is buffer_ms + delay_trim_ms. The buffer is sized for the
+     * full delay_trim_ms range so the trim stays adjustable while playing.
+     */
+    const int32_t local_delay_ms = (int32_t)cfg.buffer_ms + cfg.delay_trim_ms;
+    ESP_ERROR_CHECK(audio_i2s_set_output_delay(
+        (uint32_t)(local_delay_ms > 0 ? local_delay_ms : 0),
+        (uint32_t)cfg.buffer_ms + DEVICE_CONFIG_DELAY_TRIM_MAX_MS));
+
     result = audio_opus_start();
     if (result != ESP_OK) {
         ESP_LOGE(

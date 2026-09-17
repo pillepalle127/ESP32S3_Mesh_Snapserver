@@ -80,6 +80,51 @@ Bugs sind umgesetzt:
   Crash-Diagnose per Coredump später gewünscht sind, fehlt dafür die
   Partitionierung.
 
+- **Lautstärke der Quelle wirkt auf alle Clients gemeinsam (gemeldet
+  2026-09-17):** Wird am A2DP-Gerät, das den I2S-Eingang des Servers
+  speist, die Lautstärke verändert, ändert sich der Pegel für sämtliche
+  Clients gleichzeitig. Das ist derzeit systembedingt und kein Fehler im
+  engeren Sinn: Die Regelung sitzt **vor** der Aufnahme, der Server
+  encodiert also bereits das abgesenkte Signal, und jeder Client bekommt
+  es so. Zwei Konsequenzen daraus, die zusammen gehören:
+  1. Das Snapcast-Protokoll hat eine Lautstärke **pro Client**. Der Server
+     verwaltet sie bereits (`client->volume_percent`, über die JSON-RPC in
+     `snapcontrol.c` setzbar) und annonciert sie in den ServerSettings.
+     Unser eigener Client wertet das `volume`-Feld bisher **nicht** aus —
+     `handle_server_settings()` liest nur `bufferMs` und `latency`. Das
+     wäre umzusetzen, dann ist jeder Client einzeln regelbar.
+  2. Damit das etwas nützt, muss die Quelle auf konstantem Pegel bleiben
+     (A2DP-Lautstärke voll aufdrehen und nicht mehr anfassen), sonst
+     multipliziert sich beides. Alternativ müsste der Pegel der Quelle
+     zusätzlich zurückgerechnet werden, was ohne Rückkanal vom
+     A2DP-Empfänger nicht sauber geht.
+  Zusätzlich fehlt eine Bedienoberfläche dafür: Die Web-Config kennt kein
+  Lautstärkefeld, und die JSON-RPC ist nur mit externem Werkzeug
+  erreichbar.
+
+- **Clients im laufenden Mesh konfigurieren (gemeldet 2026-09-17):** Aktuell
+  ist unklar dokumentiert, wie man an die Config-Seite eines Clients kommt,
+  der bereits im Mesh hängt. Beim Durchsehen der Logs zeigt sich, dass der
+  Fall einfacher liegt als früher in diesem Projekt angenommen, aber nur
+  für die erste Ebene:
+  - Ein Client, der direkt am Root hängt, bekommt seine STA-Adresse aus dem
+    DHCP des Roots und liegt damit im **selben** Subnetz wie ein Handy, das
+    sich mit dem Root-AP verbindet (im Log: Root-AP `192.168.5.1`, Client
+    `192.168.5.2`). Dazwischen liegt kein NAT — `http://192.168.5.2/`
+    sollte also bereits heute funktionieren. Das ist ungetestet und wäre
+    als Erstes zu verifizieren, weil es ohne jede Codeänderung auskäme.
+  - Ab Ebene 3 greift die NAT-Schachtelung von `esp_bridge` wieder: ein
+    Enkelknoten liegt hinter dem NAT seines Elternknotens und ist von oben
+    nicht adressierbar.
+  - Es fehlt in jedem Fall die Auffindbarkeit — welche IP gehört zu welchem
+    Gerät. Der Server kennt das bereits (`client[i]`-Statuszeile mit IP und
+    Hostname aus dem Hello) und könnte es auf seiner Config-Seite als Liste
+    mit Links anzeigen. Das wäre der kleinste sinnvolle Schritt.
+  - Für tiefere Ebenen bliebe ein Proxy über den Server (Weiterleitung an
+    einen ausgewählten Knoten über die Mesh-Lite-interne Verbindung) — das
+    ist deutlich aufwendiger und sollte erst geplant werden, wenn die
+    Topologie wirklich mehr als zwei Ebenen hat.
+
 - **Root-Failover-Risiko im Client-Modus (aus Analysegespräch 2026-09-17,
   zurückgestellt):** `esp_mesh_lite_set_disallowed_level(1)` in
   `mesh_client.c` schließt den Client beim regulären Beitritt sicher von
@@ -144,3 +189,95 @@ Bugs sind umgesetzt:
   hören ist, nicht bei Stille — daher software-, nicht hardwarebedingt.
   Klingt nach ca. einer Minute Laufzeit spürbar ab. Ursache nicht
   identifiziert, auf Nutzerwunsch zurückgestellt statt weiter untersucht.
+
+- Stufe 7 (Stufe 2 des Server/Client-Plans: Zeit-Sync und Drift, 2026-09-17):
+  der Client richtet seine Wiedergabe jetzt auf die Serveruhr aus statt nur
+  dem Ringpuffer zu folgen. `snapclient.c` macht den vollständigen
+  Vierzeiten-Austausch über `SNAP_MSG_TIME` (t1 lokal gesendet, t2/t3 aus
+  `received_*`/`sent_*` der Antwort, t4 lokal empfangen) und veröffentlicht
+  aus einem gleitenden Fenster von 12 Messungen die **mit der kleinsten
+  RTT** — im Multi-Hop-Mesh hat die RTT-Verteilung einen langen Schwanz, und
+  ein verzögertes Paket verfälscht seine eigene Offset-Schätzung um etwa die
+  halbe Zusatzverzögerung; Mitteln würde das hineinrechnen statt es zu
+  verwerfen. Die Anfragen ersetzen zugleich den in Stufe 6 eingebauten
+  reinen Herzschlag. `handle_server_settings()` wertet jetzt `bufferMs` und
+  `latency` aus, `handle_wire_chunk()` reicht den Chunk-Zeitstempel weiter.
+  `audio_sink.c` führt daraus eine Wiedergabe-Zeitachse: Soll-Zeitpunkt =
+  `chunk_ts - offset + bufferMs - latency + delay_trim_ms`, verglichen mit
+  `esp_timer` plus `AUDIO_I2S_TX_LATENCY_US` (die DMA-Kette hängt der
+  Schreibfunktion um 40 ms hinterher, dafür sind die DMA-Konstanten jetzt in
+  `audio_i2s.h` öffentlich). Fehler über 100 ms werden hart korrigiert
+  (Überspringen wenn zu spät, Stille halten wenn zu früh), darunter
+  kontinuierlich über das Resampling-Verhältnis: PI-Regler, auf +-200 ppm
+  begrenzt, mit Slew-Limit von 5 ppm je 20-ms-Frame. Neu dafür
+  `audio_resample.c` mit 32.32-Phasenakkumulator (die 16.16-Variante der
+  Referenz quantisiert auf ~15 ppm und ist damit gröber als die zu
+  korrigierende Drift).
+
+  Zwei Dimensionierungsfehler fielen beim Durchrechnen auf und sind
+  mitgefixt: (1) Der Ring war auf exakt `buffer_ms` dimensioniert, obwohl
+  das die *Dauerfüllung* ist und nicht die Obergrenze — der Server stempelt
+  einen Chunk beim Aufnehmen, der Client spielt ihn `buffer_ms` später, also
+  sind permanent `buffer_ms` unterwegs. Er lief damit dauerhaft am Anschlag
+  und hätte ankommendes Audio verworfen; Kapazität jetzt doppelt so groß
+  wie die Soll-Füllung, die Prebuffer-Schwelle bezieht sich auf letztere.
+  (2) Solange kein Zeit-Sync steht, wurde der Regler je Frame komplett
+  zurückgesetzt — das verwirft auch den Staging-Rest des Resamplers und
+  hätte 50-mal pro Sekunde ein Sample verschluckt; getrennt in vollen Reset
+  (nur bei echten Brüchen) und reine Reglerneutralisierung.
+
+  Ebenfalls umgesetzt (Plan-Punkt 13): der Server verzögert seine **eigene**
+  lokale Ausgabe um `buffer_ms + delay_trim_ms`. Ohne das spielt sein
+  Lautsprecher systematisch `bufferMs` — also per Default drei Sekunden — vor
+  jedem Client, weil er einen Frame direkt nach der Aufnahme ausgibt, während
+  die Clients denselben Chunk laut Zeitplan erst `bufferMs` später spielen.
+  Die Verzögerungsleitung sitzt in `audio_i2s_read_frame()` und damit
+  ausschließlich im Server-Pfad; der Client darf nicht ein zweites Mal
+  verzögert werden, sein Scheduler platziert die Ausgabe ja bereits. Wichtig
+  dabei: verzögert wird nur die Kopie für den Lautsprecher, **nicht** der
+  Puffer, den der Opus-Encoder bekommt — sonst ginge der Netzwerk-Stream
+  ebenfalls verzögert raus und der Effekt verdoppelte sich beim Client. Der
+  Ring ist für den vollen `delay_trim_ms`-Bereich dimensioniert, damit der
+  Trim im Betrieb verstellbar bleibt (wirkt über `apply_live_params()`, nur
+  in der Server-Rolle). `buffer_ms` löst dafür jetzt einen Reboot aus, weil
+  es auf beiden Rollen mehrsekündige Puffer beim Start dimensioniert.
+  Konfigurierbarkeit der Server-Verzögerung wurde bewusst weggelassen: ohne
+  sie ist das System schlicht unsynchron, ein Schalter dafür hätte keinen
+  sinnvollen zweiten Zustand.
+
+  Verifiziert: Build sauber, sowohl mit `CONFIG_SNAPSERVER_ENABLE_MESH_LITE=y`
+  als auch `=n`.
+
+- Stufe 8 (zwei Befunde aus dem ersten Zwei-Geräte-Lauf mit Zeit-Sync,
+  2026-09-17): (1) Der Regelfehler blieb dauerhaft bei +72…+100 ms stehen,
+  während `ppm` an seiner Begrenzung von −200 klebte. Ursache war meine
+  eigene Hysterese: Der „zu früh"-Zweig des harten Resyncs hielt Stille nur,
+  *bis der Fehler unter die Schwelle fiel*, übergab also systematisch einen
+  Restfehler von einer vollen Schwellenbreite (100 ms) an den Feinregler —
+  und der braucht bei 200 ppm rund 400 Sekunden für 80 ms. Die
+  Einstiegsbedingung war richtig, die Ausstiegsbedingung falsch; gehalten
+  wird jetzt, bis der Fehler tatsächlich null ist. Danach gemessen: `err`
+  zwischen −3 und −6 ms, `ppm` zwischen 4 und 11, also im Bereich der
+  reinen Quarzdrift. (2) Der Client fiel für ~25 s komplett aus dem Netz:
+  der Sendepuffer des Servers lief voll (`chunks/s=0`, `skipped` +51/s),
+  die Gegenrichtung stand still (`time_msgs` eingefroren), und am Ende warf
+  der AP die Station nach sechs unbeantworteten SA-Query-Versuchen raus.
+  Verdächtig war ESP-IDFs Default-Powersave für verbundene Stationen
+  (`WIFI_PS_MIN_MODEM`, Listen-Interval 3 ⇒ bis zu ~307 ms Funkstille) —
+  das passt sowohl zu den vollgelaufenen TCP-Puffern als auch zu den
+  verpassten Managementframes und bringt bei netzbetriebenen Lautsprechern
+  ohnehin nichts. `esp_wifi_set_ps(WIFI_PS_NONE)` in beiden Rollen; laut
+  Nutzer läuft es damit spürbar besser.
+
+  Offen und noch nicht gemessen: Synchronität zweier Clients über längere
+  Zeit, Verhalten bei Parent-Wechsel, Wirkung von `delay_trim_ms`, und ob
+  Server- und Client-Lautsprecher nach der Delay-Line hörbar zusammenpassen.
+  Die PI-Parameter (Kp/Ki, ±200 ppm, 5 ppm Slew je Frame) sind ohne Messung
+  konservativ gesetzt; die `err=`/`ppm=`-Werte der `AUDIO_SINK`-Statuszeile
+  sind zum Nachjustieren gedacht. Falls die Funkverbindung weiterhin
+  aussetzt, ist der nächste Kandidat `esp_mesh_lite_set_wifi_reconnect_interval(2, 3, 5)`
+  in `mesh_client.c`: alle 5 s ein voller Scan zwingt das Funkmodul vom
+  Kanal und ist eine bekannte Ursache für TCP-Hänger. Der Wert stammt aus
+  Stufe 6 und war bewusst aggressiv gewählt, weil das Zielumfeld
+  „hochdynamisch" sein soll — schnelles Wiederfinden gegen stabilen Stream
+  ist gegeneinander abzuwägen.

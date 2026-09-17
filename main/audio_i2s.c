@@ -7,16 +7,18 @@
 #include <math.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "driver/i2s_std.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 
 static const char *TAG = "AUDIO_I2S";
 
-#define DMA_DESC_NUM          8
-#define DMA_FRAME_NUM       240
+#define DMA_DESC_NUM        AUDIO_I2S_DMA_DESC_NUM
+#define DMA_FRAME_NUM       AUDIO_I2S_DMA_FRAME_NUM
 #define MAX_FRAME_SAMPLES   960
 #define BIQUAD_BUTTERWORTH_Q 0.7071067811865476f
 #define OUTPUT_CHANNELS       2U
@@ -49,6 +51,7 @@ static bool s_started;
 
 static int16_t s_input_stereo[MAX_FRAME_SAMPLES * AUDIO_I2S_CHANNELS];
 static int16_t s_output_stereo[MAX_FRAME_SAMPLES * OUTPUT_CHANNELS];
+static int16_t s_delayed_mono[MAX_FRAME_SAMPLES];
 
 /*
  * s_lowpass/s_highpass hold both the biquad coefficients (b0,b1,b2,a1,a2,
@@ -89,6 +92,18 @@ static uint32_t s_dsp_generation;
  */
 static int64_t s_stream_anchor_us;
 static int64_t s_samples_captured;
+
+/*
+ * Output delay line for the server's own speaker (see
+ * audio_i2s_set_output_delay()). Samples are written at s_delay_write and
+ * read s_delay_samples behind it, so changing the delay just moves the read
+ * offset -- no reallocation, and the trim stays adjustable while playing.
+ * Written and read only from the audio task inside audio_i2s_read_frame().
+ */
+static int16_t *s_delay_line;
+static size_t s_delay_capacity;
+static size_t s_delay_write;
+static volatile size_t s_delay_samples;
 
 static int16_t float_to_int16(float sample)
 {
@@ -335,6 +350,68 @@ fail:
     return result;
 }
 
+esp_err_t audio_i2s_set_output_delay(uint32_t delay_ms, uint32_t max_delay_ms)
+{
+    if (delay_ms > max_delay_ms) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    if (s_delay_line == NULL && max_delay_ms > 0U) {
+        const size_t capacity =
+            (size_t)max_delay_ms * (AUDIO_I2S_SAMPLE_RATE / 1000U);
+        const size_t bytes = capacity * sizeof(int16_t);
+
+        s_delay_line = heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_delay_line == NULL) {
+            s_delay_line = heap_caps_malloc(bytes, MALLOC_CAP_8BIT);
+        }
+        if (s_delay_line == NULL) {
+            ESP_LOGE(TAG, "No memory for %u B output delay line", (unsigned)bytes);
+            return ESP_ERR_NO_MEM;
+        }
+
+        memset(s_delay_line, 0, bytes);
+        s_delay_capacity = capacity;
+        s_delay_write = 0;
+    }
+
+    size_t samples = (size_t)delay_ms * (AUDIO_I2S_SAMPLE_RATE / 1000U);
+    if (samples > s_delay_capacity) {
+        samples = s_delay_capacity;
+    }
+    s_delay_samples = samples;
+
+    ESP_LOGI(TAG, "Local output delayed by %u ms (%u samples)",
+             (unsigned)delay_ms, (unsigned)samples);
+    return ESP_OK;
+}
+
+/*
+ * Pushes the captured frame through the delay line and writes the samples
+ * from s_delay_samples ago to `out`. Deliberately not in place: the input
+ * buffer is what the caller hands to the Opus encoder, and the network
+ * stream must stay undelayed -- only the local speaker is held back.
+ * Returns false when no delay is configured (the client's case, and the
+ * server's until app_main() sets one up), leaving `out` untouched.
+ */
+static bool apply_output_delay(const int16_t *in, int16_t *out, size_t mono_samples)
+{
+    const size_t delay = s_delay_samples;
+    if (s_delay_line == NULL || delay == 0U) {
+        return false;
+    }
+
+    for (size_t i = 0; i < mono_samples; ++i) {
+        const size_t read_pos =
+            (s_delay_write + s_delay_capacity - delay) % s_delay_capacity;
+        out[i] = s_delay_line[read_pos];
+        s_delay_line[s_delay_write] = in[i];
+        s_delay_write = (s_delay_write + 1U) % s_delay_capacity;
+    }
+
+    return true;
+}
+
 static esp_err_t capture_mono_from_rx(int16_t *mono, size_t mono_samples)
 {
     const size_t stereo_bytes =
@@ -532,5 +609,15 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
     *timestamp_us = frame_timestamp_us;
     s_samples_captured += (int64_t)mono_samples;
 
-    return apply_dsp_and_output(mono, mono_samples);
+    /*
+     * The encoder gets `mono` as captured; only what goes to this device's
+     * own speaker is held back, so it lines up with the clients playing the
+     * same chunk bufferMs later.
+     */
+    const int16_t *output = mono;
+    if (apply_output_delay(mono, s_delayed_mono, mono_samples)) {
+        output = s_delayed_mono;
+    }
+
+    return apply_dsp_and_output(output, mono_samples);
 }

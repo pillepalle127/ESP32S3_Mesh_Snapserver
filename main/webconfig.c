@@ -237,7 +237,11 @@ static bool settings_changed_needing_reboot(const device_config_t *a, const devi
            strcmp(a->mesh_password, b->mesh_password) != 0 ||
            a->mesh_channel != b->mesh_channel ||
            a->mesh_max_level != b->mesh_max_level ||
-           a->role != b->role;
+           a->role != b->role ||
+           /* Both roles size a multi-second buffer from this at startup --
+            * the client's playback ring, the server's local output delay
+            * line -- so a change only takes effect on the next boot. */
+           a->buffer_ms != b->buffer_ms;
 }
 
 static void apply_live_params(const device_config_t *cfg)
@@ -264,6 +268,21 @@ static void apply_live_params(const device_config_t *cfg)
     audio_sink_set_source_mode(cfg->source_mode);
     audio_sink_set_local_input_threshold_db(cfg->local_input_threshold_db);
     audio_sink_set_delay_trim_ms(cfg->delay_trim_ms);
+
+    /*
+     * Server role only: keep the local output delay in step with the trim
+     * so the server's own speaker can be nudged against the clients while
+     * listening, exactly as the trim does on a client. Role-gated because
+     * calling this on a client would allocate a delay line it never uses --
+     * its output goes through audio_i2s_write_mono(), which the delay
+     * deliberately does not touch.
+     */
+    if (cfg->role == DEVICE_ROLE_SERVER) {
+        const int32_t local_delay_ms = (int32_t)cfg->buffer_ms + cfg->delay_trim_ms;
+        audio_i2s_set_output_delay(
+            (uint32_t)(local_delay_ms > 0 ? local_delay_ms : 0),
+            (uint32_t)cfg->buffer_ms + DEVICE_CONFIG_DELAY_TRIM_MAX_MS);
+    }
 }
 
 static esp_err_t api_config_post_handler(httpd_req_t *req)

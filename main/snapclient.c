@@ -3,25 +3,25 @@
  * @brief Snapcast protocol client -- TCP connection, Hello, CodecHeader,
  *        WireChunk/Opus decode, feeding audio_sink.c.
  *
- * See snapclient.h for provenance. Our own server never sends the ready
- * flag conditional on a client Time message (see snapserver.c's
- * client_task(): ready is set right after CodecHeader, before any Time
- * exchange), so this client does not use SNAP_MSG_TIME for drift
- * compensation yet -- that is Stufe 2's job. It does send an empty Time
- * request periodically (send_time_heartbeat()) purely as a keepalive: the
- * server's client_task() closes a connection after
- * CLIENT_RECV_TIMEOUT_US (30 s, see snapserver.c) of silence *from* the
- * client, which a real Snapcast client never triggers because its own
- * periodic Time requests count as inbound traffic. Without this, our
- * client got disconnected every ~30 s despite the stream being perfectly
- * healthy (confirmed on-device, 2026-09-17). The reply is intentionally
- * ignored here.
+ * See snapclient.h for provenance.
+ *
+ * Periodic SNAP_MSG_TIME requests serve two purposes at once. They carry
+ * the clock synchronisation (four-timestamp exchange, least-delayed
+ * measurement of a sliding window wins -- see handle_time_reply()), whose
+ * result feeds audio_sink.c's playback scheduler. They are also the
+ * keepalive the server requires: its client_task() drops a connection
+ * after CLIENT_RECV_TIMEOUT_US (30 s, see snapserver.c) of silence *from*
+ * the client, which a real Snapcast client never hits precisely because
+ * its own time requests count as inbound traffic. Without them our client
+ * was disconnected every ~30 s despite a perfectly healthy stream
+ * (confirmed on-device, 2026-09-17).
  */
 #include "snapclient.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/select.h>
@@ -33,6 +33,7 @@
 #include "freertos/task.h"
 
 #include "audio_sink.h"
+#include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
@@ -85,10 +86,28 @@ typedef struct __attribute__((packed)) {
 #define SNAP_RECONNECT_DELAY_MS  1000
 
 /*
- * Well under CLIENT_RECV_TIMEOUT_US (30 s, snapserver.c) so a single lost
- * heartbeat can't cause a false disconnect.
+ * Time-request cadence. Fast while the measurement window is still filling
+ * so the offset converges within a couple of seconds after connecting,
+ * then slow. Both are well under CLIENT_RECV_TIMEOUT_US (30 s,
+ * snapserver.c), so these double as the keepalive that stops the server
+ * from dropping an otherwise silent client.
  */
-#define SNAP_TIME_HEARTBEAT_INTERVAL_US (2LL * 1000000LL)
+#define SNAP_TIME_FAST_INTERVAL_US  (200LL * 1000LL)
+#define SNAP_TIME_SLOW_INTERVAL_US  (1000LL * 1000LL)
+
+/*
+ * Offset estimates are kept in a sliding window and the one with the
+ * smallest round trip wins, rather than averaging: in a multi-hop mesh the
+ * RTT distribution has a long tail (retries, parent scans), and a delayed
+ * packet biases its own offset estimate by roughly half the excess delay.
+ * The least-delayed sample is the least biased one -- same approach the
+ * reference snapclient uses.
+ */
+#define SNAP_TIME_WINDOW 12
+
+/* Discard obviously broken measurements instead of letting them into the
+ * window at all. */
+#define SNAP_TIME_MAX_RTT_US (2LL * 1000000LL)
 
 static int s_sock = -1;
 static volatile bool s_run = true;
@@ -106,6 +125,19 @@ static uint16_t s_codec_channels = SNAP_CHANNELS_DEFAULT;
 static OpusDecoder *s_opus_decoder;
 static opus_int16 *s_opus_pcm;
 static int16_t *s_mono_pcm; /* opus_decode() output down-mixed to mono */
+
+typedef struct {
+    int64_t rtt_us;
+    int64_t offset_us; /* server clock minus local esp_timer clock */
+} time_measurement_t;
+
+static time_measurement_t s_time_window[SNAP_TIME_WINDOW];
+static size_t s_time_window_count;
+static size_t s_time_window_next;
+
+static uint16_t s_time_request_id;
+static int64_t s_time_request_sent_us;
+static bool s_time_request_pending;
 
 static int send_full(int socket_fd, const void *buffer, size_t length)
 {
@@ -299,20 +331,52 @@ static int send_hello(int socket_fd)
     return 0;
 }
 
+static void time_sync_reset(void)
+{
+    s_time_window_count = 0;
+    s_time_window_next = 0;
+    s_time_request_pending = false;
+    audio_sink_set_server_time_offset(0, false);
+}
+
 /*
- * Keepalive only (see the file header comment): a Time request whose reply
- * is never read here. sent_sec/sent_usec carry esp_timer uptime, not a real
- * wall clock -- the server's handle_time() already only adopts a client
- * timestamp past SNAP_CLOCK_PLAUSIBLE_MIN_SEC, so this can never corrupt
- * its wall-clock base. Payload is the 8-byte {latency_sec, latency_usec}
- * the protocol expects, sent as zero since nothing here consumes it.
+ * Publishes the offset of the least-delayed measurement currently in the
+ * window (see SNAP_TIME_WINDOW).
  */
-static int send_time_heartbeat(int socket_fd)
+static void publish_best_offset(void)
+{
+    if (s_time_window_count == 0U) {
+        return;
+    }
+
+    size_t best = 0;
+    for (size_t i = 1; i < s_time_window_count; ++i) {
+        if (s_time_window[i].rtt_us < s_time_window[best].rtt_us) {
+            best = i;
+        }
+    }
+
+    audio_sink_set_server_time_offset(s_time_window[best].offset_us, true);
+}
+
+/*
+ * sent_sec/sent_usec carry esp_timer uptime, not a real wall clock -- the
+ * server's handle_time() only adopts a client timestamp past
+ * SNAP_CLOCK_PLAUSIBLE_MIN_SEC, so ours can never move its wall-clock base.
+ * Payload is the 8-byte {latency_sec, latency_usec} the protocol expects,
+ * sent as zero because the server ignores it and only reflects timestamps.
+ */
+static int send_time_request(int socket_fd)
 {
     const int64_t now_us = esp_timer_get_time();
 
+    if (++s_time_request_id == 0U) {
+        s_time_request_id = 1U; /* 0 is what unsolicited messages carry */
+    }
+
     snap_base_t header = {0};
     header.type = SNAP_MSG_TIME;
+    header.id = s_time_request_id;
     header.sent_sec = (int32_t)(now_us / 1000000LL);
     header.sent_usec = (int32_t)(now_us % 1000000LL);
     header.size = 8U;
@@ -323,7 +387,46 @@ static int send_time_heartbeat(int socket_fd)
         send_full(socket_fd, latency, sizeof(latency)) != 0) {
         return -1;
     }
+
+    s_time_request_sent_us = now_us;
+    s_time_request_pending = true;
     return 0;
+}
+
+/*
+ * Standard four-timestamp exchange:
+ *   t1 local send, t2 server receive, t3 server send, t4 local receive.
+ * The server fills t2 into received_* and t3 into sent_* (see
+ * snapserver.c's handle_time()/send_msg_unlocked()), so both directions
+ * can be separated instead of assuming a symmetric path.
+ */
+static void handle_time_reply(const snap_base_t *header)
+{
+    if (!s_time_request_pending || header->refers_to != s_time_request_id) {
+        return;
+    }
+    s_time_request_pending = false;
+
+    const int64_t t1 = s_time_request_sent_us;
+    const int64_t t4 = esp_timer_get_time();
+    const int64_t t2 = (int64_t)header->received_sec * 1000000LL + header->received_usec;
+    const int64_t t3 = (int64_t)header->sent_sec * 1000000LL + header->sent_usec;
+
+    const int64_t rtt_us = (t4 - t1) - (t3 - t2);
+    if (rtt_us < 0 || rtt_us > SNAP_TIME_MAX_RTT_US) {
+        return;
+    }
+
+    const int64_t offset_us = ((t2 - t1) + (t3 - t4)) / 2;
+
+    s_time_window[s_time_window_next].rtt_us = rtt_us;
+    s_time_window[s_time_window_next].offset_us = offset_us;
+    s_time_window_next = (s_time_window_next + 1U) % SNAP_TIME_WINDOW;
+    if (s_time_window_count < SNAP_TIME_WINDOW) {
+        s_time_window_count++;
+    }
+
+    publish_best_offset();
 }
 
 static esp_err_t opus_decoder_prepare(void)
@@ -457,15 +560,66 @@ static void handle_codec_header(const uint8_t *payload, uint32_t size)
 }
 
 /*
+ * ServerSettings payload: uint32 json_length followed by the JSON itself,
+ * e.g. {"bufferMs":3000,"latency":0,"muted":false,"volume":100}. bufferMs
+ * and latency define where a chunk belongs on the playback timeline, so
+ * both go straight to audio_sink.c's scheduler.
+ */
+static void handle_server_settings(const uint8_t *payload, uint32_t size)
+{
+    if (payload == NULL || size < sizeof(uint32_t)) {
+        return;
+    }
+
+    uint32_t json_length = 0;
+    memcpy(&json_length, payload, sizeof(json_length));
+    if (json_length == 0U || json_length > size - sizeof(uint32_t)) {
+        return;
+    }
+
+    char *json = malloc((size_t)json_length + 1U);
+    if (json == NULL) {
+        return;
+    }
+    memcpy(json, payload + sizeof(uint32_t), json_length);
+    json[json_length] = '\0';
+
+    cJSON *root = cJSON_Parse(json);
+    free(json);
+    if (root == NULL) {
+        ESP_LOGW(TAG, "ServerSettings JSON unparsable");
+        return;
+    }
+
+    const cJSON *buffer_ms = cJSON_GetObjectItemCaseSensitive(root, "bufferMs");
+    const cJSON *latency = cJSON_GetObjectItemCaseSensitive(root, "latency");
+
+    if (cJSON_IsNumber(buffer_ms)) {
+        const int32_t latency_ms = cJSON_IsNumber(latency) ? (int32_t)latency->valuedouble : 0;
+        ESP_LOGI(TAG, "ServerSettings: bufferMs=%d latency=%d",
+                 (int)buffer_ms->valuedouble, (int)latency_ms);
+        audio_sink_set_stream_timing((uint32_t)buffer_ms->valuedouble, latency_ms);
+    }
+
+    cJSON_Delete(root);
+}
+
+/*
  * Snapcast WireChunk: int32 sec, int32 usec, uint32 audio_length, uint8_t
- * audio[audio_length]. The timestamp is unused in Stufe 1 (no time sync
- * yet, see the file header comment); Stufe 2 will read it here.
+ * audio[audio_length]. sec/usec are the server-clock timestamp of the
+ * chunk's first sample and drive the playback scheduler in audio_sink.c.
  */
 static void handle_wire_chunk(const uint8_t *payload, uint32_t size)
 {
     if (payload == NULL || size < 12U) {
         return;
     }
+
+    int32_t chunk_sec = 0;
+    int32_t chunk_usec = 0;
+    memcpy(&chunk_sec, payload + 0, sizeof(chunk_sec));
+    memcpy(&chunk_usec, payload + 4, sizeof(chunk_usec));
+    const int64_t chunk_ts_us = (int64_t)chunk_sec * 1000000LL + chunk_usec;
 
     uint32_t audio_length = 0;
     memcpy(&audio_length, payload + 8, sizeof(audio_length));
@@ -487,7 +641,7 @@ static void handle_wire_chunk(const uint8_t *payload, uint32_t size)
     }
 
     if (s_codec_channels == 1U) {
-        audio_sink_feed_network(s_opus_pcm, (size_t)samples_per_channel);
+        audio_sink_feed_network(s_opus_pcm, (size_t)samples_per_channel, chunk_ts_us);
         return;
     }
 
@@ -498,7 +652,7 @@ static void handle_wire_chunk(const uint8_t *payload, uint32_t size)
         const int32_t right = s_opus_pcm[2 * i + 1];
         s_mono_pcm[i] = (int16_t)((left + right) / 2);
     }
-    audio_sink_feed_network(s_mono_pcm, (size_t)samples_per_channel);
+    audio_sink_feed_network(s_mono_pcm, (size_t)samples_per_channel, chunk_ts_us);
 }
 
 static void process_message(const snap_base_t *header, const uint8_t *payload)
@@ -511,7 +665,11 @@ static void process_message(const snap_base_t *header, const uint8_t *payload)
             handle_wire_chunk(payload, header->size);
             break;
         case SNAP_MSG_SERVER_SETTINGS:
+            handle_server_settings(payload, header->size);
+            break;
         case SNAP_MSG_TIME:
+            handle_time_reply(header);
+            break;
         case SNAP_MSG_BASE:
         case SNAP_MSG_HELLO:
         default:
@@ -525,7 +683,8 @@ static void connection_loop(int socket_fd)
     static uint8_t message_buffer[SNAP_MESSAGE_BUFFER_SIZE];
 
     audio_sink_set_network_active(true);
-    int64_t last_heartbeat_us = esp_timer_get_time();
+    time_sync_reset();
+    int64_t last_time_request_us = 0;
 
     while (s_run) {
         /*
@@ -534,14 +693,17 @@ static void connection_loop(int socket_fd)
          * read_full() below returns often enough that this fires close to
          * on schedule without needing select()/non-blocking I/O. A truly
          * stalled connection (no data at all) never gets to send a
-         * heartbeat either, but that case is already fatal on its own.
+         * request either, but that case is already fatal on its own.
          */
         const int64_t now_us = esp_timer_get_time();
-        if (now_us - last_heartbeat_us >= SNAP_TIME_HEARTBEAT_INTERVAL_US) {
-            if (send_time_heartbeat(socket_fd) != 0) {
+        const int64_t interval_us = (s_time_window_count < SNAP_TIME_WINDOW)
+                                        ? SNAP_TIME_FAST_INTERVAL_US
+                                        : SNAP_TIME_SLOW_INTERVAL_US;
+        if (now_us - last_time_request_us >= interval_us) {
+            if (send_time_request(socket_fd) != 0) {
                 break;
             }
-            last_heartbeat_us = now_us;
+            last_time_request_us = now_us;
         }
 
         snap_base_t header;

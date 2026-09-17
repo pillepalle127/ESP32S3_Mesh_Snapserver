@@ -3,6 +3,7 @@ idf_component_register(
         "app_main.c"
         "audio_i2s.c"
         "audio_opus.c"
+        "audio_resample.c"
         "audio_sink.c"
         "device_config.c"
         "mesh_client.c"

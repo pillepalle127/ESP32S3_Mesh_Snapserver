@@ -30,6 +30,17 @@
 #define AUDIO_I2S_BITS           16
 
 /*
+ * TX DMA geometry. Public because the client's playback scheduler has to
+ * know how far ahead of the speaker the I2S write call actually is: a frame
+ * handed to i2s_channel_write() is only heard once the queued DMA backlog
+ * has drained, i.e. about AUDIO_I2S_TX_LATENCY_US later in steady state.
+ */
+#define AUDIO_I2S_DMA_DESC_NUM    8
+#define AUDIO_I2S_DMA_FRAME_NUM 240
+#define AUDIO_I2S_TX_LATENCY_US \
+    ((int64_t)AUDIO_I2S_DMA_DESC_NUM * AUDIO_I2S_DMA_FRAME_NUM * 1000000LL / AUDIO_I2S_SAMPLE_RATE)
+
+/*
  * Lokale Linkwitz-Riley-Frequenzweiche 4. Ordnung.
  * Kconfig liefert nur noch die Startwerte fuer den allerersten Frame, bevor
  * app_main() die tatsaechlich gespeicherte Konfiguration per
@@ -60,6 +71,21 @@ typedef struct {
 } audio_dsp_params_t;
 
 esp_err_t audio_i2s_start(void);
+
+/*
+ * Delays the server's *local* speaker output by delay_ms, so it lands on
+ * the same instant as the clients' output instead of running bufferMs
+ * ahead of them: the server hears a frame right after capturing it, while
+ * every client deliberately plays that same chunk bufferMs later (see the
+ * scheduler in audio_sink.c). Only affects audio_i2s_read_frame(), i.e.
+ * the server path -- the client's own output must not be delayed again,
+ * its scheduler already places it in time.
+ *
+ * The backing buffer is sized once here for max_delay_ms; delay_ms may
+ * then be changed freely up to that bound (delay_trim_ms is meant to be
+ * adjustable while listening). delay_ms == 0 disables the delay.
+ */
+esp_err_t audio_i2s_set_output_delay(uint32_t delay_ms, uint32_t max_delay_ms);
 
 /*
  * Validiert und uebernimmt neue DSP-Parameter. Rechnet Koeffizienten und
