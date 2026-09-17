@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
@@ -122,6 +123,7 @@ typedef struct {
     uint32_t chunks_sent;
     uint32_t chunk_bytes;
     uint32_t chunk_errors;
+    uint32_t chunks_skipped;
     uint32_t time_msgs;
 } client_t;
 
@@ -740,6 +742,7 @@ static void close_client(client_t *client)
     uint32_t chunks = 0;
     uint32_t bytes = 0;
     uint32_t errors = 0;
+    uint32_t skipped = 0;
     uint32_t times = 0;
     char peer[sizeof(client->peer)];
 
@@ -748,6 +751,7 @@ static void close_client(client_t *client)
     chunks = client->chunks_sent;
     bytes = client->chunk_bytes;
     errors = client->chunk_errors;
+    skipped = client->chunks_skipped;
     times = client->time_msgs;
     strlcpy(peer, client->peer, sizeof(peer));
     client->ready = false;
@@ -765,11 +769,12 @@ static void close_client(client_t *client)
 
     ESP_LOGI(TAG,
              "Session summary %s: chunks_sent=%lu bytes=%lu send_errors=%lu "
-             "time_msgs=%lu",
+             "skipped=%lu time_msgs=%lu",
              peer,
              (unsigned long)chunks,
              (unsigned long)bytes,
              (unsigned long)errors,
+             (unsigned long)skipped,
              (unsigned long)times);
 }
 
@@ -891,6 +896,37 @@ static void mark_client_failed(client_t *client)
     }
 }
 
+/*
+ * audio_task fans a wire chunk out to every ready client, one after another,
+ * on the same task that also drives the I2S capture. send_wire_chunk() falls
+ * back to a blocking send with a multi-second SO_SNDTIMEO, so a single
+ * client whose TCP send buffer is full (weak mesh link, stalled receiver)
+ * used to stall that shared task for seconds, starving I2S capture for
+ * every other client too. Probe writability with a zero-timeout select()
+ * first and skip the frame for this client if it is not currently
+ * writable, instead of blocking the whole pipeline on it.
+ */
+static bool client_socket_writable(client_t *client)
+{
+    int fd = -1;
+    portENTER_CRITICAL(&s_clients_lock);
+    if (client->active) {
+        fd = client->fd;
+    }
+    portEXIT_CRITICAL(&s_clients_lock);
+
+    if (fd < 0) {
+        return false;
+    }
+
+    fd_set wfds;
+    FD_ZERO(&wfds);
+    FD_SET(fd, &wfds);
+    struct timeval zero_tv = {0, 0};
+    const int rc = select(fd + 1, NULL, &wfds, NULL, &zero_tv);
+    return rc > 0 && FD_ISSET(fd, &wfds);
+}
+
 static void audio_task(void *arg)
 {
     (void)arg;
@@ -929,6 +965,12 @@ static void audio_task(void *arg)
             portEXIT_CRITICAL(&s_clients_lock);
 
             for (int i = 0; i < count; ++i) {
+                if (!client_socket_writable(clients[i])) {
+                    portENTER_CRITICAL(&s_clients_lock);
+                    clients[i]->chunks_skipped++;
+                    portEXIT_CRITICAL(&s_clients_lock);
+                    continue;
+                }
                 if (send_wire_chunk(clients[i], &packet) < 0) {
                     ESP_LOGW(TAG,
                              "Wire chunk send failed (%s); closing client",
@@ -955,6 +997,7 @@ static void audio_task(void *arg)
                 uint32_t chunks = 0;
                 uint32_t bytes = 0;
                 uint32_t errs = 0;
+                uint32_t skipped = 0;
                 uint32_t times = 0;
 
                 portENTER_CRITICAL(&s_clients_lock);
@@ -963,6 +1006,7 @@ static void audio_task(void *arg)
                 chunks = s_clients[i].chunks_sent;
                 bytes = s_clients[i].chunk_bytes;
                 errs = s_clients[i].chunk_errors;
+                skipped = s_clients[i].chunks_skipped;
                 times = s_clients[i].time_msgs;
                 portEXIT_CRITICAL(&s_clients_lock);
 
@@ -975,7 +1019,8 @@ static void audio_task(void *arg)
                 if (active) {
                     ESP_LOGI(TAG,
                              "client[%d] %s ready=%d chunks/s=%lu total=%lu "
-                             "bytes=%lu send_errors=%lu time_msgs=%lu",
+                             "bytes=%lu send_errors=%lu skipped=%lu "
+                             "time_msgs=%lu",
                              i,
                              s_clients[i].peer,
                              (int)ready,
@@ -983,6 +1028,7 @@ static void audio_task(void *arg)
                              (unsigned long)chunks,
                              (unsigned long)bytes,
                              (unsigned long)errs,
+                             (unsigned long)skipped,
                              (unsigned long)times);
                 }
                 last_chunks[i] = chunks;
@@ -1125,6 +1171,7 @@ static void server_task(void *arg)
                 s_clients[i].chunks_sent = 0;
                 s_clients[i].chunk_bytes = 0;
                 s_clients[i].chunk_errors = 0;
+                s_clients[i].chunks_skipped = 0;
                 s_clients[i].time_msgs = 0;
                 s_clients[i].instance = 1;
                 s_clients[i].protocol_ver = SNAP_PROTOCOL_VER;
