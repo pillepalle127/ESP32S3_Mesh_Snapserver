@@ -23,7 +23,6 @@ Der ESP32-S3 übernimmt dabei mehrere Aufgaben:
 Das Ziel ist ein vollständig eigenständiger Audio-Server ohne Raspberry Pi oder PC im laufenden Betrieb.
 
 
-![Verdrahtungsplan](docs/Verdrahtungsplan.png)
 <img src="docs/Verdrahtungsplan.png" width="600">
 
 ---
