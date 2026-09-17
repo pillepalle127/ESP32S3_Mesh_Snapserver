@@ -37,7 +37,16 @@ static void configure_ap_wifi(const char *ssid, const char *password, uint8_t ch
     };
 
     strlcpy((char *)ap_config.ap.ssid, ssid, sizeof(ap_config.ap.ssid));
-    ap_config.ap.ssid_len = strlen(ssid);
+    /*
+     * Measure what strlcpy actually wrote, not the source: strlcpy always
+     * reserves one byte for the NUL terminator within a 32-byte
+     * destination, so a 32-char source (the UI allows up to that) is
+     * copied as 31 real characters + '\0' at index 31. Measuring the
+     * source would set ssid_len=32 and tell the driver to broadcast that
+     * trailing NUL byte as part of the SSID instead of just the 31
+     * characters that were actually copied.
+     */
+    ap_config.ap.ssid_len = strlen((char *)ap_config.ap.ssid);
 
     if (password != NULL && strlen(password) >= 8U) {
         strlcpy((char *)ap_config.ap.password, password, sizeof(ap_config.ap.password));
@@ -128,8 +137,9 @@ static esp_err_t start_mesh(const device_config_t *cfg)
 
 esp_err_t mesh_root_start(void)
 {
-    const device_config_t *cfg = device_config_get();
-    provisioning_reason_t reason = provisioning_decide(cfg);
+    device_config_t cfg;
+    device_config_get(&cfg);
+    provisioning_reason_t reason = provisioning_decide(&cfg);
 
 #if !CONFIG_SNAPSERVER_ENABLE_MESH_LITE
     if (reason == PROVISIONING_REASON_NONE) {
@@ -144,7 +154,7 @@ esp_err_t mesh_root_start(void)
     }
 
 #if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
-    return start_mesh(cfg);
+    return start_mesh(&cfg);
 #else
     return ESP_OK; /* unreachable: reason is forced above when unavailable */
 #endif

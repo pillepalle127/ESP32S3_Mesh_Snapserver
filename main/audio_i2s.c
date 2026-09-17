@@ -66,6 +66,15 @@ static audio_dsp_params_t s_dsp_params;
 static float s_sub_gain_linear = 1.0f;
 static float s_wideband_gain_linear = 1.0f;
 static portMUX_TYPE s_dsp_lock = portMUX_INITIALIZER_UNLOCKED;
+/*
+ * Bumped under s_dsp_lock every time audio_i2s_set_dsp_params() installs a
+ * fresh (zeroed) filter state. audio_i2s_read_frame() records the
+ * generation at snapshot time and only writes its own z1/z2 back if it is
+ * still current: otherwise a param change that landed mid-frame would have
+ * its clean reset immediately overwritten by this frame's stale filter
+ * memory computed from the old coefficients.
+ */
+static uint32_t s_dsp_generation;
 
 /*
  * Capture timeline.
@@ -191,6 +200,7 @@ esp_err_t audio_i2s_set_dsp_params(const audio_dsp_params_t *params)
     s_dsp_params = *params;
     s_sub_gain_linear = sub_gain_linear;
     s_wideband_gain_linear = wideband_gain_linear;
+    s_dsp_generation++;
     portEXIT_CRITICAL(&s_dsp_lock);
 
     return ESP_OK;
@@ -406,12 +416,14 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
     audio_dsp_params_t dsp;
     float sub_gain_linear;
     float wideband_gain_linear;
+    uint32_t dsp_generation;
     portENTER_CRITICAL(&s_dsp_lock);
     lowpass = s_lowpass;
     highpass = s_highpass;
     dsp = s_dsp_params;
     sub_gain_linear = s_sub_gain_linear;
     wideband_gain_linear = s_wideband_gain_linear;
+    dsp_generation = s_dsp_generation;
     portEXIT_CRITICAL(&s_dsp_lock);
 
     for (size_t i = 0; i < mono_samples; ++i) {
@@ -437,19 +449,28 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
 
     /*
      * Write the updated filter memory back so the next frame continues from
-     * here. Coefficients are intentionally left untouched: if
-     * audio_i2s_set_dsp_params() swapped them in concurrently, this frame's
-     * (now-stale) copy must not clobber the fresh ones.
+     * here -- but only if s_dsp_generation is still what it was at snapshot
+     * time. Coefficients are intentionally never touched here regardless:
+     * if audio_i2s_set_dsp_params() swapped them in concurrently, this
+     * frame's (now-stale) copy must not clobber the fresh ones. Checking
+     * the generation additionally guards the z1/z2 write itself: without
+     * it, this frame's filter memory (computed from the coefficients that
+     * were live *before* the concurrent change) would overwrite the clean
+     * zeroed state audio_i2s_set_dsp_params() just installed, reintroducing
+     * exactly the coefficient/state mismatch the fresh reset exists to
+     * avoid.
      */
     portENTER_CRITICAL(&s_dsp_lock);
-    s_lowpass.stage1.z1 = lowpass.stage1.z1;
-    s_lowpass.stage1.z2 = lowpass.stage1.z2;
-    s_lowpass.stage2.z1 = lowpass.stage2.z1;
-    s_lowpass.stage2.z2 = lowpass.stage2.z2;
-    s_highpass.stage1.z1 = highpass.stage1.z1;
-    s_highpass.stage1.z2 = highpass.stage1.z2;
-    s_highpass.stage2.z1 = highpass.stage2.z1;
-    s_highpass.stage2.z2 = highpass.stage2.z2;
+    if (s_dsp_generation == dsp_generation) {
+        s_lowpass.stage1.z1 = lowpass.stage1.z1;
+        s_lowpass.stage1.z2 = lowpass.stage1.z2;
+        s_lowpass.stage2.z1 = lowpass.stage2.z1;
+        s_lowpass.stage2.z2 = lowpass.stage2.z2;
+        s_highpass.stage1.z1 = highpass.stage1.z1;
+        s_highpass.stage1.z2 = highpass.stage1.z2;
+        s_highpass.stage2.z1 = highpass.stage2.z1;
+        s_highpass.stage2.z2 = highpass.stage2.z2;
+    }
     portEXIT_CRITICAL(&s_dsp_lock);
 
     size_t bytes_written = 0;
