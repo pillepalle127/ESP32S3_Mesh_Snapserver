@@ -62,6 +62,11 @@ static esp_err_t start_mesh(const device_config_t *cfg)
         return err;
     }
 
+    /* Same reasoning as in mesh_client.c: power save costs latency and
+     * reliability on a node that streams continuously, and saves nothing on
+     * a mains-powered speaker. */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
     esp_mesh_lite_core_log_enable(false);
     esp_mesh_lite_start();
 

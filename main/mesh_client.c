@@ -172,6 +172,18 @@ static esp_err_t start_client_mesh(const device_config_t *cfg)
         return err;
     }
 
+    /*
+     * Wi-Fi power save off. ESP-IDF defaults a connected STA to
+     * WIFI_PS_MIN_MODEM with listen interval 3, i.e. the radio may sleep up
+     * to ~307 ms between beacons. For a node receiving a continuous
+     * 96 kbit/s stream that shows up as stalled TCP (the server's send
+     * buffer fills, every chunk gets skipped) and as missed management
+     * frames -- observed on device as a 25 s blackout ending in the AP
+     * dropping the station after six unanswered SA Query attempts. These
+     * are mains-powered speakers, so there is nothing to save here.
+     */
+    esp_wifi_set_ps(WIFI_PS_NONE);
+
     esp_mesh_lite_core_log_enable(false);
     esp_mesh_lite_connect();
     esp_mesh_lite_start();

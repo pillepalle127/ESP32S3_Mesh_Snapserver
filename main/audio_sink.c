@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "audio_i2s.h"
+#include "audio_resample.h"
 #include "device_config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -34,17 +35,61 @@ static const char *TAG = "AUDIO_SINK";
 #define STATS_INTERVAL_US (5LL * 1000000LL)
 
 /*
- * Percentage of the ring's capacity (== buffer_ms) that must be buffered
- * before playback switches onto the network source. Without this gate the
- * ring only ever holds a few tens of ms in practice -- playback starts the
- * instant any data arrives and drains it about as fast as it fills, so the
- * large buffer_ms cushion meant to absorb mesh rearrangements/jitter never
- * actually accumulates, and every minor timing hiccup is an audible
- * underrun. Once already playing from the network, transient dips below
- * this level do not re-trigger prebuffering -- only a real drop out of the
- * network source (disconnect, or local input pre-empting it) does.
+ * Percentage of the target fill (== buffer_ms worth of audio) that must be
+ * buffered before playback switches onto the network source. Without this
+ * gate the ring only ever holds a few tens of ms in practice -- playback
+ * starts the instant any data arrives and drains it about as fast as it
+ * fills, so the cushion meant to absorb mesh rearrangements/jitter never
+ * accumulates and every minor timing hiccup is an audible underrun. Once
+ * already playing from the network, transient dips below this level do not
+ * re-trigger prebuffering -- only a real drop out of the network source
+ * (disconnect, or local input pre-empting it) does.
  */
 #define NETWORK_PREBUFFER_PERCENT 80U
+
+/*
+ * The ring is sized well above buffer_ms rather than at it: buffer_ms is
+ * the *steady-state* occupancy (the server timestamps a chunk at capture
+ * time and the client plays it buffer_ms later, so that much audio is
+ * in flight permanently), not a maximum. A ring of exactly buffer_ms would
+ * sit at its limit continuously and drop whatever arrives while the
+ * scheduler is holding playback back.
+ */
+#define RING_CAPACITY_FACTOR 2U
+
+/*
+ * A chunk timestamp that misses the buffered stream's continuation by more
+ * than this is treated as a new stream rather than as drift: the buffer is
+ * dropped and the timeline re-anchored. Covers reconnects, server restarts
+ * and the documented case where the server adopts a PC/Android client's
+ * wall clock mid-session and its timestamps jump by months
+ * (see handle_time() in snapserver.c).
+ */
+#define STREAM_DISCONTINUITY_US (100LL * 1000LL)
+
+/*
+ * Above this scheduling error, correcting by resampling would take far too
+ * long (200 ppm moves 200 us per second), so the timeline is realigned in
+ * one step instead: skip ahead when late, hold silence when early.
+ */
+#define HARD_RESYNC_THRESHOLD_US (100LL * 1000LL)
+
+/*
+ * PI gains for the fine correction, in ppm per us of error and ppm per
+ * (us * s) of accumulated error. Deliberately slow: a 10 ms error asks for
+ * ~15 ppm, which is inaudible and still closes that gap in well under a
+ * minute. The integral term only exists to cancel the constant crystal
+ * offset between the two boards (+-20 ppm each).
+ */
+#define CONTROL_KP 0.0015f
+#define CONTROL_KI 0.00002f
+#define CONTROL_INTEGRAL_CLAMP_PPM 100.0f
+/* Maximum ppm change per 20 ms frame, so corrections ramp instead of step. */
+#define CONTROL_SLEW_PPM_PER_FRAME 5.0f
+
+/* Worst-case input samples for one output frame at +AUDIO_RESAMPLE_MAX_PPM,
+ * plus the interpolation lookahead and a little slack. */
+#define STAGE_CAPACITY (AUDIO_SINK_FRAME_SAMPLES + 16U)
 
 typedef struct {
     uint8_t *data;
@@ -57,6 +102,15 @@ typedef struct {
 
 static byte_ring_t s_ring;
 static bool s_started;
+
+/*
+ * buffer_ms worth of bytes: what the prebuffer gate aims for and roughly
+ * where the scheduler keeps the fill in steady state. Derived from the
+ * local config at start (the ring is sized from it); the scheduler itself
+ * uses the server-announced bufferMs, which is the same value whenever
+ * both ends are configured alike.
+ */
+static size_t s_target_fill_bytes;
 
 static volatile bool s_network_active;
 static volatile uint8_t s_source_mode = SOURCE_MODE_AUTO;
@@ -82,6 +136,44 @@ static uint64_t s_network_bytes_fed;
 static uint64_t s_network_bytes_dropped;
 static uint64_t s_network_underrun_samples;
 static int64_t s_last_stats_us;
+
+/*
+ * Playback timeline. s_head_ts_us is the server-clock timestamp of the
+ * sample currently at the ring's read position; it is anchored from a
+ * WireChunk timestamp and then advanced by exactly the number of samples
+ * consumed (s_head_ts_remainder carries the sub-microsecond rest of the
+ * 1e6/48000 division so this cannot drift). Guarded by the ring lock.
+ */
+static int64_t s_head_ts_us;
+static int64_t s_head_ts_remainder;
+static bool s_head_ts_valid;
+
+/* server_clock - local esp_timer clock, from snapclient.c's time sync. */
+static volatile int64_t s_server_offset_us;
+static volatile bool s_server_offset_valid;
+
+/* From ServerSettings; defaults match the server's own seed values until
+ * the real message arrives. */
+static volatile int64_t s_stream_buffer_us = 3000000;
+static volatile int64_t s_stream_latency_us;
+
+static audio_resample_t s_resample;
+static float s_control_integral;
+static float s_control_ppm;
+static int16_t s_stage[STAGE_CAPACITY];
+static size_t s_stage_count;
+
+/*
+ * Set by the feeding task when it re-anchors the timeline; the player task
+ * owns s_stage/s_resample/the PI state and clears them when it sees this,
+ * so neither buffer is ever touched from two tasks at once.
+ */
+static volatile bool s_timeline_reset_pending;
+
+/* Diagnostics for the periodic stats line. */
+static int64_t s_last_error_us;
+static uint32_t s_resync_count;
+static uint64_t s_discontinuity_count;
 
 static esp_err_t ring_init(byte_ring_t *ring, size_t capacity)
 {
@@ -149,7 +241,35 @@ static void ring_flush(byte_ring_t *ring)
     ring->write_pos = 0;
     ring->read_pos = 0;
     ring->fill = 0;
+    s_head_ts_valid = false;
     xSemaphoreGive(ring->lock);
+}
+
+static int64_t samples_to_us(int64_t samples)
+{
+    return (samples * 1000000LL) / AUDIO_I2S_SAMPLE_RATE;
+}
+
+static int64_t us_to_samples(int64_t microseconds)
+{
+    return (microseconds * AUDIO_I2S_SAMPLE_RATE) / 1000000LL;
+}
+
+/* Caller must hold the ring lock. */
+static void timeline_advance_locked(size_t samples)
+{
+    const int64_t numerator =
+        (int64_t)samples * 1000000LL + s_head_ts_remainder;
+    s_head_ts_us += numerator / AUDIO_I2S_SAMPLE_RATE;
+    s_head_ts_remainder = numerator % AUDIO_I2S_SAMPLE_RATE;
+}
+
+/* Caller must hold the ring lock. */
+static void timeline_anchor_locked(int64_t chunk_ts_us)
+{
+    s_head_ts_us = chunk_ts_us;
+    s_head_ts_remainder = 0;
+    s_head_ts_valid = true;
 }
 
 static float rms_dbfs(const int16_t *samples, size_t count)
@@ -212,9 +332,8 @@ static audio_sink_source_t network_source_or_none(void)
     if (!s_network_ready) {
         xSemaphoreTake(s_ring.lock, portMAX_DELAY);
         const size_t fill = s_ring.fill;
-        const size_t capacity = s_ring.capacity;
         xSemaphoreGive(s_ring.lock);
-        if (fill * 100U < capacity * NETWORK_PREBUFFER_PERCENT) {
+        if (fill * 100U < s_target_fill_bytes * NETWORK_PREBUFFER_PERCENT) {
             return AUDIO_SINK_SOURCE_NONE;
         }
         s_network_ready = true;
@@ -267,19 +386,237 @@ static void maybe_log_stats(float output_rms_db)
 
     ESP_LOGI(TAG,
              "src=%d ring=%u/%u B fed=%llu B dropped=%llu B underrun=%llu samples "
-             "output_rms=%.1f dBFS",
+             "output_rms=%.1f dBFS sync=%s err=%lld us ppm=%d resync=%lu disc=%llu",
              (int)s_active_source,
              (unsigned)fill,
              (unsigned)capacity,
              (unsigned long long)s_network_bytes_fed,
              (unsigned long long)s_network_bytes_dropped,
              (unsigned long long)s_network_underrun_samples,
-             (double)output_rms_db);
+             (double)output_rms_db,
+             s_server_offset_valid ? "yes" : "no",
+             (long long)s_last_error_us,
+             (int)audio_resample_get_ppm(&s_resample),
+             (unsigned long)s_resync_count,
+             (unsigned long long)s_discontinuity_count);
 
     s_network_bytes_fed = 0;
     s_network_bytes_dropped = 0;
     s_network_underrun_samples = 0;
     s_last_stats_us = now;
+}
+
+/*
+ * Scheduling error of the sample at the head of the playback timeline:
+ * positive means it is due later than it would actually be heard (too
+ * early, hold), negative means it is overdue (too late, catch up).
+ * Returns false while there is nothing to schedule against -- no clock
+ * sync yet, or no anchored stream -- in which case playback simply follows
+ * the ring buffer as it did before Stufe 2.
+ */
+static bool scheduling_error_us(int64_t *error_us)
+{
+    if (!s_server_offset_valid) {
+        return false;
+    }
+
+    xSemaphoreTake(s_ring.lock, portMAX_DELAY);
+    const bool anchored = s_head_ts_valid;
+    const int64_t due_local_us = (s_head_ts_us - s_server_offset_us) +
+                                 s_stream_buffer_us - s_stream_latency_us +
+                                 (int64_t)s_delay_trim_ms * 1000LL;
+    xSemaphoreGive(s_ring.lock);
+
+    if (!anchored) {
+        return false;
+    }
+
+    *error_us = due_local_us - (esp_timer_get_time() + AUDIO_I2S_TX_LATENCY_US);
+    return true;
+}
+
+/*
+ * Full restart of the playback pipeline: drops the staged samples and the
+ * resampler phase along with the controller. Only for real discontinuities
+ * (new stream, hard resync, source change) -- doing this per frame would
+ * throw away the staging remainder every time and swallow a sample.
+ */
+static void control_reset(void)
+{
+    audio_resample_init(&s_resample);
+    s_control_integral = 0.0f;
+    s_control_ppm = 0.0f;
+    s_stage_count = 0;
+}
+
+/*
+ * Stops correcting without disturbing the stream: used while there is
+ * nothing to schedule against, where playback should simply pass through
+ * at nominal rate.
+ */
+static void control_neutral(void)
+{
+    s_control_integral = 0.0f;
+    s_control_ppm = 0.0f;
+    audio_resample_set_ppm(&s_resample, 0);
+}
+
+/*
+ * Late by -error_us: discard that much audio in one step instead of
+ * waiting for a 200 ppm correction to eat it. The samples already staged
+ * in front of the ring go with it, so they have to move the timeline too.
+ */
+static void timeline_resync_late(int64_t error_us)
+{
+    const size_t staged = s_stage_count;
+    const size_t wanted = (size_t)us_to_samples(-error_us);
+
+    xSemaphoreTake(s_ring.lock, portMAX_DELAY);
+    const size_t available = s_ring.fill / sizeof(int16_t);
+    const size_t skipped = (wanted < available) ? wanted : available;
+    s_ring.read_pos = (s_ring.read_pos + skipped * sizeof(int16_t)) % s_ring.capacity;
+    s_ring.fill -= skipped * sizeof(int16_t);
+    timeline_advance_locked(staged + skipped);
+    xSemaphoreGive(s_ring.lock);
+
+    control_reset();
+}
+
+/*
+ * PI correction inside the fine-control band. The output drives the
+ * resampler ratio: playing slightly fast (positive ppm) eats the backlog
+ * when late, slightly slow stretches it when early.
+ */
+static void control_update(int64_t error_us)
+{
+    const float error = (float)error_us;
+    const float frame_seconds =
+        (float)AUDIO_SINK_FRAME_SAMPLES / (float)AUDIO_I2S_SAMPLE_RATE;
+
+    s_control_integral += error * frame_seconds;
+
+    const float integral_limit = CONTROL_INTEGRAL_CLAMP_PPM / CONTROL_KI;
+    if (s_control_integral > integral_limit) {
+        s_control_integral = integral_limit;
+    } else if (s_control_integral < -integral_limit) {
+        s_control_integral = -integral_limit;
+    }
+
+    float target_ppm = -(CONTROL_KP * error + CONTROL_KI * s_control_integral);
+    if (target_ppm > (float)AUDIO_RESAMPLE_MAX_PPM) {
+        target_ppm = (float)AUDIO_RESAMPLE_MAX_PPM;
+    } else if (target_ppm < -(float)AUDIO_RESAMPLE_MAX_PPM) {
+        target_ppm = -(float)AUDIO_RESAMPLE_MAX_PPM;
+    }
+
+    const float delta = target_ppm - s_control_ppm;
+    if (delta > CONTROL_SLEW_PPM_PER_FRAME) {
+        s_control_ppm += CONTROL_SLEW_PPM_PER_FRAME;
+    } else if (delta < -CONTROL_SLEW_PPM_PER_FRAME) {
+        s_control_ppm -= CONTROL_SLEW_PPM_PER_FRAME;
+    } else {
+        s_control_ppm = target_ppm;
+    }
+
+    audio_resample_set_ppm(&s_resample, (int32_t)s_control_ppm);
+}
+
+/*
+ * Produces one output frame from the network stream: applies the
+ * scheduler, then pulls the (resampling-dependent) number of input samples
+ * through the staging buffer. Returns false when the frame should be
+ * silence instead -- either because the head sample is not due yet or
+ * because nothing is buffered.
+ */
+static bool render_network_frame(int16_t *playout_mono)
+{
+    if (s_timeline_reset_pending) {
+        s_timeline_reset_pending = false;
+        control_reset();
+    }
+
+    int64_t error_us = 0;
+    static bool holding;
+
+    if (scheduling_error_us(&error_us)) {
+        s_last_error_us = error_us;
+
+        /*
+         * Too early: emit silence and keep everything buffered. Each held
+         * frame costs 20 ms of real time, so the schedule catches up on its
+         * own without discarding audio.
+         *
+         * Entering and leaving this state use different thresholds on
+         * purpose. Releasing at HARD_RESYNC_THRESHOLD_US would hand the
+         * fine controller a residual error of a full threshold width, and
+         * at 200 ppm it needs ~400 s to work off 80 ms -- measured on
+         * device: err sat at 72-100 ms while ppm pinned at its -200 limit.
+         * Holding until the error is actually gone starts playback on time
+         * and leaves the controller nothing but real crystal drift to do.
+         */
+        if (error_us > HARD_RESYNC_THRESHOLD_US || (holding && error_us > 0)) {
+            if (!holding) {
+                holding = true;
+                s_resync_count++;
+            }
+            return false;
+        }
+        holding = false;
+
+        if (error_us < -HARD_RESYNC_THRESHOLD_US) {
+            timeline_resync_late(error_us);
+            s_resync_count++;
+        } else {
+            control_update(error_us);
+        }
+    } else {
+        holding = false;
+        control_neutral();
+    }
+
+    const size_t needed =
+        audio_resample_input_needed(&s_resample, AUDIO_SINK_FRAME_SAMPLES);
+    if (needed > STAGE_CAPACITY) {
+        return false;
+    }
+
+    if (s_stage_count < needed) {
+        const size_t want = needed - s_stage_count;
+        const size_t got_bytes = ring_read(&s_ring,
+                                           (uint8_t *)(s_stage + s_stage_count),
+                                           want * sizeof(int16_t));
+        const size_t got = got_bytes / sizeof(int16_t);
+        s_stage_count += got;
+
+        if (s_stage_count < needed) {
+            const size_t missing = needed - s_stage_count;
+            memset(s_stage + s_stage_count, 0, missing * sizeof(int16_t));
+            s_network_underrun_samples += missing;
+            s_stage_count = needed;
+        }
+    }
+
+    const size_t consumed =
+        audio_resample_process(&s_resample, s_stage, playout_mono, AUDIO_SINK_FRAME_SAMPLES);
+
+    /*
+     * The timeline follows what actually leaves the resampler, not what is
+     * pulled out of the ring: the staging buffer sits in front of the ring,
+     * so anchoring on ring reads would make the head jump a whole frame
+     * ahead every time staging is refilled.
+     */
+    xSemaphoreTake(s_ring.lock, portMAX_DELAY);
+    timeline_advance_locked(consumed);
+    xSemaphoreGive(s_ring.lock);
+
+    if (consumed < s_stage_count) {
+        memmove(s_stage, s_stage + consumed, (s_stage_count - consumed) * sizeof(int16_t));
+        s_stage_count -= consumed;
+    } else {
+        s_stage_count = 0;
+    }
+
+    return true;
 }
 
 static void player_task(void *arg)
@@ -313,6 +650,7 @@ static void player_task(void *arg)
              */
             if (s_active_source == AUDIO_SINK_SOURCE_NETWORK) {
                 ring_flush(&s_ring);
+                control_reset();
             }
             s_active_source = desired;
         }
@@ -321,13 +659,8 @@ static void player_task(void *arg)
         if (s_active_source == AUDIO_SINK_SOURCE_LOCAL_INPUT && have_local) {
             chosen = local_mono;
         } else if (s_active_source == AUDIO_SINK_SOURCE_NETWORK) {
-            const size_t want_bytes = AUDIO_SINK_FRAME_SAMPLES * sizeof(int16_t);
-            const size_t got_bytes =
-                ring_read(&s_ring, (uint8_t *)playout_mono, want_bytes);
-            if (got_bytes < want_bytes) {
-                const size_t got_samples = got_bytes / sizeof(int16_t);
-                memset(playout_mono + got_samples, 0, want_bytes - got_bytes);
-                s_network_underrun_samples += AUDIO_SINK_FRAME_SAMPLES - got_samples;
+            if (!render_network_frame(playout_mono)) {
+                memset(playout_mono, 0, sizeof(playout_mono));
             }
             chosen = playout_mono;
         } else {
@@ -347,7 +680,8 @@ esp_err_t audio_sink_start(uint16_t buffer_ms)
     }
 
     const size_t bytes_per_ms = (AUDIO_I2S_SAMPLE_RATE / 1000U) * sizeof(int16_t);
-    const size_t capacity = (size_t)buffer_ms * bytes_per_ms;
+    s_target_fill_bytes = (size_t)buffer_ms * bytes_per_ms;
+    const size_t capacity = s_target_fill_bytes * RING_CAPACITY_FACTOR;
 
     esp_err_t result = ring_init(&s_ring, capacity);
     if (result != ESP_OK) {
@@ -358,6 +692,7 @@ esp_err_t audio_sink_start(uint16_t buffer_ms)
     s_local_signal_present = false;
     s_local_attack_count = 0;
     s_local_last_active_us = 0;
+    control_reset();
 
     if (xTaskCreatePinnedToCore(player_task,
                                 "audio_sink",
@@ -373,7 +708,8 @@ esp_err_t audio_sink_start(uint16_t buffer_ms)
     }
 
     s_started = true;
-    ESP_LOGI(TAG, "Playback ring buffer ready: %u ms, %u B", buffer_ms, (unsigned)capacity);
+    ESP_LOGI(TAG, "Playback ring buffer ready: target %u ms (%u B), capacity %u B",
+             buffer_ms, (unsigned)s_target_fill_bytes, (unsigned)capacity);
     return ESP_OK;
 }
 
@@ -382,7 +718,9 @@ void audio_sink_set_network_active(bool active)
     s_network_active = active;
 }
 
-size_t audio_sink_feed_network(const int16_t *mono_pcm, size_t sample_count)
+size_t audio_sink_feed_network(const int16_t *mono_pcm,
+                               size_t sample_count,
+                               int64_t chunk_ts_us)
 {
     /*
      * Accepted while playing from the network AND while merely prebuffering
@@ -398,6 +736,37 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm, size_t sample_count)
         return 0;
     }
 
+    /*
+     * Anchor or re-anchor the playback timeline before the data lands.
+     * Only this task ever writes to the ring, so releasing the lock between
+     * the check and the ring_write() below cannot let another writer slip
+     * in and invalidate the decision.
+     */
+    xSemaphoreTake(s_ring.lock, portMAX_DELAY);
+    if (!s_head_ts_valid || s_ring.fill == 0U) {
+        timeline_anchor_locked(chunk_ts_us);
+    } else {
+        /*
+         * Ignores the one or two samples the player may still hold staged
+         * in front of the ring (~40 us) -- irrelevant against a 100 ms
+         * threshold, and reading its counter from this task would be a
+         * cross-task read for no benefit.
+         */
+        const int64_t expected_us =
+            s_head_ts_us + samples_to_us((int64_t)(s_ring.fill / sizeof(int16_t)));
+        const int64_t gap_us = chunk_ts_us - expected_us;
+        if (gap_us > STREAM_DISCONTINUITY_US || gap_us < -STREAM_DISCONTINUITY_US) {
+            s_ring.write_pos = 0;
+            s_ring.read_pos = 0;
+            s_ring.fill = 0;
+            timeline_anchor_locked(chunk_ts_us);
+            s_network_ready = false; /* rebuild the prebuffer from scratch */
+            s_timeline_reset_pending = true;
+            s_discontinuity_count++;
+        }
+    }
+    xSemaphoreGive(s_ring.lock);
+
     const size_t written =
         ring_write(&s_ring, (const uint8_t *)mono_pcm, sample_count * sizeof(int16_t));
     s_network_bytes_fed += written;
@@ -405,6 +774,18 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm, size_t sample_count)
         s_network_bytes_dropped += (sample_count * sizeof(int16_t)) - written;
     }
     return written / sizeof(int16_t);
+}
+
+void audio_sink_set_server_time_offset(int64_t offset_us, bool valid)
+{
+    s_server_offset_us = offset_us;
+    s_server_offset_valid = valid;
+}
+
+void audio_sink_set_stream_timing(uint32_t buffer_ms, int32_t latency_ms)
+{
+    s_stream_buffer_us = (int64_t)buffer_ms * 1000LL;
+    s_stream_latency_us = (int64_t)latency_ms * 1000LL;
 }
 
 void audio_sink_set_source_mode(uint8_t mode)

@@ -144,7 +144,8 @@ static bool config_is_valid(const device_config_t *cfg)
     if (cfg->buffer_ms < 200U || cfg->buffer_ms > 10000U) {
         return false;
     }
-    if (cfg->delay_trim_ms < -2000 || cfg->delay_trim_ms > 2000) {
+    if (cfg->delay_trim_ms < -DEVICE_CONFIG_DELAY_TRIM_MAX_MS ||
+        cfg->delay_trim_ms > DEVICE_CONFIG_DELAY_TRIM_MAX_MS) {
         return false;
     }
     if (cfg->local_input_threshold_db < -80 || cfg->local_input_threshold_db > 0) {

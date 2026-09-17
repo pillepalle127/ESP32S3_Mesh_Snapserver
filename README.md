@@ -231,11 +231,23 @@ In der Client-Rolle:
 * Puffergröße (`bufferMs`) und ein zusätzlicher Delay-Trim sind konfigurierbar,
   um Mesh-Umstrukturierungen in einem dynamischen Funkumfeld zu überbrücken.
 
-**Bekannte Einschränkung (Stand dieser Version):** Es findet noch kein
-Zeitabgleich mit dem Server statt (`SNAP_MSG_TIME` wird vom Client noch nicht
-gesendet). Ein einzelner Client spielt Audio flüssig ab, aber mehrere Clients
-gleichzeitig können über längere Zeit gegeneinander driften. Ein
-Drift-Ausgleich ist als nächster Schritt vorgesehen.
+### Zeitabgleich und Drift
+
+Der Client gleicht seine Uhr über `SNAP_MSG_TIME` mit dem Server ab
+(Vierzeiten-Austausch; aus einem gleitenden Fenster zählt die Messung mit der
+kleinsten Laufzeit, weil verzögerte Pakete ihre eigene Schätzung verfälschen).
+Daraus ergibt sich für jeden Chunk ein Soll-Abspielzeitpunkt
+`Zeitstempel + bufferMs − latency + delay_trim_ms`. Abweichungen über 100 ms
+werden in einem Schritt korrigiert, darunter kontinuierlich und unhörbar über
+das Resampling-Verhältnis (±200 ppm).
+
+Damit der Lautsprecher des **Servers** nicht `bufferMs` vor den Clients spielt,
+verzögert dieser seine eigene lokale Ausgabe um denselben Betrag. Der
+Netzwerk-Stream bleibt davon unberührt und geht unverzögert raus.
+
+**Noch nicht verifiziert:** Die tatsächliche Synchronität mehrerer Clients über
+längere Zeit ist mangels Messaufbau bisher nicht nachgemessen; die Parameter der
+Drift-Regelung sind konservativ voreingestellt.
 
 ---
 

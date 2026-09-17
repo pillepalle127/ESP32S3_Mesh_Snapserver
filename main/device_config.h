@@ -34,6 +34,10 @@ extern "C" {
 #define SOURCE_MODE_NETWORK_ONLY 1U
 #define SOURCE_MODE_LOCAL_ONLY   2U
 
+/* Range of delay_trim_ms. Also bounds how much headroom the server's local
+ * output delay line has to reserve so the trim stays adjustable at runtime. */
+#define DEVICE_CONFIG_DELAY_TRIM_MAX_MS 2000
+
 typedef struct {
     uint32_t version;
 
