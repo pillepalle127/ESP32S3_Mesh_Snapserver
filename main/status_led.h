@@ -2,9 +2,12 @@
  * @file status_led.h
  * @brief Single on-board WS2812 as a combined status indicator and level meter.
  *
- * Colour says what the device is doing, brightness follows the audio level.
- * In normal operation that reads as a VU meter; when something is wrong the
- * colour says what, without reaching for a serial console.
+ * While audio is playing the colour IS the meter -- green through yellow to
+ * red, the way position works on a meter with more than one LED -- and the
+ * LED stays steady. When there is no audio path there is no level to show,
+ * so the colour carries the state instead and the blink rate carries its
+ * severity. Steady therefore means nothing is wrong, without reaching for a
+ * serial console.
  *
  * Both halves come from measurements that already existed: the server's
  * post-crossover output peak (audio_i2s.c) and the client's output RMS
