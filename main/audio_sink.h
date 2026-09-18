@@ -4,11 +4,23 @@
  *        input), a PSRAM ring buffer for the network path, and the player
  *        task that drives audio_i2s_write_mono().
  *
- * Mirrors the source-arbiter pattern from the ESP32_Mesh_Snapclient
- * reference project (network vs. A2DP there, network vs. local I2S input
- * here): exactly one source is ever fed to the DSP/output stage, PCM fed by
- * an inactive source is dropped rather than queued, and switching sources
- * flushes the ring buffer so a stale backlog can't suddenly play out.
+ * Source arbitration follows the ESP32_Mesh_Snapclient reference project
+ * (network vs. A2DP there, network vs. local I2S input here): exactly one
+ * source is ever fed to the DSP/output stage. Two rules differ from that
+ * reference, both for reasons that only showed up on device:
+ *   - Network PCM is accepted while the local input is idle, including
+ *     during prebuffering when nothing is playing yet. Dropping it whenever
+ *     the network wasn't already the active source made prebuffering
+ *     impossible -- the buffer could never fill.
+ *   - The ring is flushed when *leaving* the network source, not on every
+ *     switch. Flushing on entry would discard the very prebuffer that was
+ *     just built up.
+ *
+ * On top of the arbiter sits a playback scheduler: once snapclient.c has a
+ * clock offset, each sample is placed at chunk_ts - offset + bufferMs -
+ * latency + delay_trim_ms rather than simply played as soon as it arrives.
+ * Large errors are corrected in one step, small ones by trimming the
+ * resampling ratio (see audio_resample.h).
  */
 #pragma once
 
@@ -66,6 +78,15 @@ void audio_sink_set_server_time_offset(int64_t offset_us, bool valid);
 /* bufferMs/latency from the server's ServerSettings message. Together with
  * delay_trim_ms they define when a chunk is due on the local clock. */
 void audio_sink_set_stream_timing(uint32_t buffer_ms, int32_t latency_ms);
+
+/*
+ * Per-client volume from the server's ServerSettings message: percent is
+ * 0-100, muted overrides it. Applied at the very end of the playback path,
+ * so a change is audible immediately instead of buffer_ms later, and to
+ * whichever source is playing -- it is this speaker's level, not the
+ * network stream's.
+ */
+void audio_sink_set_volume(int32_t percent, bool muted);
 
 /* SOURCE_MODE_AUTO / _NETWORK_ONLY / _LOCAL_ONLY from device_config.h.
  * Safe to call before audio_sink_start(); the value just isn't used yet. */

@@ -593,12 +593,25 @@ static void handle_server_settings(const uint8_t *payload, uint32_t size)
 
     const cJSON *buffer_ms = cJSON_GetObjectItemCaseSensitive(root, "bufferMs");
     const cJSON *latency = cJSON_GetObjectItemCaseSensitive(root, "latency");
+    const cJSON *volume = cJSON_GetObjectItemCaseSensitive(root, "volume");
+    const cJSON *muted = cJSON_GetObjectItemCaseSensitive(root, "muted");
 
     if (cJSON_IsNumber(buffer_ms)) {
         const int32_t latency_ms = cJSON_IsNumber(latency) ? (int32_t)latency->valuedouble : 0;
         ESP_LOGI(TAG, "ServerSettings: bufferMs=%d latency=%d",
                  (int)buffer_ms->valuedouble, (int)latency_ms);
         audio_sink_set_stream_timing((uint32_t)buffer_ms->valuedouble, latency_ms);
+    }
+
+    /*
+     * Per-client volume. The server re-sends ServerSettings whenever it is
+     * changed (see snapserver_set_client_volume()/_mute()), so this arrives
+     * mid-session too, not just during the handshake -- which is what makes
+     * a Snapcast control app able to set each speaker separately.
+     */
+    if (cJSON_IsNumber(volume) || cJSON_IsBool(muted)) {
+        const int32_t percent = cJSON_IsNumber(volume) ? (int32_t)volume->valuedouble : 100;
+        audio_sink_set_volume(percent, cJSON_IsTrue(muted));
     }
 
     cJSON_Delete(root);
