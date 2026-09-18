@@ -136,6 +136,8 @@ static bool s_task_started;
 static EventGroupHandle_t s_evt;
 
 static char s_host[64];
+/* s_host is written from the event handler and read by the client task. */
+static portMUX_TYPE s_host_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint16_t s_port = 1704;
 
 static char s_codec[16];
@@ -251,8 +253,13 @@ static int tcp_connect(void)
         return -1;
     }
 
-    if (getaddrinfo(s_host, port_text, &hints, &result) != 0 || result == NULL) {
-        ESP_LOGW(TAG, "getaddrinfo failed for %s", s_host);
+    char host[sizeof(s_host)];
+    portENTER_CRITICAL(&s_host_lock);
+    strlcpy(host, s_host, sizeof(host));
+    portEXIT_CRITICAL(&s_host_lock);
+
+    if (getaddrinfo(host, port_text, &hints, &result) != 0 || result == NULL) {
+        ESP_LOGW(TAG, "getaddrinfo failed for %s", host);
         return -1;
     }
 
@@ -889,6 +896,25 @@ static void snap_task(void *arg)
     vTaskDelete(NULL);
 }
 
+void snapclient_set_server_host(const char *host)
+{
+    if (host == NULL || host[0] == '\0') {
+        return;
+    }
+
+    bool changed = false;
+    portENTER_CRITICAL(&s_host_lock);
+    if (strcmp(s_host, host) != 0) {
+        strlcpy(s_host, host, sizeof(s_host));
+        changed = true;
+    }
+    portEXIT_CRITICAL(&s_host_lock);
+
+    if (changed) {
+        ESP_LOGI(TAG, "Snapserver address is now %s", host);
+    }
+}
+
 void snapclient_set_network_available(bool available)
 {
     if (s_network_available == available) {
@@ -926,7 +952,9 @@ esp_err_t snapclient_start(const char *host, uint16_t port)
         return ESP_ERR_INVALID_ARG;
     }
 
+    portENTER_CRITICAL(&s_host_lock);
     strlcpy(s_host, host, sizeof(s_host));
+    portEXIT_CRITICAL(&s_host_lock);
     s_port = port;
 
     if (s_evt == NULL) {

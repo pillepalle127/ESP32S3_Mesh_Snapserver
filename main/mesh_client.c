@@ -77,6 +77,11 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     resolve_server_host(host, sizeof(host));
 
     ESP_LOGI(TAG, "Got mesh IP, Snapserver resolved to %s:%u", host, (unsigned)SNAPSERVER_PORT);
+
+    /* Every time, not just the first: the root's address can differ after a
+     * server restart or a parent change, and the client used to keep the one
+     * it saw at startup. */
+    snapclient_set_server_host(host);
     snapclient_set_network_available(true);
 
     if (!s_snapclient_started) {
