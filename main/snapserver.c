@@ -138,6 +138,27 @@ static const char *TAG = "SNAPSERVER";
  */
 #define CLIENT_RECV_TIMEOUT_US  30000000
 
+/*
+ * How long a client may send nothing at all before it counts as gone.
+ *
+ * The keepalive referred to above cannot do this job: it only probes an idle
+ * connection, and a stalled client never is idle -- audio_task keeps queueing
+ * chunks, so TCP always has unacked data outstanding and falls back on
+ * retransmission with exponential backoff, which takes minutes. Seen on
+ * device: a client at -43 dBm went to 0 chunks/s with time_msgs frozen at 43
+ * and skipped climbing past 640, still held by the server.
+ *
+ * Nothing used to notice because a stalled send eventually failed hard and
+ * closed the client. Since a wire chunk became droppable, sends no longer
+ * fail at all (send_errors=0 throughout), so the peer has to be judged by
+ * what it sends instead.
+ *
+ * Safe at this length because every Snapcast client sends a Time request at
+ * least once a second; twenty seconds of complete silence is not a quiet
+ * peer, it is an absent one.
+ */
+#define CLIENT_SILENCE_LIMIT_US 20000000
+
 /* TCP keepalive: idle 10s, then 3 probes 5s apart -> dead peer detected
  * after ~25s even while client_task is blocked waiting for the next
  * message. */
@@ -1273,8 +1294,12 @@ static void stats_task(void *arg)
             uint32_t times = 0;
             char peer[16];
             char mac[24];
+            int32_t seen_sec = 0;
+            int32_t seen_usec = 0;
 
             portENTER_CRITICAL(&s_clients_lock);
+            seen_sec = s_clients[i].last_seen_sec;
+            seen_usec = s_clients[i].last_seen_usec;
             active = s_clients[i].active;
             ready = s_clients[i].ready;
             chunks = s_clients[i].chunks_sent;
@@ -1285,6 +1310,18 @@ static void stats_task(void *arg)
             strlcpy(peer, s_clients[i].peer, sizeof(peer));
             strlcpy(mac, s_clients[i].mac, sizeof(mac));
             portEXIT_CRITICAL(&s_clients_lock);
+
+            if (active && ready && seen_sec != 0) {
+                const int64_t seen_us =
+                    (int64_t)seen_sec * 1000000LL + (int64_t)seen_usec;
+                const int64_t silent_us = now_us() - seen_us;
+                if (silent_us > CLIENT_SILENCE_LIMIT_US) {
+                    ESP_LOGW(TAG,
+                             "%s silent for %lld s, dropping it",
+                             peer, (long long)(silent_us / 1000000LL));
+                    mark_client_failed(&s_clients[i]);
+                }
+            }
 
             /* 127 means "no station matched": the Snapcast client is not a
              * direct child of this AP -- a node one mesh level down, or a
