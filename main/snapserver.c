@@ -34,6 +34,7 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "audio_i2s.h"
 #include "audio_opus.h"
 
@@ -42,6 +43,17 @@ static const char *TAG = "SNAPSERVER";
 #define MAX_CLIENTS             SNAPSERVER_MAX_CLIENTS
 #define RX_MAX                  4096
 #define SNAP_PROTOCOL_VER       2
+/*
+ * Task stacks live in PSRAM, which is 8 MB here and barely used, while the
+ * Wi-Fi driver competes for internal DRAM. Only the TCB stays internal, at
+ * about a hundred bytes, so a client slot costs internal memory only for its
+ * lwIP socket. The TCBs of tasks created this way must be released with
+ * vTaskDeleteWithCaps(), and the API warns against self-deletion -- which is
+ * why the connection tasks below are permanent and park between sessions
+ * instead of being created per connection.
+ */
+#define TASK_STACK_CAPS (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+
 /*
  * Measured, not guessed: "stack headroom" reported conn=5256 B free of 8192
  * and sender=1796 B free of 3072, steady across a full run, so the peaks are
@@ -935,7 +947,8 @@ static void close_client(client_t *client)
     client->ready = false;
     client->active = false;
     client->fd = -1;
-    client->task = NULL;
+    /* `task` is the slot's permanent connection task and outlives the
+     * session -- clearing it here would strand the slot for good. */
     portEXIT_CRITICAL(&s_clients_lock);
 
     if (fd >= 0) {
@@ -956,9 +969,8 @@ static void close_client(client_t *client)
              (unsigned long)times);
 }
 
-static void client_task(void *arg)
+static void client_session(client_t *client)
 {
-    client_t *client = (client_t *)arg;
     int fd = -1;
 
     portENTER_CRITICAL(&s_clients_lock);
@@ -1061,7 +1073,22 @@ done:
     free(payload);
     close_client(client);
     ESP_LOGI(TAG, "Client disconnected");
-    vTaskDelete(NULL);
+}
+
+/*
+ * One per client slot, created once at startup and parked on a notification
+ * for the lifetime of the server -- the same reasoning as sender_task, plus
+ * the stack is in PSRAM and freeing it from the task running on it is
+ * exactly what vTaskDeleteWithCaps() warns about.
+ */
+static void client_task(void *arg)
+{
+    client_t *client = (client_t *)arg;
+
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        client_session(client);
+    }
 }
 
 static void mark_client_failed(client_t *client)
@@ -1481,7 +1508,6 @@ static void server_task(void *arg)
                 s_clients[i].active = true;
                 s_clients[i].ready = false;
                 s_clients[i].next_id = 1;
-                s_clients[i].task = NULL;
                 s_clients[i].chunks_sent = 0;
                 s_clients[i].chunk_bytes = 0;
                 s_clients[i].chunk_errors = 0;
@@ -1533,16 +1559,8 @@ static void server_task(void *arg)
                  s_clients[slot].peer,
                  fd);
 
-        if (xTaskCreatePinnedToCore(client_task,
-                                    "snap_client",
-                                    CLIENT_TASK_STACK,
-                                    &s_clients[slot],
-                                    5,
-                                    &s_clients[slot].task,
-                                    0) != pdPASS) {
-            ESP_LOGE(TAG, "Could not create client task");
-            close_client(&s_clients[slot]);
-        }
+        /* The slot's task already exists and is parked; wake it. */
+        xTaskNotifyGive(s_clients[slot].task);
     }
 }
 
@@ -1754,24 +1772,41 @@ esp_err_t snapserver_start(void)
                                                        MALLOC_CAP_8BIT);
         }
 
-        char sender_name[16];
-        snprintf(sender_name, sizeof(sender_name), "snapsend%d", i);
-        const bool sender_ok =
+        char task_name[16];
+        snprintf(task_name, sizeof(task_name), "snapsend%d", i);
+        bool sender_ok =
             s_clients[i].send_mutex != NULL && s_clients[i].tx_queue != NULL &&
             s_clients[i].tx_payload != NULL &&
-            xTaskCreatePinnedToCore(sender_task,
-                                    sender_name,
-                                    SENDER_TASK_STACK,
-                                    &s_clients[i],
-                                    SENDER_TASK_PRIORITY,
-                                    &s_clients[i].tx_task,
-                                    0) == pdPASS;
+            xTaskCreatePinnedToCoreWithCaps(sender_task,
+                                            task_name,
+                                            SENDER_TASK_STACK,
+                                            &s_clients[i],
+                                            SENDER_TASK_PRIORITY,
+                                            &s_clients[i].tx_task,
+                                            0,
+                                            TASK_STACK_CAPS) == pdPASS;
+
+        if (sender_ok) {
+            snprintf(task_name, sizeof(task_name), "snapconn%d", i);
+            sender_ok = xTaskCreatePinnedToCoreWithCaps(client_task,
+                                                        task_name,
+                                                        CLIENT_TASK_STACK,
+                                                        &s_clients[i],
+                                                        5,
+                                                        &s_clients[i].task,
+                                                        0,
+                                                        TASK_STACK_CAPS) == pdPASS;
+        }
 
         if (!sender_ok) {
             ESP_LOGE(TAG, "Could not set up sender for client slot %d", i);
             for (int j = 0; j <= i; ++j) {
+                if (s_clients[j].task != NULL) {
+                    vTaskDeleteWithCaps(s_clients[j].task);
+                    s_clients[j].task = NULL;
+                }
                 if (s_clients[j].tx_task != NULL) {
-                    vTaskDelete(s_clients[j].tx_task);
+                    vTaskDeleteWithCaps(s_clients[j].tx_task);
                     s_clients[j].tx_task = NULL;
                 }
                 if (s_clients[j].tx_queue != NULL) {
