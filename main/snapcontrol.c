@@ -39,6 +39,7 @@
 #include <netinet/in.h>
 
 #include "cJSON.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_netif.h"
@@ -58,7 +59,15 @@ static const char *TAG = "SNAPCONTROL";
  * there looks like "the control app lists no clients" rather than like a
  * crash. Sized with headroom for the full client count.
  */
-#define CTRL_CONN_STACK  12288
+/*
+ * Back down from 12288: the three snapshot helpers below used to put a
+ * snapserver_client_info_t[SNAPSERVER_MAX_CLIENTS] on the stack, about
+ * 3.3 kB each at 10 clients, and those arrays now come from PSRAM instead.
+ * Internal DRAM is the scarce resource on this device -- the Wi-Fi driver
+ * allocates its TX buffers from it, and a control connection must not cost
+ * 12 kB of it.
+ */
+#define CTRL_CONN_STACK   6144
 #define CTRL_SERVER_STACK 6144
 #define CTRL_REFRESH_MS    500
 
@@ -167,12 +176,35 @@ static cJSON *build_client_object(const snapserver_client_info_t *info)
     return client;
 }
 
+/*
+ * Snapshot buffer for the helpers below. PSRAM rather than the stack: at
+ * SNAPSERVER_MAX_CLIENTS = 10 the array is ~3.3 kB, which is a lot to
+ * reserve in every control-connection task, and internal DRAM is what the
+ * Wi-Fi driver competes for. Returns 0 on failure, which the callers treat
+ * as "no clients" -- a control reply is worth less than staying up.
+ */
+static size_t take_client_snapshot(snapserver_client_info_t **out)
+{
+    snapserver_client_info_t *buf =
+        heap_caps_malloc(sizeof(*buf) * SNAPSERVER_MAX_CLIENTS, MALLOC_CAP_SPIRAM);
+    if (buf == NULL) {
+        buf = heap_caps_malloc(sizeof(*buf) * SNAPSERVER_MAX_CLIENTS,
+                               MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    if (buf == NULL) {
+        *out = NULL;
+        return 0;
+    }
+
+    *out = buf;
+    return snapserver_get_clients(buf, SNAPSERVER_MAX_CLIENTS);
+}
+
 /* Appends every connected client to the given array. */
 static void fill_client_array(cJSON *array)
 {
-    snapserver_client_info_t clients[SNAPSERVER_MAX_CLIENTS];
-    const size_t count =
-        snapserver_get_clients(clients, SNAPSERVER_MAX_CLIENTS);
+    snapserver_client_info_t *clients = NULL;
+    const size_t count = take_client_snapshot(&clients);
 
     for (size_t i = 0; i < count; ++i) {
         cJSON *entry = build_client_object(&clients[i]);
@@ -180,6 +212,8 @@ static void fill_client_array(cJSON *array)
             cJSON_AddItemToArray(array, entry);
         }
     }
+
+    free(clients);
 }
 
 /* Builds the single group object including its clients. */
@@ -274,17 +308,20 @@ static bool lookup_client(const char *id, snapserver_client_info_t *out)
         return false;
     }
 
-    snapserver_client_info_t clients[SNAPSERVER_MAX_CLIENTS];
-    const size_t count =
-        snapserver_get_clients(clients, SNAPSERVER_MAX_CLIENTS);
+    snapserver_client_info_t *clients = NULL;
+    const size_t count = take_client_snapshot(&clients);
 
+    bool found = false;
     for (size_t i = 0; i < count; ++i) {
         if (strcmp(clients[i].id, id) == 0) {
             *out = clients[i];
-            return true;
+            found = true;
+            break;
         }
     }
-    return false;
+
+    free(clients);
+    return found;
 }
 
 /* Copies the "volume" object from params, or a sane default. */
@@ -571,9 +608,8 @@ static int send_server_update(int fd)
 /* Stable fingerprint of the current client set for change detection. */
 static uint32_t client_set_fingerprint(void)
 {
-    snapserver_client_info_t clients[SNAPSERVER_MAX_CLIENTS];
-    const size_t count =
-        snapserver_get_clients(clients, SNAPSERVER_MAX_CLIENTS);
+    snapserver_client_info_t *clients = NULL;
+    const size_t count = take_client_snapshot(&clients);
 
     uint32_t hash = 2166136261U ^ (uint32_t)count;
     for (size_t i = 0; i < count; ++i) {
@@ -585,6 +621,8 @@ static uint32_t client_set_fingerprint(void)
         hash ^= clients[i].connected ? 1U : 0U;
         hash *= 16777619U;
     }
+
+    free(clients);
     return hash;
 }
 

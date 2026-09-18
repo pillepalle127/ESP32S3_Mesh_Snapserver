@@ -1180,8 +1180,23 @@ static void stats_task(void *arg)
             last_chunks[i] = chunks;
         }
 
+        /*
+         * Internal DRAM, every 5 s. This is the resource the Wi-Fi driver
+         * takes its TX buffers from, and running it down showed up on
+         * device as every client -- including a phone running stock
+         * Snapcast -- going to 0 chunks/s at the same instant while the
+         * capture loop kept perfect time, followed by "Could not create
+         * client task". largest is what an allocation actually has to fit
+         * into; min_ever is the low-water mark since boot.
+         */
         const int64_t now_us = esp_timer_get_time();
         if (now_us - last_peak_us >= 5000000LL) {
+            ESP_LOGI(TAG,
+                     "heap: internal free=%u B largest=%u B min_ever=%u B",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                     (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+
             int16_t peak_left = 0;
             int16_t peak_right = 0;
             audio_i2s_take_output_peak(&peak_left, &peak_right);
