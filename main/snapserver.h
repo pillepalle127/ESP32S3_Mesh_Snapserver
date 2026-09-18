@@ -20,7 +20,7 @@ extern "C" {
 #define SNAPSERVER_PORT 1704
 
 /* Upper bound for snapserver_get_clients(). */
-#define SNAPSERVER_MAX_CLIENTS 8
+#define SNAPSERVER_MAX_CLIENTS 10
 
 /*
  * Snapshot of one connected client, filled from its Hello message plus

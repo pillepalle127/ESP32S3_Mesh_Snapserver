@@ -50,8 +50,16 @@ static const char *TAG = "SNAPCONTROL";
 
 #define CTRL_MAX_CONN     4
 #define CTRL_RX_MAX       2048
-#define CTRL_CONN_STACK   8192
-#define CTRL_SERVER_STACK 4096
+/*
+ * Three functions here keep a snapserver_client_info_t[SNAPSERVER_MAX_CLIENTS]
+ * on the stack, and that struct is ~344 B. Raising the client limit to 10
+ * grew each of those arrays to ~3.4 KB, which together with the cJSON
+ * response build put the connection task at its limit -- a stack overflow
+ * there looks like "the control app lists no clients" rather than like a
+ * crash. Sized with headroom for the full client count.
+ */
+#define CTRL_CONN_STACK  12288
+#define CTRL_SERVER_STACK 6144
 #define CTRL_REFRESH_MS    500
 
 #define SERVER_NAME       "esp32-s3-mini-snapserver"
