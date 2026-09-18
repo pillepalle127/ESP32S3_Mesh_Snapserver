@@ -47,9 +47,28 @@ static const char *TAG = "STATUS_LED";
  * instead of sitting at either end.
  */
 #define LED_LEVEL_FLOOR_DB      -50.0f
-#define LED_MIN_BRIGHTNESS       0.06f  /* never fully dark: the colour is
-                                         * the status and must stay readable
-                                         * through silence */
+/*
+ * Floor for the meter. Not as dark as it could be, because hue is what
+ * carries the level now and an almost-black LED has no readable hue.
+ */
+#define LED_METER_FLOOR          0.30f
+
+/*
+ * Blink periods for the states that have no audio, in updates of
+ * LED_UPDATE_MS. Severity reads as rate: the worse it is, the faster it
+ * blinks. Anything steady means nothing is wrong.
+ */
+#define LED_BLINK_FAST_PERIOD       8   /* ~260 ms, no network      */
+#define LED_BLINK_SLOW_PERIOD      30   /* ~1 s, no Snapserver      */
+#define LED_BLINK_CALM_PERIOD      60   /* ~2 s, provisioning AP    */
+
+/*
+ * The local input is a good state, so it keeps the meter rather than
+ * blinking at the user. It marks itself with a short blank every few
+ * seconds -- visible if watched, invisible if not.
+ */
+#define LED_LOCAL_MARK_PERIOD      91   /* ~3 s  */
+#define LED_LOCAL_MARK_BLANK        3   /* ~100 ms */
 
 /*
  * Decay per update when the level falls: full scale to dark in three
@@ -82,6 +101,33 @@ static rmt_channel_handle_t s_channel;
 static rmt_encoder_handle_t s_encoder;
 static volatile status_led_state_t s_state = STATUS_LED_BOOTING;
 static volatile float s_level_db = -120.0f;
+
+/*
+ * Level as hue, the way a meter with more than one LED would use position:
+ * green through yellow to red. Interpolated rather than stepped, because
+ * three discrete colours on a single LED read as three states, not as a
+ * scale.
+ */
+static led_rgb_t level_colour(float level)
+{
+    if (level < 0.5f) {
+        const float t = level * 2.0f;            /* green -> yellow */
+        return (led_rgb_t){ (uint8_t)(255.0f * t), 255, 0 };
+    }
+    const float t = (level - 0.5f) * 2.0f;       /* yellow -> red   */
+    return (led_rgb_t){ 255, (uint8_t)(255.0f * (1.0f - t)), 0 };
+}
+
+/* Blink period for a state, in updates. 0 means steady. */
+static uint32_t state_blink_period(status_led_state_t state)
+{
+    switch (state) {
+    case STATUS_LED_NO_NETWORK:   return LED_BLINK_FAST_PERIOD;
+    case STATUS_LED_NO_SERVER:    return LED_BLINK_SLOW_PERIOD;
+    case STATUS_LED_PROVISIONING: return LED_BLINK_CALM_PERIOD;
+    default:                      return 0;
+    }
+}
 
 static led_rgb_t state_colour(status_led_state_t state)
 {
@@ -167,8 +213,10 @@ static void led_task(void *arg)
 {
     (void)arg;
     float shown = 0.0f;
+    uint32_t tick = 0;
 
     for (;;) {
+        const status_led_state_t state = s_state;
         const float level = current_level();
 
         /* Instant attack, gradual release -- see LED_DECAY_PER_UPDATE. */
@@ -184,10 +232,31 @@ static void led_task(void *arg)
             }
         }
 
-        const float brightness =
-            LED_MIN_BRIGHTNESS + shown * (1.0f - LED_MIN_BRIGHTNESS);
-        (void)led_write(state_colour(s_state), brightness);
+        led_rgb_t colour;
+        float brightness;
 
+        const bool metering = (state == STATUS_LED_PLAYING ||
+                               state == STATUS_LED_LOCAL_INPUT);
+        if (metering) {
+            colour = level_colour(shown);
+            brightness = LED_METER_FLOOR + shown * (1.0f - LED_METER_FLOOR);
+
+            if (state == STATUS_LED_LOCAL_INPUT &&
+                (tick % LED_LOCAL_MARK_PERIOD) < LED_LOCAL_MARK_BLANK) {
+                brightness = 0.0f;
+            }
+        } else {
+            /* No audio path, so no level to show: the colour is free to
+             * carry the state and the rate carries its severity. */
+            colour = state_colour(state);
+            const uint32_t period = state_blink_period(state);
+            brightness = (period == 0U || (tick % period) < (period / 2U))
+                             ? 1.0f : 0.0f;
+        }
+
+        (void)led_write(colour, brightness);
+
+        ++tick;
         vTaskDelay(pdMS_TO_TICKS(LED_UPDATE_MS));
     }
 }
@@ -241,7 +310,7 @@ esp_err_t status_led_start(void)
         (void)led_write(probe[i], 1.0f);
         vTaskDelay(pdMS_TO_TICKS(120));
     }
-    (void)led_write(state_colour(STATUS_LED_BOOTING), LED_MIN_BRIGHTNESS);
+    (void)led_write(state_colour(STATUS_LED_BOOTING), LED_METER_FLOOR);
 
     if (xTaskCreate(led_task, "status_led", LED_TASK_STACK, NULL,
                     LED_TASK_PRIORITY, NULL) != pdPASS) {
