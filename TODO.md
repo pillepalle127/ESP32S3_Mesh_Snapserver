@@ -87,20 +87,31 @@ Bugs sind umgesetzt:
   engeren Sinn: Die Regelung sitzt **vor** der Aufnahme, der Server
   encodiert also bereits das abgesenkte Signal, und jeder Client bekommt
   es so. Zwei Konsequenzen daraus, die zusammen gehören:
-  1. Das Snapcast-Protokoll hat eine Lautstärke **pro Client**. Der Server
-     verwaltet sie bereits (`client->volume_percent`, über die JSON-RPC in
-     `snapcontrol.c` setzbar) und annonciert sie in den ServerSettings.
-     Unser eigener Client wertet das `volume`-Feld bisher **nicht** aus —
-     `handle_server_settings()` liest nur `bufferMs` und `latency`. Das
-     wäre umzusetzen, dann ist jeder Client einzeln regelbar.
-  2. Damit das etwas nützt, muss die Quelle auf konstantem Pegel bleiben
-     (A2DP-Lautstärke voll aufdrehen und nicht mehr anfassen), sonst
-     multipliziert sich beides. Alternativ müsste der Pegel der Quelle
-     zusätzlich zurückgerechnet werden, was ohne Rückkanal vom
-     A2DP-Empfänger nicht sauber geht.
-  Zusätzlich fehlt eine Bedienoberfläche dafür: Die Web-Config kennt kein
-  Lautstärkefeld, und die JSON-RPC ist nur mit externem Werkzeug
-  erreichbar.
+  1. **Erledigt 2026-09-18:** Das Snapcast-Protokoll hat eine Lautstärke
+     **pro Client**, die der Server bereits verwaltet
+     (`client->volume_percent`, über `Client.SetVolume` der JSON-RPC in
+     `snapcontrol.c`) und nach jeder Änderung erneut in den ServerSettings
+     annonciert. Der Client wertet `volume`/`muted` jetzt aus und wendet
+     sie an. Die Kette ist damit über eine Snapcast-Control-App komplett
+     bedienbar. Angewendet wird am Ende des Wiedergabepfads, nicht beim
+     Einspeisen — sonst wäre der Pegel im Ringpuffer eingebacken und eine
+     Änderung erst `buffer_ms` später hörbar. Die Kennlinie ist kubisch
+     (perzeptive Näherung, sonst drängt sich der ganze nutzbare Bereich
+     ins obere Ende des Reglers); falls sie in der Praxis zu steil wirkt,
+     ist sie in `audio_sink_set_volume()` mit einer Zeile zu ändern.
+  2. **Bleibt offen:** Damit das etwas nützt, muss die Quelle auf
+     konstantem Pegel bleiben (A2DP-Lautstärke voll aufdrehen und nicht
+     mehr anfassen), sonst multipliziert sich beides. Den Pegel der Quelle
+     zurückzurechnen geht ohne Rückkanal vom A2DP-Empfänger nicht sauber.
+  3. **Bleibt offen:** Die eigene Web-Config kennt kein Lautstärkefeld. Für
+     den Alltag reicht die Control-App, aber wer nur den Browser hat,
+     kommt an die Einstellung nicht heran.
+  4. **Bleibt offen:** Der Server hält die Lautstärke nur im RAM
+     (`s_clients[i].volume_percent`, beim Start und beim Belegen eines Slots
+     auf 100 gesetzt) — nach einem Server-Neustart stehen alle Clients
+     wieder auf voll. Für eine dauerhafte Einstellung müsste sie pro
+     Client-ID ins NVS, was einen Speicherplatz pro bekanntem Client
+     bedeutet und deshalb eine eigene kleine Entscheidung ist.
 
 - **Clients im laufenden Mesh konfigurieren (gemeldet 2026-09-17):** Aktuell
   ist unklar dokumentiert, wie man an die Config-Seite eines Clients kommt,
