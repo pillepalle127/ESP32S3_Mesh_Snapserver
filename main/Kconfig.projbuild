@@ -1,5 +1,32 @@
 menu "Snapserver Mesh Project Configuration"
 
+config SNAPSERVER_STATUS_LED_ENABLE
+    bool "Status LED (on-board WS2812)"
+    default y
+    help
+        Drives a single on-board WS2812 as a combined indicator: colour
+        shows what the device is doing (red = no network, orange = network
+        but no Snapserver, green = playing, cyan = local input, blue =
+        provisioning AP), brightness follows the audio level.
+
+        Costs one RMT channel and a task that sleeps 33 ms between 24-bit
+        transfers. The level comes from measurements the audio path already
+        makes, so nothing is computed twice for it.
+
+config SNAPSERVER_STATUS_LED_GPIO
+    int "Status LED GPIO"
+    default 48
+    range 0 48
+    depends on SNAPSERVER_STATUS_LED_ENABLE
+    help
+        Data pin of the on-board WS2812. Boards differ: 48 on the widely
+        sold "ESP32-S3 Super Mini", 21 on the S3-Zero style boards, 47 on
+        the Lolin S3 Mini.
+
+        To find out which one applies, just flash: the LED flashes red,
+        green and blue once at startup. If it stays dark, the pin is wrong
+        -- try the other values above.
+
 config SNAPSERVER_ENABLE_MESH_LITE
     bool "Enable ESP-Mesh-Lite"
     default n
