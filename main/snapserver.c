@@ -27,11 +27,14 @@
 
 #include "cJSON.h"
 #include "device_config.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "audio_i2s.h"
 #include "audio_opus.h"
 
 static const char *TAG = "SNAPSERVER";
@@ -43,14 +46,62 @@ static const char *TAG = "SNAPSERVER";
 #define SERVER_TASK_STACK       8192
 #define AUDIO_TASK_STACK        8192
 
-/* Single socket write timeout. */
-#define CLIENT_SEND_TIMEOUT_US  2000000
+/*
+ * Chunk fan-out.
+ *
+ * The encode/capture loop used to send to every client itself, so its 20 ms
+ * budget grew with the client count. Measured with four clients: average
+ * frame interval 20449 us instead of 20000, single iterations up to 61 ms,
+ * because a socket reported writable still blocks inside send() until the
+ * whole chunk is out (~10 ms per client on a busy channel). The resulting
+ * drift made the server re-anchor its capture timeline every few seconds,
+ * which every client then saw as a timestamp jump.
+ *
+ * Now audio_task only drops each chunk into a pool slot and posts a
+ * reference to each client's queue; one sender task per client does the
+ * blocking send. Sends of different clients overlap instead of adding up,
+ * which is the whole point -- in a shared task ten clients would serialise
+ * into ~100 ms per round against a 20 ms chunk interval.
+ *
+ * Slots are recycled after CHUNK_POOL_SIZE chunks. A sender that has fallen
+ * further behind than that finds its slot's sequence changed and drops the
+ * chunk, which is the right outcome: the audio is long overdue anyway.
+ */
+#define CHUNK_POOL_SIZE         16
+#define CLIENT_TX_QUEUE_DEPTH    8
+#define SENDER_TASK_STACK     3072
+/* Below audio_task (6) so encoding never waits behind a blocked send. */
+#define SENDER_TASK_PRIORITY     5
 
 /*
- * Backstop so recv() in client_task() cannot block forever on a peer that
- * vanished without a TCP FIN/RST (Wi-Fi dropout, deep sleep, roaming).
- * Kept well above the TCP keepalive detection window below so it only
- * fires if keepalive somehow did not.
+ * Statistics are printed from their own low-priority task, never from
+ * audio_task. Four log lines per second at 115200 baud are ~42 ms of
+ * blocking UART time; against a budget of 1000 ms per second for 50 frames
+ * that is far more than the ~0.5 % by which the capture loop was running
+ * late, and the DMA ring (40 ms) cannot absorb it indefinitely -- the
+ * result was audible dropouts.
+ */
+#define STATS_TASK_STACK      3072
+#define STATS_TASK_PRIORITY      2
+
+/* Single socket write timeout. */
+#define CLIENT_SEND_TIMEOUT_US   300000
+
+/*
+ * How long a half-written message may keep retrying before the connection is
+ * declared dead. Only reached once send() has already accepted part of it.
+ */
+#define PARTIAL_SEND_LIMIT_US  10000000
+
+/*
+ * Wake-up interval for the blocking recv() in client_task(), not a
+ * disconnect criterion: hitting it merely lets the loop re-check whether
+ * the client is still active before waiting again. A client that never
+ * sends anything is perfectly legal -- our own ported ESP32 client does
+ * exactly that, since it ignores SNAP_MSG_TIME -- and used to be dropped
+ * every ~31 s here, reconnecting endlessly. Detecting a peer that vanished
+ * without a FIN/RST is the TCP keepalive's job below (~25 s), which
+ * surfaces as a real recv() error rather than a timeout.
  */
 #define CLIENT_RECV_TIMEOUT_US  30000000
 
@@ -93,6 +144,19 @@ typedef struct __attribute__((packed)) {
 } snap_base_t;
 
 typedef struct {
+    uint32_t sequence; /* 0 marks a slot that was never filled */
+    uint32_t size;
+    int64_t timestamp_us;
+    uint8_t data[AUDIO_MAX_OPUS_PACKET];
+} chunk_slot_t;
+
+/* What a client's queue carries: which slot, and which generation of it. */
+typedef struct {
+    uint16_t slot;
+    uint32_t sequence;
+} tx_item_t;
+
+typedef struct {
     int fd;
     bool active;
     bool ready;
@@ -126,9 +190,26 @@ typedef struct {
     uint32_t chunk_errors;
     uint32_t chunks_skipped;
     uint32_t time_msgs;
+
+    /* Fan-out, see the CHUNK_POOL_SIZE comment above. */
+    QueueHandle_t tx_queue;
+    TaskHandle_t tx_task;
+    uint8_t *tx_payload; /* 12 B header + chunk, PSRAM */
 } client_t;
 
 static client_t s_clients[MAX_CLIENTS];
+
+static struct {
+    int64_t avg_us;
+    int64_t min_us;
+    int64_t max_us;
+    uint32_t samples;
+    bool fresh;
+} s_frame_stats;
+
+static chunk_slot_t *s_chunk_pool;
+static uint32_t s_chunk_write;     /* next slot to fill, wraps at CHUNK_POOL_SIZE */
+static uint32_t s_chunk_sequence;  /* never 0 once running, see chunk_slot_t */
 static portMUX_TYPE s_clients_lock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_server_task;
 static TaskHandle_t s_audio_task;
@@ -196,14 +277,48 @@ static void now_ts(int32_t *sec, int32_t *usec)
     *usec = (int32_t)(t % 1000000LL);
 }
 
-static int send_all(int fd, const void *data, size_t len)
+/*
+ * 0 = sent, -1 = the connection is gone, 1 = the send buffer stayed full and
+ * nothing at all was written (only ever returned when droppable is set).
+ *
+ * A full socket buffer means the peer is behind, not that it died: SO_SNDTIMEO
+ * makes send() report that as EWOULDBLOCK. Treating it as fatal used to tear
+ * the client down, and since a reconnect costs a fresh handshake plus a refill
+ * of the whole bufferMs, a stall that the client could have ridden out turned
+ * into a guaranteed audible gap.
+ *
+ * Once part of a message has gone out we are committed -- abandoning it would
+ * leave the peer's framing desynchronised -- so from that point on we keep
+ * retrying until PARTIAL_SEND_LIMIT_US, and only then give up for real.
+ */
+static int send_all(int fd, const void *data, size_t len, bool droppable)
 {
     const uint8_t *p = (const uint8_t *)data;
+    bool wrote_any = false;
+    int64_t deadline_us = 0;
 
     while (len > 0U) {
         const int n = send(fd, p, len, 0);
         if (n < 0 && errno == EINTR) {
             continue;
+        }
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (!wrote_any && droppable) {
+                return 1;
+            }
+            const int64_t now = esp_timer_get_time();
+            if (deadline_us == 0) {
+                deadline_us = now + PARTIAL_SEND_LIMIT_US;
+                continue;
+            }
+            if (now < deadline_us) {
+                continue;
+            }
+            ESP_LOGW(TAG,
+                     "send stalled: fd=%d, giving up with %u B left",
+                     fd,
+                     (unsigned)len);
+            return -1;
         }
         if (n <= 0) {
             ESP_LOGW(TAG,
@@ -217,22 +332,36 @@ static int send_all(int fd, const void *data, size_t len)
         }
         p += n;
         len -= (size_t)n;
+        wrote_any = true;
     }
     return 0;
 }
 
+/*
+ * 0 = complete, -1 = error/EOF, RECV_IDLE = the receive timeout expired
+ * before the first byte arrived. Only the latter is harmless: once part of
+ * a message has been read there is no way to resync, so a timeout mid-way
+ * is treated as an error like any other.
+ */
+#define RECV_IDLE 1
+
 static int recv_all(int fd, void *data, size_t len)
 {
     uint8_t *p = (uint8_t *)data;
+    bool got_any = false;
 
     while (len > 0U) {
         const int n = recv(fd, p, len, 0);
         if (n < 0 && errno == EINTR) {
             continue;
         }
+        if (n < 0 && !got_any && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            return RECV_IDLE;
+        }
         if (n <= 0) {
             return -1;
         }
+        got_any = true;
         p += n;
         len -= (size_t)n;
     }
@@ -258,10 +387,17 @@ static int send_msg_unlocked(int fd,
     base.received_usec = received_usec;
     base.size = payload_size;
 
-    if (send_all(fd, &base, sizeof(base)) < 0) {
-        return -1;
+    /*
+     * A dropped wire chunk is a click at worst; a dropped ServerSettings,
+     * CodecHeader or Time reply breaks the session outright, so those wait.
+     */
+    const bool droppable = (type == SNAP_TYPE_WIRE_CHUNK);
+
+    const int header_rc = send_all(fd, &base, sizeof(base), droppable);
+    if (header_rc != 0) {
+        return header_rc;
     }
-    if (payload_size > 0U && send_all(fd, payload, payload_size) < 0) {
+    if (payload_size > 0U && send_all(fd, payload, payload_size, false) < 0) {
         return -1;
     }
     return 0;
@@ -407,19 +543,19 @@ static int send_codec_header(client_t *client, uint16_t refers_to)
                            false);
 }
 
-static int send_wire_chunk(client_t *client,
-                           const audio_opus_packet_t *packet)
+/*
+ * Builds and sends one wire chunk from a pool slot. Returns 1 when the slot
+ * had already been recycled under us, which is not an error: the sender was
+ * simply too far behind and the chunk is stale.
+ */
+static int send_wire_chunk(client_t *client, const tx_item_t *item)
 {
-    if (packet == NULL || packet->data == NULL ||
-        packet->size > AUDIO_MAX_OPUS_PACKET) {
-        return -1;
-    }
-
-    uint8_t payload[12U + AUDIO_MAX_OPUS_PACKET];
+    const chunk_slot_t *slot = &s_chunk_pool[item->slot];
+    uint8_t *payload = client->tx_payload;
 
     /*
-     * packet->timestamp_us originates from esp_timer (uptime) and must be
-     * expressed in the same wall clock domain that now_ts() reports.
+     * The timestamp originates from esp_timer (uptime) and must be expressed
+     * in the same wall clock domain that now_ts() reports.
      *
      * s_wall_offset_us is re-anchored when a plausible wall clock is learned.
      * Adding the same offset to the monotonic capture timestamp keeps message
@@ -428,16 +564,29 @@ static int send_wire_chunk(client_t *client,
     portENTER_CRITICAL(&s_clients_lock);
     const int64_t wall_offset_us = s_wall_offset_us;
     portEXIT_CRITICAL(&s_clients_lock);
-    const int64_t chunk_us = packet->timestamp_us + wall_offset_us;
+    const int64_t chunk_us = slot->timestamp_us + wall_offset_us;
 
     const int32_t sec = (int32_t)(chunk_us / 1000000LL);
     const int32_t usec = (int32_t)(chunk_us % 1000000LL);
-    const uint32_t size = (uint32_t)packet->size;
+    const uint32_t size = slot->size;
+
+    if (size > AUDIO_MAX_OPUS_PACKET) {
+        return 1;
+    }
 
     memcpy(payload + 0, &sec, 4);
     memcpy(payload + 4, &usec, 4);
     memcpy(payload + 8, &size, 4);
-    memcpy(payload + 12, packet->data, packet->size);
+    memcpy(payload + 12, slot->data, size);
+
+    /*
+     * Re-read the sequence only after copying: audio_task may have started
+     * refilling this slot while we were reading it, in which case the copy is
+     * a mix of two chunks and must not go out.
+     */
+    if (slot->sequence != item->sequence) {
+        return 1;
+    }
 
     const int rc = client_send_msg(client,
                                    SNAP_TYPE_WIRE_CHUNK,
@@ -453,7 +602,7 @@ static int send_wire_chunk(client_t *client,
     if (rc == 0) {
         client->chunks_sent++;
         client->chunk_bytes += (12U + size);
-    } else {
+    } else if (rc < 0) {
         client->chunk_errors++;
     }
     portEXIT_CRITICAL(&s_clients_lock);
@@ -715,7 +864,11 @@ static bool handle_hello(client_t *client,
 
 static int recv_message(int fd, snap_base_t *base, uint8_t **payload)
 {
-    if (recv_all(fd, base, sizeof(*base)) < 0) {
+    const int header_result = recv_all(fd, base, sizeof(*base));
+    if (header_result == RECV_IDLE) {
+        return RECV_IDLE;
+    }
+    if (header_result < 0) {
         return -1;
     }
     if (base->size > RX_MAX) {
@@ -797,7 +950,9 @@ static void client_task(void *arg)
     snap_base_t base;
     uint8_t *payload = NULL;
 
-    if (recv_message(fd, &base, &payload) < 0 ||
+    /* Anything other than a complete message is fatal here, including the
+     * idle timeout: a peer that connects without saying Hello is of no use. */
+    if (recv_message(fd, &base, &payload) != 0 ||
         base.type != SNAP_TYPE_HELLO ||
         !handle_hello(client, payload, base.size)) {
         free(payload);
@@ -838,6 +993,11 @@ static void client_task(void *arg)
         }
 
         const int rc = recv_message(fd, &base, &payload);
+        if (rc == RECV_IDLE) {
+            /* Nothing sent for a while, which is legal -- loop back and
+             * wait again, re-checking client->active on the way. */
+            continue;
+        }
         if (rc < 0) {
             ESP_LOGW(TAG,
                      "Client receive ended: %s rc=%d errno=%d (%s)",
@@ -904,34 +1064,132 @@ static void mark_client_failed(client_t *client)
 }
 
 /*
- * audio_task fans a wire chunk out to every ready client, one after another,
- * on the same task that also drives the I2S capture. send_wire_chunk() falls
- * back to a blocking send with a multi-second SO_SNDTIMEO, so a single
- * client whose TCP send buffer is full (weak mesh link, stalled receiver)
- * used to stall that shared task for seconds, starving I2S capture for
- * every other client too. Probe writability with a zero-timeout select()
- * first and skip the frame for this client if it is not currently
- * writable, instead of blocking the whole pipeline on it.
+ * One per client slot, created once at startup and parked on its queue for
+ * the lifetime of the server. Created statically rather than per connection
+ * on purpose: a queue that audio_task may post to while the owning task is
+ * being torn down is exactly the kind of race this file has already been
+ * bitten by, and MAX_CLIENTS idle tasks cost only their stacks.
  */
-static bool client_socket_writable(client_t *client)
+static void sender_task(void *arg)
 {
-    int fd = -1;
-    portENTER_CRITICAL(&s_clients_lock);
-    if (client->active) {
-        fd = client->fd;
-    }
-    portEXIT_CRITICAL(&s_clients_lock);
+    client_t *client = (client_t *)arg;
 
-    if (fd < 0) {
-        return false;
-    }
+    for (;;) {
+        tx_item_t item;
+        if (xQueueReceive(client->tx_queue, &item, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
 
-    fd_set wfds;
-    FD_ZERO(&wfds);
-    FD_SET(fd, &wfds);
-    struct timeval zero_tv = {0, 0};
-    const int rc = select(fd + 1, NULL, &wfds, NULL, &zero_tv);
-    return rc > 0 && FD_ISSET(fd, &wfds);
+        bool send_it = false;
+        portENTER_CRITICAL(&s_clients_lock);
+        send_it = client->active && client->ready && client->fd >= 0;
+        portEXIT_CRITICAL(&s_clients_lock);
+
+        if (!send_it) {
+            continue;
+        }
+
+        const int rc = send_wire_chunk(client, &item);
+        if (rc > 0) {
+            portENTER_CRITICAL(&s_clients_lock);
+            client->chunks_skipped++;
+            portEXIT_CRITICAL(&s_clients_lock);
+        } else if (rc < 0) {
+            ESP_LOGW(TAG,
+                     "Wire chunk send failed (%s); closing client",
+                     client->peer);
+            mark_client_failed(client);
+        }
+    }
+}
+
+/*
+ * Prints everything the audio path measures, at low priority and off the
+ * real-time path. See STATS_TASK_STACK for why this matters.
+ */
+static void stats_task(void *arg)
+{
+    (void)arg;
+    uint32_t last_chunks[MAX_CLIENTS] = {0};
+    int64_t last_peak_us = 0;
+
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+        int64_t avg_us = 0;
+        int64_t min_us = 0;
+        int64_t max_us = 0;
+        uint32_t samples = 0;
+        bool fresh = false;
+
+        portENTER_CRITICAL(&s_clients_lock);
+        avg_us = s_frame_stats.avg_us;
+        min_us = s_frame_stats.min_us;
+        max_us = s_frame_stats.max_us;
+        samples = s_frame_stats.samples;
+        fresh = s_frame_stats.fresh;
+        s_frame_stats.fresh = false;
+        portEXIT_CRITICAL(&s_clients_lock);
+
+        if (fresh) {
+            ESP_LOGI(TAG,
+                     "frame delta: avg=%lld us min=%lld us max=%lld us samples=%lu",
+                     (long long)avg_us,
+                     (long long)min_us,
+                     (long long)max_us,
+                     (unsigned long)samples);
+        }
+
+        for (int i = 0; i < MAX_CLIENTS; ++i) {
+            bool active = false;
+            bool ready = false;
+            uint32_t chunks = 0;
+            uint32_t bytes = 0;
+            uint32_t errs = 0;
+            uint32_t skipped = 0;
+            uint32_t times = 0;
+            char peer[16];
+
+            portENTER_CRITICAL(&s_clients_lock);
+            active = s_clients[i].active;
+            ready = s_clients[i].ready;
+            chunks = s_clients[i].chunks_sent;
+            bytes = s_clients[i].chunk_bytes;
+            errs = s_clients[i].chunk_errors;
+            skipped = s_clients[i].chunks_skipped;
+            times = s_clients[i].time_msgs;
+            strlcpy(peer, s_clients[i].peer, sizeof(peer));
+            portEXIT_CRITICAL(&s_clients_lock);
+
+            /* A reconnect resets the counter; avoid an unsigned wrap. */
+            const uint32_t chunk_rate =
+                (chunks >= last_chunks[i]) ? (chunks - last_chunks[i]) : chunks;
+
+            if (active) {
+                ESP_LOGI(TAG,
+                         "client[%d] %s ready=%d chunks/s=%lu total=%lu "
+                         "bytes=%lu send_errors=%lu skipped=%lu time_msgs=%lu",
+                         i, peer, (int)ready,
+                         (unsigned long)chunk_rate,
+                         (unsigned long)chunks,
+                         (unsigned long)bytes,
+                         (unsigned long)errs,
+                         (unsigned long)skipped,
+                         (unsigned long)times);
+            }
+            last_chunks[i] = chunks;
+        }
+
+        const int64_t now_us = esp_timer_get_time();
+        if (now_us - last_peak_us >= 5000000LL) {
+            int16_t peak_left = 0;
+            int16_t peak_right = 0;
+            audio_i2s_take_output_peak(&peak_left, &peak_right);
+            ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767)",
+                     (int)peak_left, (int)peak_right);
+            last_peak_us = now_us;
+        }
+    }
 }
 
 static void audio_task(void *arg)
@@ -944,7 +1202,6 @@ static void audio_task(void *arg)
     int64_t delta_min_us = INT64_MAX;
     int64_t delta_max_us = 0;
     uint32_t delta_count = 0;
-    uint32_t last_chunks[MAX_CLIENTS] = {0};
 
     for (;;) {
         const int64_t frame_start_us = esp_timer_get_time();
@@ -971,18 +1228,45 @@ static void audio_task(void *arg)
             }
             portEXIT_CRITICAL(&s_clients_lock);
 
-            for (int i = 0; i < count; ++i) {
-                if (!client_socket_writable(clients[i])) {
-                    portENTER_CRITICAL(&s_clients_lock);
-                    clients[i]->chunks_skipped++;
-                    portEXIT_CRITICAL(&s_clients_lock);
-                    continue;
-                }
-                if (send_wire_chunk(clients[i], &packet) < 0) {
-                    ESP_LOGW(TAG,
-                             "Wire chunk send failed (%s); closing client",
-                             clients[i]->peer);
-                    mark_client_failed(clients[i]);
+            /*
+             * Fill one pool slot and hand out references. Everything here is
+             * bounded work -- a memcpy plus one queue post per client -- so
+             * the capture cadence no longer depends on how many clients are
+             * connected, nor on how fast any of them drains its socket.
+             */
+            if (packet.size <= AUDIO_MAX_OPUS_PACKET) {
+                const uint16_t slot_index = (uint16_t)s_chunk_write;
+                chunk_slot_t *slot = &s_chunk_pool[slot_index];
+
+                slot->size = (uint32_t)packet.size;
+                slot->timestamp_us = packet.timestamp_us;
+                memcpy(slot->data, packet.data, packet.size);
+                /* Published last: a sender comparing sequences must never
+                 * see the new number in front of the new payload. */
+                slot->sequence = ++s_chunk_sequence;
+                s_chunk_write = (s_chunk_write + 1U) % CHUNK_POOL_SIZE;
+
+                const tx_item_t item = {
+                    .slot = slot_index,
+                    .sequence = slot->sequence,
+                };
+
+                for (int i = 0; i < count; ++i) {
+                    if (clients[i]->tx_queue == NULL) {
+                        continue;
+                    }
+                    if (xQueueSend(clients[i]->tx_queue, &item, 0) != pdTRUE) {
+                        /* Queue full: this client is behind. Drop its oldest
+                         * pending chunk rather than the newest -- stale audio
+                         * is the least useful thing to keep. */
+                        tx_item_t dropped;
+                        if (xQueueReceive(clients[i]->tx_queue, &dropped, 0) == pdTRUE) {
+                            portENTER_CRITICAL(&s_clients_lock);
+                            clients[i]->chunks_skipped++;
+                            portEXIT_CRITICAL(&s_clients_lock);
+                        }
+                        (void)xQueueSend(clients[i]->tx_queue, &item, 0);
+                    }
                 }
             }
         } else {
@@ -991,55 +1275,14 @@ static void audio_task(void *arg)
 
         const int64_t stats_now_us = esp_timer_get_time();
         if (delta_count > 0U && stats_now_us - stats_start_us >= 1000000LL) {
-            ESP_LOGI(TAG,
-                     "frame delta: avg=%lld us min=%lld us max=%lld us samples=%lu",
-                     (long long)(delta_sum_us / (int64_t)delta_count),
-                     (long long)delta_min_us,
-                     (long long)delta_max_us,
-                     (unsigned long)delta_count);
-
-            for (int i = 0; i < MAX_CLIENTS; ++i) {
-                bool active = false;
-                bool ready = false;
-                uint32_t chunks = 0;
-                uint32_t bytes = 0;
-                uint32_t errs = 0;
-                uint32_t skipped = 0;
-                uint32_t times = 0;
-
-                portENTER_CRITICAL(&s_clients_lock);
-                active = s_clients[i].active;
-                ready = s_clients[i].ready;
-                chunks = s_clients[i].chunks_sent;
-                bytes = s_clients[i].chunk_bytes;
-                errs = s_clients[i].chunk_errors;
-                skipped = s_clients[i].chunks_skipped;
-                times = s_clients[i].time_msgs;
-                portEXIT_CRITICAL(&s_clients_lock);
-
-                /* A reconnect resets the counter; avoid an unsigned wrap. */
-                const uint32_t chunk_rate =
-                    (chunks >= last_chunks[i])
-                        ? (chunks - last_chunks[i])
-                        : chunks;
-
-                if (active) {
-                    ESP_LOGI(TAG,
-                             "client[%d] %s ready=%d chunks/s=%lu total=%lu "
-                             "bytes=%lu send_errors=%lu skipped=%lu "
-                             "time_msgs=%lu",
-                             i,
-                             s_clients[i].peer,
-                             (int)ready,
-                             (unsigned long)chunk_rate,
-                             (unsigned long)chunks,
-                             (unsigned long)bytes,
-                             (unsigned long)errs,
-                             (unsigned long)skipped,
-                             (unsigned long)times);
-                }
-                last_chunks[i] = chunks;
-            }
+            /* Publish only -- printing happens in stats_task. */
+            portENTER_CRITICAL(&s_clients_lock);
+            s_frame_stats.avg_us = delta_sum_us / (int64_t)delta_count;
+            s_frame_stats.min_us = delta_min_us;
+            s_frame_stats.max_us = delta_max_us;
+            s_frame_stats.samples = delta_count;
+            s_frame_stats.fresh = true;
+            portEXIT_CRITICAL(&s_clients_lock);
 
             stats_start_us = stats_now_us;
             delta_sum_us = 0;
@@ -1200,6 +1443,18 @@ static void server_task(void *arg)
             }
         }
         portEXIT_CRITICAL(&s_clients_lock);
+
+        if (slot >= 0) {
+            /*
+             * Drop references left over from whoever held this slot before,
+             * so they cannot be sent to the new occupant. Deliberately
+             * outside the critical section: FreeRTOS queue calls take their
+             * own locks and must never run with interrupts disabled. Safe
+             * here because the sender only transmits once `ready` is set,
+             * which happens after the handshake well below.
+             */
+            xQueueReset(s_clients[slot].tx_queue);
+        }
 
         if (slot < 0) {
             ESP_LOGW(TAG, "Rejecting client: all slots occupied");
@@ -1406,6 +1661,20 @@ esp_err_t snapserver_start(void)
                  (long)usec);
     }
 
+    s_chunk_pool = heap_caps_malloc(sizeof(chunk_slot_t) * CHUNK_POOL_SIZE,
+                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_chunk_pool == NULL) {
+        s_chunk_pool = heap_caps_malloc(sizeof(chunk_slot_t) * CHUNK_POOL_SIZE,
+                                        MALLOC_CAP_8BIT);
+    }
+    if (s_chunk_pool == NULL) {
+        ESP_LOGE(TAG, "No memory for the %d-slot chunk pool", CHUNK_POOL_SIZE);
+        return ESP_ERR_NO_MEM;
+    }
+    memset(s_chunk_pool, 0, sizeof(chunk_slot_t) * CHUNK_POOL_SIZE);
+    s_chunk_write = 0;
+    s_chunk_sequence = 0;
+
     memset(s_clients, 0, sizeof(s_clients));
     for (int i = 0; i < MAX_CLIENTS; ++i) {
         s_clients[i].fd = -1;
@@ -1413,10 +1682,44 @@ esp_err_t snapserver_start(void)
         s_clients[i].instance = 1;
         s_clients[i].protocol_ver = SNAP_PROTOCOL_VER;
         s_clients[i].send_mutex = xSemaphoreCreateMutex();
-        if (s_clients[i].send_mutex == NULL) {
-            for (int j = 0; j < i; ++j) {
-                vSemaphoreDelete(s_clients[j].send_mutex);
-                s_clients[j].send_mutex = NULL;
+        s_clients[i].tx_queue = xQueueCreate(CLIENT_TX_QUEUE_DEPTH, sizeof(tx_item_t));
+        s_clients[i].tx_payload = heap_caps_malloc(12U + AUDIO_MAX_OPUS_PACKET,
+                                                   MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (s_clients[i].tx_payload == NULL) {
+            s_clients[i].tx_payload = heap_caps_malloc(12U + AUDIO_MAX_OPUS_PACKET,
+                                                       MALLOC_CAP_8BIT);
+        }
+
+        char sender_name[16];
+        snprintf(sender_name, sizeof(sender_name), "snapsend%d", i);
+        const bool sender_ok =
+            s_clients[i].send_mutex != NULL && s_clients[i].tx_queue != NULL &&
+            s_clients[i].tx_payload != NULL &&
+            xTaskCreatePinnedToCore(sender_task,
+                                    sender_name,
+                                    SENDER_TASK_STACK,
+                                    &s_clients[i],
+                                    SENDER_TASK_PRIORITY,
+                                    &s_clients[i].tx_task,
+                                    0) == pdPASS;
+
+        if (!sender_ok) {
+            ESP_LOGE(TAG, "Could not set up sender for client slot %d", i);
+            for (int j = 0; j <= i; ++j) {
+                if (s_clients[j].tx_task != NULL) {
+                    vTaskDelete(s_clients[j].tx_task);
+                    s_clients[j].tx_task = NULL;
+                }
+                if (s_clients[j].tx_queue != NULL) {
+                    vQueueDelete(s_clients[j].tx_queue);
+                    s_clients[j].tx_queue = NULL;
+                }
+                free(s_clients[j].tx_payload);
+                s_clients[j].tx_payload = NULL;
+                if (s_clients[j].send_mutex != NULL) {
+                    vSemaphoreDelete(s_clients[j].send_mutex);
+                    s_clients[j].send_mutex = NULL;
+                }
             }
             return ESP_ERR_NO_MEM;
         }
@@ -1429,6 +1732,18 @@ esp_err_t snapserver_start(void)
                                 5,
                                 &s_server_task,
                                 0) != pdPASS) {
+        goto fail;
+    }
+
+    if (xTaskCreatePinnedToCore(stats_task,
+                                "snapstats",
+                                STATS_TASK_STACK,
+                                NULL,
+                                STATS_TASK_PRIORITY,
+                                NULL,
+                                0) != pdPASS) {
+        vTaskDelete(s_server_task);
+        s_server_task = NULL;
         goto fail;
     }
 
@@ -1445,6 +1760,18 @@ esp_err_t snapserver_start(void)
     }
 
     s_started = true;
+
+    /*
+     * The fan-out added MAX_CLIENTS sender tasks; if internal RAM ran short
+     * here, the next task creation to fail would be the JSON-RPC control
+     * connection, which looks like "clients no longer listed" rather than
+     * like an out-of-memory error. Worth seeing in the log.
+     */
+    ESP_LOGI(TAG,
+             "Free heap after start: %u B internal, %u B largest block",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+
     return ESP_OK;
 
 fail:
