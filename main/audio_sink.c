@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "audio_i2s.h"
+#include "status_led.h"
 #include "audio_resample.h"
 #include "device_config.h"
 #include "esp_heap_caps.h"
@@ -680,6 +681,11 @@ static void player_task(void *arg)
         const audio_sink_source_t desired = decide_source();
         if (desired != s_active_source) {
             ESP_LOGI(TAG, "Switching source %d -> %d", (int)s_active_source, (int)desired);
+            if (desired == AUDIO_SINK_SOURCE_LOCAL_INPUT) {
+                status_led_set_state(STATUS_LED_LOCAL_INPUT);
+            } else if (desired == AUDIO_SINK_SOURCE_NETWORK) {
+                status_led_set_state(STATUS_LED_PLAYING);
+            }
             /*
              * Only flush when *leaving* the network source: its queued
              * audio is now stale (there was a gap while something else
@@ -728,7 +734,9 @@ static void player_task(void *arg)
         }
 
         audio_i2s_write_mono(chosen, AUDIO_SINK_FRAME_SAMPLES);
-        maybe_log_stats(rms_dbfs(chosen, AUDIO_SINK_FRAME_SAMPLES));
+        const float frame_rms_db = rms_dbfs(chosen, AUDIO_SINK_FRAME_SAMPLES);
+        status_led_set_level_db(frame_rms_db);
+        maybe_log_stats(frame_rms_db);
     }
 }
 

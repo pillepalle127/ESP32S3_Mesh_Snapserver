@@ -11,6 +11,7 @@ idf_component_register(
         "provisioning.c"
         "snapclient.c"
         "snapserver.c"
+        "status_led.c"
 		"snapcontrol.c" # <--
         "webconfig.c"
     INCLUDE_DIRS "."
@@ -21,6 +22,7 @@ idf_component_register(
         esp_event
         esp_netif
         esp_driver_i2s
+        esp_driver_rmt
         esp_http_server
         lwip
         mdns

@@ -115,6 +115,14 @@ static volatile size_t s_delay_samples;
  */
 static int16_t s_peak_left;
 static int16_t s_peak_right;
+/*
+ * A second, independent pair for the status LED. Both readers clear what
+ * they read, so sharing one pair would mean each takes level away from the
+ * other -- the LED samples 30 times a second, the diagnostic every five
+ * seconds, and neither would see the real peak.
+ */
+static int16_t s_led_peak_left;
+static int16_t s_led_peak_right;
 
 static int16_t float_to_int16(float sample)
 {
@@ -526,6 +534,17 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
         if (abs_wide > *peak_wide) {
             *peak_wide = abs_wide;
         }
+
+        int16_t *led_sub = (dsp.sub_channel == PCM_CHANNEL_LEFT)
+                               ? &s_led_peak_left : &s_led_peak_right;
+        int16_t *led_wide = (dsp.wideband_channel == PCM_CHANNEL_LEFT)
+                                ? &s_led_peak_left : &s_led_peak_right;
+        if (abs_sub > *led_sub) {
+            *led_sub = abs_sub;
+        }
+        if (abs_wide > *led_wide) {
+            *led_wide = abs_wide;
+        }
     }
 
     /*
@@ -577,6 +596,16 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     }
 
     return ESP_OK;
+}
+
+void audio_i2s_take_led_peak(int16_t *left, int16_t *right)
+{
+    portENTER_CRITICAL(&s_dsp_lock);
+    *left = s_led_peak_left;
+    *right = s_led_peak_right;
+    s_led_peak_left = 0;
+    s_led_peak_right = 0;
+    portEXIT_CRITICAL(&s_dsp_lock);
 }
 
 void audio_i2s_take_output_peak(int16_t *left, int16_t *right)

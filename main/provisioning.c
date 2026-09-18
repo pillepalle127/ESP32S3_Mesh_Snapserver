@@ -10,6 +10,7 @@
 #include "esp_bridge.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "status_led.h"
 #include "esp_mac.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
@@ -188,6 +189,7 @@ esp_err_t provisioning_start_fallback_ap(provisioning_reason_t reason)
     ESP_LOGW(TAG,
              "Starting provisioning AP (reason=%d): SSID=%s, open, no mesh",
              (int)reason, ssid);
+    status_led_set_state(STATUS_LED_PROVISIONING);
 
     esp_bridge_create_all_netif();
 

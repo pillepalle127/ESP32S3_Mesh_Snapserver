@@ -131,6 +131,13 @@ esp_err_t audio_i2s_capture_mono(int16_t *mono, size_t mono_samples);
 void audio_i2s_take_output_peak(int16_t *left, int16_t *right);
 
 /*
+ * Same measurement, separate slot, for the status LED. Kept apart from
+ * audio_i2s_take_output_peak() because both readers clear on read and run at
+ * very different rates -- one 30 times a second, the other every five.
+ */
+void audio_i2s_take_led_peak(int16_t *left, int16_t *right);
+
+/*
  * Runs the mono input through the LR4 crossover (or bypasses it) and writes
  * the resulting sub/wideband pair to the TX side -- just the DSP+output half
  * of audio_i2s_read_frame(). Used by the client role (audio_sink.c) to play

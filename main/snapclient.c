@@ -39,6 +39,7 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
+#include "status_led.h"
 #include "opus.h"
 
 static const char *TAG = "SNAPCLIENT";
@@ -375,6 +376,7 @@ static int tcp_connect(void)
     }
 
     ESP_LOGI(TAG, "Connected to Snapserver %s:%u", s_host, (unsigned)s_port);
+    status_led_set_state(STATUS_LED_PLAYING);
     return socket_fd;
 }
 
@@ -895,6 +897,7 @@ static void snap_task(void *arg)
                     s_unreachable_cb();
                 }
             }
+            status_led_set_state(STATUS_LED_NO_SERVER);
             if (s_run && s_network_available) {
                 wait_for_reconnect_condition(pdMS_TO_TICKS(SNAP_CONNECT_RETRY_MS));
             }
@@ -983,6 +986,7 @@ void snapclient_set_network_available(bool available)
     }
 
     ESP_LOGW(TAG, "Network down: aborting any open connection");
+    status_led_set_state(STATUS_LED_NO_NETWORK);
     if (s_evt != NULL) {
         xEventGroupClearBits(s_evt, EVT_NETWORK_AVAILABLE);
         xEventGroupSetBits(s_evt, EVT_STATE_CHANGED);

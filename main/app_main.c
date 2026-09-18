@@ -16,6 +16,7 @@
 #include "mesh_client.h"
 #include "mesh_root.h"
 #include "snapserver.h"
+#include "status_led.h"
 #include "webconfig.h"
 
 static const char *TAG = "APP";
@@ -89,6 +90,10 @@ void app_main(void)
 
     device_config_t cfg;
     device_config_get(&cfg);
+    /* Up before the radio, so the very first thing the LED shows is that
+     * the board is alive and the GPIO is right. */
+    (void)status_led_start();
+
     const bool client_role = (cfg.role == DEVICE_ROLE_CLIENT);
 
     esp_err_t result = client_role ? mesh_client_start() : mesh_root_start();
@@ -168,6 +173,11 @@ void app_main(void)
     audio_opus_set_complexity((int32_t)cfg.opus_complexity);
 
     result = snapserver_start();
+    if (result == ESP_OK) {
+        /* The server always plays its own local output, so green from here
+         * on and the brightness follows what leaves its crossover. */
+        status_led_set_state(STATUS_LED_PLAYING);
+    }
 
     if (result != ESP_OK) {
         ESP_LOGE(
