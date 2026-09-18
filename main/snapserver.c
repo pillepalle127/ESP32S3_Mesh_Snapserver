@@ -194,6 +194,16 @@ typedef struct {
     /* Fan-out, see the CHUNK_POOL_SIZE comment above. */
     QueueHandle_t tx_queue;
     TaskHandle_t tx_task;
+
+    /*
+     * Unused stack words, each task measuring its own. Read from outside via
+     * the handle instead and a task that has just deleted itself takes the
+     * caller down with it. This is here to answer one question with numbers:
+     * whether 8 kB per connection and 3 kB per sender can come down far
+     * enough for SNAPSERVER_MAX_CLIENTS speakers to fit in internal DRAM.
+     */
+    uint16_t conn_stack_free;
+    uint16_t tx_stack_free;
     uint8_t *tx_payload; /* 12 B header + chunk, PSRAM */
 } client_t;
 
@@ -1008,6 +1018,8 @@ static void client_task(void *arg)
             break;
         }
 
+        client->conn_stack_free = (uint16_t)uxTaskGetStackHighWaterMark(NULL);
+
         int32_t seen_sec = 0;
         int32_t seen_usec = 0;
         now_ts(&seen_sec, &seen_usec);
@@ -1073,6 +1085,7 @@ static void mark_client_failed(client_t *client)
 static void sender_task(void *arg)
 {
     client_t *client = (client_t *)arg;
+    uint32_t stack_check = 0;
 
     for (;;) {
         tx_item_t item;
@@ -1087,6 +1100,11 @@ static void sender_task(void *arg)
 
         if (!send_it) {
             continue;
+        }
+
+        if ((++stack_check & 0xFFU) == 0U) {
+            client->tx_stack_free =
+                (uint16_t)uxTaskGetStackHighWaterMark(NULL);
         }
 
         const int rc = send_wire_chunk(client, &item);
@@ -1196,6 +1214,29 @@ static void stats_task(void *arg)
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+
+            uint16_t conn_min = UINT16_MAX;
+            uint16_t send_min = UINT16_MAX;
+            portENTER_CRITICAL(&s_clients_lock);
+            for (int i = 0; i < MAX_CLIENTS; ++i) {
+                if (s_clients[i].conn_stack_free != 0U &&
+                    s_clients[i].conn_stack_free < conn_min) {
+                    conn_min = s_clients[i].conn_stack_free;
+                }
+                if (s_clients[i].tx_stack_free != 0U &&
+                    s_clients[i].tx_stack_free < send_min) {
+                    send_min = s_clients[i].tx_stack_free;
+                }
+            }
+            portEXIT_CRITICAL(&s_clients_lock);
+
+            if (conn_min != UINT16_MAX || send_min != UINT16_MAX) {
+                ESP_LOGI(TAG,
+                         "stack headroom: conn=%d B sender=%d B (of %d / %d)",
+                         (conn_min == UINT16_MAX) ? -1 : (int)(conn_min * sizeof(StackType_t)),
+                         (send_min == UINT16_MAX) ? -1 : (int)(send_min * sizeof(StackType_t)),
+                         CLIENT_TASK_STACK, SENDER_TASK_STACK);
+            }
 
             int16_t peak_left = 0;
             int16_t peak_right = 0;
