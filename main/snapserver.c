@@ -42,7 +42,15 @@ static const char *TAG = "SNAPSERVER";
 #define MAX_CLIENTS             SNAPSERVER_MAX_CLIENTS
 #define RX_MAX                  4096
 #define SNAP_PROTOCOL_VER       2
-#define CLIENT_TASK_STACK       8192
+/*
+ * Measured, not guessed: "stack headroom" reported conn=5256 B free of 8192
+ * and sender=1796 B free of 3072, steady across a full run, so the peaks are
+ * 2936 B and 1276 B -- the connection figure includes parsing Hello, since a
+ * high-water mark covers everything since the task started. Internal DRAM is
+ * what the Wi-Fi driver takes its TX buffers from, and at ten clients these
+ * two stacks alone were 112 kB of a ~101 kB heap.
+ */
+#define CLIENT_TASK_STACK       5120
 #define SERVER_TASK_STACK       8192
 #define AUDIO_TASK_STACK        8192
 
@@ -69,7 +77,7 @@ static const char *TAG = "SNAPSERVER";
  */
 #define CHUNK_POOL_SIZE         16
 #define CLIENT_TX_QUEUE_DEPTH    8
-#define SENDER_TASK_STACK     3072
+#define SENDER_TASK_STACK     2048
 /* Below audio_task (6) so encoding never waits behind a blocked send. */
 #define SENDER_TASK_PRIORITY     5
 
