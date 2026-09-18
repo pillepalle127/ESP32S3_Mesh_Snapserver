@@ -608,22 +608,7 @@ static int send_server_update(int fd)
 /* Stable fingerprint of the current client set for change detection. */
 static uint32_t client_set_fingerprint(void)
 {
-    snapserver_client_info_t *clients = NULL;
-    const size_t count = take_client_snapshot(&clients);
-
-    uint32_t hash = 2166136261U ^ (uint32_t)count;
-    for (size_t i = 0; i < count; ++i) {
-        const unsigned char *p = (const unsigned char *)clients[i].id;
-        while (*p != '\0') {
-            hash ^= *p++;
-            hash *= 16777619U;
-        }
-        hash ^= clients[i].connected ? 1U : 0U;
-        hash *= 16777619U;
-    }
-
-    free(clients);
-    return hash;
+    return snapserver_client_set_hash();
 }
 
 /* ------------------------------------------------------------------ */
