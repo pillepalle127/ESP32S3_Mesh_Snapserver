@@ -56,14 +56,17 @@ static const char *TAG = "SNAPSERVER";
 #define TASK_STACK_CAPS (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 
 /*
- * Measured, not guessed: "stack headroom" reported conn=5256 B free of 8192
- * and sender=1796 B free of 3072, steady across a full run, so the peaks are
- * 2936 B and 1276 B -- the connection figure includes parsing Hello, since a
- * high-water mark covers everything since the task started. Internal DRAM is
- * what the Wi-Fi driver takes its TX buffers from, and at ten clients these
- * two stacks alone were 112 kB of a ~101 kB heap.
+ * Generous on purpose. These were once trimmed to just above their measured
+ * high-water marks, and snapsend3 then overflowed the moment a send actually
+ * failed: a high-water mark only covers paths that have run, and the error
+ * path with its two formatted ESP_LOGW calls had never run during the
+ * measurement. vsnprintf alone wants several hundred bytes.
+ *
+ * The reason for trimming is gone anyway. Both stacks are allocated from
+ * PSRAM now, so what they cost is 8 MB of otherwise idle memory rather than
+ * the internal DRAM the Wi-Fi driver needs.
  */
-#define CLIENT_TASK_STACK       5120
+#define CLIENT_TASK_STACK       6144
 #define SERVER_TASK_STACK       8192
 #define AUDIO_TASK_STACK        8192
 
@@ -90,7 +93,7 @@ static const char *TAG = "SNAPSERVER";
  */
 #define CHUNK_POOL_SIZE         16
 #define CLIENT_TX_QUEUE_DEPTH    8
-#define SENDER_TASK_STACK     2048
+#define SENDER_TASK_STACK     3584
 /* Below audio_task (6) so encoding never waits behind a blocked send. */
 #define SENDER_TASK_PRIORITY     5
 
