@@ -70,6 +70,10 @@ static esp_err_t start_mesh(const device_config_t *cfg)
     esp_mesh_lite_core_log_enable(false);
     esp_mesh_lite_start();
 
+    /* After the start: Mesh-Lite reconfigures the SoftAP, so this has to
+     * undo its PMF setting rather than pre-empt it. See the header. */
+    (void)provisioning_disable_ap_pmf();
+
     ESP_LOGI(TAG,
              "Mesh SoftAP configured: SSID=%s, channel=%d, max_level=%d, password=[HIDDEN]",
              cfg->mesh_ssid, cfg->mesh_channel, cfg->mesh_max_level);

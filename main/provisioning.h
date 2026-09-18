@@ -84,6 +84,20 @@ esp_err_t provisioning_clear_sta_wifi(void);
  * AP -- all three are just a physical SoftAP with different SSID/password. */
 esp_err_t provisioning_configure_ap_wifi(const char *ssid, const char *password, uint8_t channel);
 
+/*
+ * Turns 802.11w (PMF) off on this device's SoftAP, and must be called after
+ * ESP-Mesh-Lite has started -- esp_mesh_lite_set_softap_info() reconfigures
+ * the AP itself and undoes what CONFIG_BRIDGE_WIFI_PMF_DISABLE set up.
+ *
+ * Without this the two ends disagree: the AP advertises PMF while the mesh
+ * stations join with "Disabled PMF config for STA". The AP then eventually
+ * runs an SA Query against a station that cannot answer a protected
+ * management frame, counts six timeouts and disassociates it with reason
+ * 209 -- a fully working client dropped mid-stream, followed by a rejoin,
+ * a new DHCP lease and a fresh Snapcast handshake.
+ */
+esp_err_t provisioning_disable_ap_pmf(void);
+
 /* Full provisioning-AP fallback flow: builds the SSID, brings up netifs,
  * pins the AP IP, clears STA config, configures the open AP and arms the
  * 3-minute timeout. Shared by mesh_root.c and mesh_client.c -- both call

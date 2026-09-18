@@ -188,6 +188,10 @@ static esp_err_t start_client_mesh(const device_config_t *cfg)
     esp_mesh_lite_connect();
     esp_mesh_lite_start();
 
+    /* After the start: Mesh-Lite reconfigures the SoftAP, so this has to
+     * undo its PMF setting rather than pre-empt it. See the header. */
+    (void)provisioning_disable_ap_pmf();
+
     ESP_LOGI(TAG, "Mesh client started: relay SSID=%s (shared with root)", cfg->mesh_ssid);
 
     return provisioning_arm_grace_window(IP_EVENT, IP_EVENT_STA_GOT_IP);
