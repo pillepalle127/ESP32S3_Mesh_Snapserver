@@ -1223,6 +1223,7 @@ static void stats_task(void *arg)
     (void)arg;
     uint32_t last_chunks[MAX_CLIENTS] = {0};
     int64_t last_peak_us = 0;
+    size_t last_min_free = SIZE_MAX;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -1335,6 +1336,26 @@ static void stats_task(void *arg)
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
                      (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+
+            /*
+             * min_ever is a low-water mark since boot, so once it has dipped
+             * it stays put and says nothing about when. A 12-minute run ended
+             * with min_ever=892 B -- a hair from the state where the Wi-Fi
+             * driver cannot get a TX buffer and every client stalls at once --
+             * with no way to tell which moment that was. Warn on the drop
+             * itself, so it lands next to the client counters of the same
+             * five-second window.
+             */
+            const size_t min_free =
+                heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+            if (min_free < last_min_free) {
+                if (last_min_free != SIZE_MAX) {
+                    ESP_LOGW(TAG,
+                             "internal heap low-water mark fell to %u B (was %u B)",
+                             (unsigned)min_free, (unsigned)last_min_free);
+                }
+                last_min_free = min_free;
+            }
 
             uint16_t conn_min = UINT16_MAX;
             uint16_t send_min = UINT16_MAX;
