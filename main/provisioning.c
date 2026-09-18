@@ -140,6 +140,19 @@ esp_err_t provisioning_configure_ap_wifi(const char *ssid, const char *password,
     return esp_bridge_wifi_set_config(WIFI_IF_AP, &ap_config);
 }
 
+esp_err_t provisioning_set_ap_idle_timeout(uint16_t seconds)
+{
+    const esp_err_t err = esp_wifi_set_inactive_time(WIFI_IF_AP, seconds);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not set SoftAP idle timeout: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "SoftAP drops silent stations after %u s (was 300)",
+             (unsigned)seconds);
+    return ESP_OK;
+}
+
 esp_err_t provisioning_disable_ap_pmf(void)
 {
     wifi_config_t ap_config;

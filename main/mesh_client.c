@@ -22,6 +22,10 @@
 #include "esp_mesh_lite_core.h"
 #endif
 
+/* Seconds a silent station may stay associated; see
+ * provisioning_set_ap_idle_timeout(). */
+#define AP_IDLE_TIMEOUT_S 30
+
 static const char *TAG = "MESH_CLIENT";
 
 #if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
@@ -196,6 +200,7 @@ static esp_err_t start_client_mesh(const device_config_t *cfg)
     /* After the start: Mesh-Lite reconfigures the SoftAP, so this has to
      * undo its PMF setting rather than pre-empt it. See the header. */
     (void)provisioning_disable_ap_pmf();
+    (void)provisioning_set_ap_idle_timeout(AP_IDLE_TIMEOUT_S);
 
     ESP_LOGI(TAG, "Mesh client started: relay SSID=%s (shared with root)", cfg->mesh_ssid);
 

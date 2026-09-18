@@ -98,6 +98,21 @@ esp_err_t provisioning_configure_ap_wifi(const char *ssid, const char *password,
  */
 esp_err_t provisioning_disable_ap_pmf(void);
 
+/*
+ * Shortens how long this device's SoftAP keeps a silent station associated.
+ * The driver default is 300 s, so a client that reboots or loses its link
+ * finds its own stale association still occupying the AP when it comes
+ * back. The AP then has to establish whether the old one is alive before
+ * accepting the new request, which is the SA Query exchange in the logs --
+ * "Association refused temporarily, comeback time" on the client, six
+ * unanswered queries and "reason = 209" on the server.
+ *
+ * Safe to keep short here: every Snapcast client sends a Time request at
+ * least once a second, so a genuinely connected station is never quiet for
+ * anywhere near this long.
+ */
+esp_err_t provisioning_set_ap_idle_timeout(uint16_t seconds);
+
 /* Full provisioning-AP fallback flow: builds the SSID, brings up netifs,
  * pins the AP IP, clears STA config, configures the open AP and arms the
  * 3-minute timeout. Shared by mesh_root.c and mesh_client.c -- both call
