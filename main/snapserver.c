@@ -30,6 +30,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -1264,6 +1265,25 @@ static void stats_task(void *arg)
                 }
             }
             portEXIT_CRITICAL(&s_clients_lock);
+
+            /*
+             * Per-station RSSI as the AP sees it. Since the memory ceiling
+             * was lifted the remaining dropouts hit one client at a time
+             * while the others hold 52 chunks/s, which points at that one
+             * link rather than at the server. This is the number that tells
+             * the two apart: a stalling client with a healthy RSSI is our
+             * problem, one at -80 dBm is not.
+             */
+            wifi_sta_list_t sta_list;
+            if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK) {
+                for (int i = 0; i < sta_list.num; ++i) {
+                    const uint8_t *m = sta_list.sta[i].mac;
+                    ESP_LOGI(TAG,
+                             "station %02X:%02X:%02X:%02X:%02X:%02X rssi=%d dBm",
+                             m[0], m[1], m[2], m[3], m[4], m[5],
+                             (int)sta_list.sta[i].rssi);
+                }
+            }
 
             if (conn_min != UINT16_MAX || send_min != UINT16_MAX) {
                 ESP_LOGI(TAG,
