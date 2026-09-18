@@ -112,7 +112,16 @@ static const char *TAG = "SNAPSERVER";
  * How long a half-written message may keep retrying before the connection is
  * declared dead. Only reached once send() has already accepted part of it.
  */
-#define PARTIAL_SEND_LIMIT_US  10000000
+#define PARTIAL_SEND_LIMIT_US   1000000
+
+/*
+ * How long anything may wait for a client's send mutex. The mutex is held
+ * across a whole message, so without a bound a stuck wire chunk also blocks
+ * that client's Time replies -- which is exactly what the logs showed: the
+ * client's chunks/s went to 0 AND its time_msgs froze, both directions dead
+ * for seconds while every other client kept streaming.
+ */
+#define SEND_MUTEX_WAIT_MS          1000
 
 /*
  * Wake-up interval for the blocking recv() in client_task(), not a
@@ -448,8 +457,12 @@ static int client_send_msg(client_t *client,
         return -1;
     }
 
-    if (xSemaphoreTake(client->send_mutex, portMAX_DELAY) != pdTRUE) {
-        return -1;
+    if (xSemaphoreTake(client->send_mutex,
+                       pdMS_TO_TICKS(SEND_MUTEX_WAIT_MS)) != pdTRUE) {
+        /* Someone else is mid-message. Dropping this one beats queueing up
+         * behind it; a Time reply the client misses it simply asks for
+         * again. */
+        return 1;
     }
 
     int fd = -1;
@@ -579,10 +592,57 @@ static int send_codec_header(client_t *client, uint16_t refers_to)
  * had already been recycled under us, which is not an error: the sender was
  * simply too far behind and the chunk is stale.
  */
+/*
+ * Sends a wire chunk as a single buffer whose first sizeof(snap_base_t)
+ * bytes the caller left free for the header.
+ *
+ * Header and payload used to go out as two send() calls, and that was the
+ * whole problem: the 26-byte header nearly always fits in the socket buffer
+ * even when the ~262-byte payload does not, which commits us to finishing a
+ * message we cannot finish. send_all() then retries with the mutex held
+ * while the client's Time replies queue up behind it. As one call the
+ * message is either accepted or refused outright, and a refused wire chunk
+ * is simply skipped.
+ */
+static int client_send_frame(client_t *client, uint8_t *frame, uint32_t payload_size)
+{
+    if (client == NULL || client->send_mutex == NULL) {
+        return -1;
+    }
+
+    if (xSemaphoreTake(client->send_mutex,
+                       pdMS_TO_TICKS(SEND_MUTEX_WAIT_MS)) != pdTRUE) {
+        return 1;
+    }
+
+    int fd = -1;
+    portENTER_CRITICAL(&s_clients_lock);
+    const bool allowed = client->active && client->fd >= 0 && client->ready;
+    if (allowed) {
+        fd = client->fd;
+    }
+    portEXIT_CRITICAL(&s_clients_lock);
+
+    int result = -1;
+    if (allowed) {
+        snap_base_t base;
+        memset(&base, 0, sizeof(base));
+        now_ts(&base.sent_sec, &base.sent_usec);
+        base.type = SNAP_TYPE_WIRE_CHUNK;
+        base.size = payload_size;
+        memcpy(frame, &base, sizeof(base));
+
+        result = send_all(fd, frame, sizeof(base) + payload_size, true);
+    }
+
+    xSemaphoreGive(client->send_mutex);
+    return result;
+}
+
 static int send_wire_chunk(client_t *client, const tx_item_t *item)
 {
     const chunk_slot_t *slot = &s_chunk_pool[item->slot];
-    uint8_t *payload = client->tx_payload;
+    uint8_t *payload = client->tx_payload + sizeof(snap_base_t);
 
     /*
      * The timestamp originates from esp_timer (uptime) and must be expressed
@@ -619,15 +679,7 @@ static int send_wire_chunk(client_t *client, const tx_item_t *item)
         return 1;
     }
 
-    const int rc = client_send_msg(client,
-                                   SNAP_TYPE_WIRE_CHUNK,
-                                   0,
-                                   0,
-                                   payload,
-                                   12U + size,
-                                   0,
-                                   0,
-                                   true);
+    const int rc = client_send_frame(client, client->tx_payload, 12U + size);
 
     portENTER_CRITICAL(&s_clients_lock);
     if (rc == 0) {
@@ -1003,8 +1055,10 @@ static void client_session(client_t *client)
     free(payload);
     payload = NULL;
 
-    if (send_server_settings(client, hello_id) < 0 ||
-        send_codec_header(client, hello_id) < 0) {
+    /* Not "< 0": a mutex timeout reports 1, and a client marked ready
+     * without ServerSettings and CodecHeader would never decode anything. */
+    if (send_server_settings(client, hello_id) != 0 ||
+        send_codec_header(client, hello_id) != 0) {
         goto done;
     }
 
@@ -1785,10 +1839,10 @@ esp_err_t snapserver_start(void)
         s_clients[i].protocol_ver = SNAP_PROTOCOL_VER;
         s_clients[i].send_mutex = xSemaphoreCreateMutex();
         s_clients[i].tx_queue = xQueueCreate(CLIENT_TX_QUEUE_DEPTH, sizeof(tx_item_t));
-        s_clients[i].tx_payload = heap_caps_malloc(12U + AUDIO_MAX_OPUS_PACKET,
+        s_clients[i].tx_payload = heap_caps_malloc(sizeof(snap_base_t) + 12U + AUDIO_MAX_OPUS_PACKET,
                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_clients[i].tx_payload == NULL) {
-            s_clients[i].tx_payload = heap_caps_malloc(12U + AUDIO_MAX_OPUS_PACKET,
+            s_clients[i].tx_payload = heap_caps_malloc(sizeof(snap_base_t) + 12U + AUDIO_MAX_OPUS_PACKET,
                                                        MALLOC_CAP_8BIT);
         }
 
