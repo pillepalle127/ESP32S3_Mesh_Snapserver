@@ -52,11 +52,25 @@ static const char *TAG = "STATUS_LED";
                                          * through silence */
 
 /*
- * Decay per update when the level falls. Instant attack and a slow release
- * is what makes a level meter legible; without it the LED flickers at the
- * frame rate and says nothing.
+ * Decay per update when the level falls: full scale to dark in three
+ * updates, about 100 ms. Instant attack with a release is still what keeps
+ * the meter legible, but 0.12 (over 250 ms) left it sitting near the top
+ * through anything continuous.
  */
-#define LED_DECAY_PER_UPDATE     0.12f
+#define LED_DECAY_PER_UPDATE     0.35f
+
+/*
+ * Amplitude window the brightness is spread across.
+ *
+ * Music measured on this device peaks at 18000-24000 of 32767, so mapping
+ * raw amplitude straight to brightness uses barely half the range and never
+ * leaves the upper end -- the LED reads as permanently on. Anything under
+ * the floor goes dark, the ceiling is full brightness, and the span between
+ * carries the movement. The ceiling is deliberately below full scale: a
+ * meter that only reaches maximum on a clipped sample never reaches it.
+ */
+#define LED_LEVEL_LOW            0.12f
+#define LED_LEVEL_HIGH           0.80f
 
 typedef struct {
     uint8_t r;
@@ -128,15 +142,25 @@ static float current_level(void)
     audio_i2s_take_led_peak(&peak_left, &peak_right);
 
     const int16_t peak = (peak_left > peak_right) ? peak_left : peak_right;
+
+    float amplitude;
     if (peak > 0) {
-        return (float)peak / 32767.0f;
+        amplitude = (float)peak / 32767.0f;
+    } else {
+        const float db = s_level_db;
+        if (db <= LED_LEVEL_FLOOR_DB) {
+            return 0.0f;
+        }
+        amplitude = (db - LED_LEVEL_FLOOR_DB) / (0.0f - LED_LEVEL_FLOOR_DB);
     }
 
-    const float db = s_level_db;
-    if (db <= LED_LEVEL_FLOOR_DB) {
+    /* Spread LED_LEVEL_LOW..LED_LEVEL_HIGH across the whole range. */
+    const float spread =
+        (amplitude - LED_LEVEL_LOW) / (LED_LEVEL_HIGH - LED_LEVEL_LOW);
+    if (spread <= 0.0f) {
         return 0.0f;
     }
-    return (db - LED_LEVEL_FLOOR_DB) / (0.0f - LED_LEVEL_FLOOR_DB);
+    return (spread > 1.0f) ? 1.0f : spread;
 }
 
 static void led_task(void *arg)
