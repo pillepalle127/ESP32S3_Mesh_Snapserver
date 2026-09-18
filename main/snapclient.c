@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <sys/select.h>
 #include <netdb.h>
 #include <unistd.h>
@@ -84,6 +85,25 @@ typedef struct __attribute__((packed)) {
 #define SNAP_CONNECT_TIMEOUT_MS  1500
 #define SNAP_CONNECT_RETRY_MS     500
 #define SNAP_RECONNECT_DELAY_MS  1000
+
+/*
+ * Per-recv() timeout, and how long the stream may stay completely silent
+ * before the connection counts as dead.
+ *
+ * Without these the socket is blocking with no timeout at all, so a link
+ * that dies without a TCP FIN or RST -- the parent going away, the AP
+ * dropping us, a half-open connection after a roam -- leaves read_full()
+ * parked in recv() forever. The task never reaches its reconnect path, the
+ * ring never refills and the speaker stays silent until someone reboots it.
+ *
+ * The server sends a WireChunk every 20 ms, so several seconds of nothing
+ * cannot happen on a healthy connection.
+ */
+#define SNAP_RECV_TIMEOUT_US   2000000
+#define SNAP_STALL_TIMEOUT_US  6000000
+
+/* read_full(): distinguishes "nothing arrived yet" from a real failure. */
+#define SNAP_READ_TIMEOUT 1
 
 /*
  * Time-request cadence. Fast while the measurement window is still filling
@@ -171,6 +191,17 @@ static int read_full(int socket_fd, void *buffer, size_t length)
             if (errno == EINTR) {
                 continue;
             }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                /*
+                 * Only reportable while nothing of this message has arrived;
+                 * mid-message the caller has no way to resume, so keep
+                 * waiting and let the stall watchdog end the connection.
+                 */
+                if (received_total == 0U) {
+                    return SNAP_READ_TIMEOUT;
+                }
+                continue;
+            }
             return -1;
         }
         if (received == 0) {
@@ -179,6 +210,27 @@ static int read_full(int socket_fd, void *buffer, size_t length)
         received_total += (size_t)received;
     }
     return 0;
+}
+
+/*
+ * read_full() for the part of a message that follows its header. There is no
+ * resync point once the header is gone, so a single quiet recv() must not end
+ * the connection -- only the overall stall budget may.
+ */
+static int read_full_wait(int socket_fd, void *buffer, size_t length)
+{
+    const int64_t deadline_us = esp_timer_get_time() + SNAP_STALL_TIMEOUT_US;
+
+    for (;;) {
+        const int rc = read_full(socket_fd, buffer, length);
+        if (rc != SNAP_READ_TIMEOUT) {
+            return rc;
+        }
+        if (esp_timer_get_time() >= deadline_us) {
+            ESP_LOGW(TAG, "Payload stalled mid-message, dropping connection");
+            return -1;
+        }
+    }
 }
 
 static int tcp_connect(void)
@@ -275,6 +327,15 @@ static int tcp_connect(void)
         ESP_LOGW(TAG, "Resetting socket to blocking failed, errno=%d", errno);
         close(socket_fd);
         return -1;
+    }
+
+    const struct timeval recv_timeout = {
+        .tv_sec = (time_t)(SNAP_RECV_TIMEOUT_US / 1000000),
+        .tv_usec = (suseconds_t)(SNAP_RECV_TIMEOUT_US % 1000000),
+    };
+    if (setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO,
+                   &recv_timeout, sizeof(recv_timeout)) < 0) {
+        ESP_LOGW(TAG, "Could not set receive timeout, errno=%d", errno);
     }
 
     ESP_LOGI(TAG, "Connected to Snapserver %s:%u", s_host, (unsigned)s_port);
@@ -698,6 +759,7 @@ static void connection_loop(int socket_fd)
     audio_sink_set_network_active(true);
     time_sync_reset();
     int64_t last_time_request_us = 0;
+    int64_t last_data_us = esp_timer_get_time();
 
     while (s_run) {
         /*
@@ -720,9 +782,19 @@ static void connection_loop(int socket_fd)
         }
 
         snap_base_t header;
-        if (read_full(socket_fd, &header, sizeof(header)) != 0) {
+        const int header_rc = read_full(socket_fd, &header, sizeof(header));
+        if (header_rc < 0) {
             break;
         }
+        if (header_rc == SNAP_READ_TIMEOUT) {
+            if (esp_timer_get_time() - last_data_us >= SNAP_STALL_TIMEOUT_US) {
+                ESP_LOGW(TAG, "No data for %lld s, treating connection as dead",
+                         (long long)(SNAP_STALL_TIMEOUT_US / 1000000));
+                break;
+            }
+            continue;
+        }
+        last_data_us = esp_timer_get_time();
 
         if (header.size == 0U) {
             vTaskDelay(1);
@@ -735,7 +807,7 @@ static void connection_loop(int socket_fd)
             while (remaining > 0U && s_run) {
                 const uint32_t part =
                     (remaining > sizeof(discard_buffer)) ? (uint32_t)sizeof(discard_buffer) : remaining;
-                if (read_full(socket_fd, discard_buffer, part) != 0) {
+                if (read_full_wait(socket_fd, discard_buffer, part) != 0) {
                     audio_sink_set_network_active(false);
                     return;
                 }
@@ -745,7 +817,7 @@ static void connection_loop(int socket_fd)
             continue;
         }
 
-        if (read_full(socket_fd, message_buffer, header.size) != 0) {
+        if (read_full_wait(socket_fd, message_buffer, header.size) != 0) {
             break;
         }
 
