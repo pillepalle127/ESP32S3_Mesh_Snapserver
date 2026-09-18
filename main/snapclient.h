@@ -30,6 +30,16 @@ esp_err_t snapclient_start(const char *host, uint16_t port);
  * in-flight connection attempt or open socket via shutdown(); true releases
  * an immediate reconnect. Safe to call from any task/event handler.
  */
+/*
+ * Points the client at a (possibly different) Snapserver address. The host
+ * used to be captured once at snapclient_start() and never revisited, so a
+ * node whose first resolution was the fallback, or whose parent changed,
+ * kept dialling a stale address forever -- visible as an endless run of
+ * "TCP connect aborted (timeout)" while the server was up and reachable.
+ * Safe to call from an event handler; it takes effect on the next connect.
+ */
+void snapclient_set_server_host(const char *host);
+
 void snapclient_set_network_available(bool available);
 
 #ifdef __cplusplus

@@ -1251,6 +1251,17 @@ static void stats_task(void *arg)
                      (unsigned long)samples);
         }
 
+        /*
+         * Fetched once per report so each client line can carry its own
+         * RSSI. It used to be logged separately, keyed by MAC while the
+         * client lines are keyed by IP, which left correlating the two as
+         * manual work on a scrolling console.
+         */
+        wifi_sta_list_t sta_list;
+        if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK) {
+            sta_list.num = 0;
+        }
+
         for (int i = 0; i < MAX_CLIENTS; ++i) {
             bool active = false;
             bool ready = false;
@@ -1260,6 +1271,7 @@ static void stats_task(void *arg)
             uint32_t skipped = 0;
             uint32_t times = 0;
             char peer[16];
+            char mac[24];
 
             portENTER_CRITICAL(&s_clients_lock);
             active = s_clients[i].active;
@@ -1270,7 +1282,23 @@ static void stats_task(void *arg)
             skipped = s_clients[i].chunks_skipped;
             times = s_clients[i].time_msgs;
             strlcpy(peer, s_clients[i].peer, sizeof(peer));
+            strlcpy(mac, s_clients[i].mac, sizeof(mac));
             portEXIT_CRITICAL(&s_clients_lock);
+
+            /* 127 means "no station matched": the Snapcast client is not a
+             * direct child of this AP -- a node one mesh level down, or a
+             * phone that reported no MAC in its Hello. */
+            int rssi = 127;
+            for (int k = 0; k < sta_list.num; ++k) {
+                const uint8_t *m = sta_list.sta[k].mac;
+                char text[24];
+                snprintf(text, sizeof(text), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         m[0], m[1], m[2], m[3], m[4], m[5]);
+                if (strcasecmp(text, mac) == 0) {
+                    rssi = (int)sta_list.sta[k].rssi;
+                    break;
+                }
+            }
 
             /* A reconnect resets the counter; avoid an unsigned wrap. */
             const uint32_t chunk_rate =
@@ -1278,9 +1306,9 @@ static void stats_task(void *arg)
 
             if (active) {
                 ESP_LOGI(TAG,
-                         "client[%d] %s ready=%d chunks/s=%lu total=%lu "
+                         "client[%d] %s rssi=%d ready=%d chunks/s=%lu total=%lu "
                          "bytes=%lu send_errors=%lu skipped=%lu time_msgs=%lu",
-                         i, peer, (int)ready,
+                         i, peer, rssi, (int)ready,
                          (unsigned long)chunk_rate,
                          (unsigned long)chunks,
                          (unsigned long)bytes,
@@ -1322,25 +1350,6 @@ static void stats_task(void *arg)
                 }
             }
             portEXIT_CRITICAL(&s_clients_lock);
-
-            /*
-             * Per-station RSSI as the AP sees it. Since the memory ceiling
-             * was lifted the remaining dropouts hit one client at a time
-             * while the others hold 52 chunks/s, which points at that one
-             * link rather than at the server. This is the number that tells
-             * the two apart: a stalling client with a healthy RSSI is our
-             * problem, one at -80 dBm is not.
-             */
-            wifi_sta_list_t sta_list;
-            if (esp_wifi_ap_get_sta_list(&sta_list) == ESP_OK) {
-                for (int i = 0; i < sta_list.num; ++i) {
-                    const uint8_t *m = sta_list.sta[i].mac;
-                    ESP_LOGI(TAG,
-                             "station %02X:%02X:%02X:%02X:%02X:%02X rssi=%d dBm",
-                             m[0], m[1], m[2], m[3], m[4], m[5],
-                             (int)sta_list.sta[i].rssi);
-                }
-            }
 
             if (conn_min != UINT16_MAX || send_min != UINT16_MAX) {
                 ESP_LOGI(TAG,
