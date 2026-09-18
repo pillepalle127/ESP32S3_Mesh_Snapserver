@@ -123,6 +123,14 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
 esp_err_t audio_i2s_capture_mono(int16_t *mono, size_t mono_samples);
 
 /*
+ * Reads and clears the peak level seen at the crossover output since the
+ * last call. Meant to be printed from outside the audio path: logging from
+ * the real-time task costs it ~10 ms of blocking UART time per line, which
+ * is a large slice of a 20 ms frame budget.
+ */
+void audio_i2s_take_output_peak(int16_t *left, int16_t *right);
+
+/*
  * Runs the mono input through the LR4 crossover (or bypasses it) and writes
  * the resulting sub/wideband pair to the TX side -- just the DSP+output half
  * of audio_i2s_read_frame(). Used by the client role (audio_sink.c) to play

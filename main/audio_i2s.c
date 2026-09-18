@@ -1,6 +1,7 @@
 /**
  * @file audio_i2s.c
- * @brief Full-duplex I2S input, mono mix and local LR4 crossover output.
+ * @brief Full-duplex I2S input, mono mix, local LR4 crossover output and
+ *        the server's output delay line.
  */
 #include "audio_i2s.h"
 
@@ -104,6 +105,16 @@ static int16_t *s_delay_line;
 static size_t s_delay_capacity;
 static size_t s_delay_write;
 static volatile size_t s_delay_samples;
+
+/*
+ * Diagnostic: peak level of what actually leaves the crossover, per output
+ * channel, reported every 5 s. audio_sink.c's own output_rms is measured on
+ * the mono signal *before* the DSP, so it cannot tell "no audio reaching
+ * the DAC" apart from "DSP or channel assignment eats it". This closes that
+ * gap -- everything after it is wiring and the DAC itself.
+ */
+static int16_t s_peak_left;
+static int16_t s_peak_right;
 
 static int16_t float_to_int16(float sample)
 {
@@ -401,12 +412,29 @@ static bool apply_output_delay(const int16_t *in, int16_t *out, size_t mono_samp
         return false;
     }
 
+    /*
+     * Wrapping by compare-and-subtract, not by %: the capacity is
+     * delay_ms * 48 and thus never a power of two, so each modulo compiled
+     * to a real 32-bit division -- two per sample, 1920 per frame, on the
+     * order of 250 us of the 20 ms frame budget. Both indices advance by
+     * exactly one per iteration and stay inside [0, capacity), so a single
+     * comparison is equivalent.
+     */
+    size_t read_pos = s_delay_write + s_delay_capacity - delay;
+    if (read_pos >= s_delay_capacity) {
+        read_pos -= s_delay_capacity;
+    }
+
     for (size_t i = 0; i < mono_samples; ++i) {
-        const size_t read_pos =
-            (s_delay_write + s_delay_capacity - delay) % s_delay_capacity;
         out[i] = s_delay_line[read_pos];
         s_delay_line[s_delay_write] = in[i];
-        s_delay_write = (s_delay_write + 1U) % s_delay_capacity;
+
+        if (++read_pos >= s_delay_capacity) {
+            read_pos = 0;
+        }
+        if (++s_delay_write >= s_delay_capacity) {
+            s_delay_write = 0;
+        }
     }
 
     return true;
@@ -481,8 +509,23 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
             wideband = lr4_process(&highpass, (float)mono_sample) * wideband_gain_linear;
         }
 
-        s_output_stereo[2U * i + dsp.sub_channel] = float_to_int16(subwoofer);
-        s_output_stereo[2U * i + dsp.wideband_channel] = float_to_int16(wideband);
+        const int16_t sub_sample = float_to_int16(subwoofer);
+        const int16_t wide_sample = float_to_int16(wideband);
+        s_output_stereo[2U * i + dsp.sub_channel] = sub_sample;
+        s_output_stereo[2U * i + dsp.wideband_channel] = wide_sample;
+
+        /* Folded into this loop rather than a second pass over the frame --
+         * a diagnostic must not cost another 960 iterations. */
+        const int16_t abs_sub = (sub_sample < 0) ? (int16_t)(-(int32_t)sub_sample) : sub_sample;
+        const int16_t abs_wide = (wide_sample < 0) ? (int16_t)(-(int32_t)wide_sample) : wide_sample;
+        int16_t *peak_sub = (dsp.sub_channel == PCM_CHANNEL_LEFT) ? &s_peak_left : &s_peak_right;
+        int16_t *peak_wide = (dsp.wideband_channel == PCM_CHANNEL_LEFT) ? &s_peak_left : &s_peak_right;
+        if (abs_sub > *peak_sub) {
+            *peak_sub = abs_sub;
+        }
+        if (abs_wide > *peak_wide) {
+            *peak_wide = abs_wide;
+        }
     }
 
     /*
@@ -534,6 +577,16 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     }
 
     return ESP_OK;
+}
+
+void audio_i2s_take_output_peak(int16_t *left, int16_t *right)
+{
+    portENTER_CRITICAL(&s_dsp_lock);
+    *left = s_peak_left;
+    *right = s_peak_right;
+    s_peak_left = 0;
+    s_peak_right = 0;
+    portEXIT_CRITICAL(&s_dsp_lock);
 }
 
 esp_err_t audio_i2s_capture_mono(int16_t *mono, size_t mono_samples)
