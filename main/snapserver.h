@@ -54,6 +54,12 @@ esp_err_t snapserver_start(void);
  * Copies up to max_clients entries of currently connected clients into out.
  * Returns the number of entries written. Safe to call from other tasks.
  */
+/*
+ * Hash over the connected client set, for cheap change detection. Changes
+ * whenever a client joins, leaves or reports a different id.
+ */
+uint32_t snapserver_client_set_hash(void);
+
 size_t snapserver_get_clients(snapserver_client_info_t *out,
                               size_t max_clients);
 

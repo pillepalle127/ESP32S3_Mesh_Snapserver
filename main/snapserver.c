@@ -1675,6 +1675,36 @@ static void server_task(void *arg)
 /* Public API for the control server                                  */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Change detection for the control server, which polls it about once a
+ * second per connection. It used to build a full snapshot -- every string of
+ * every client -- and throw all of it away except the ids. Hashing in place
+ * under a per-client lock costs a fraction of that and touches no memory
+ * outside this file.
+ */
+uint32_t snapserver_client_set_hash(void)
+{
+    uint32_t hash = 2166136261U;
+
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+        portENTER_CRITICAL(&s_clients_lock);
+        const bool counts = s_clients[i].active && s_clients[i].ready;
+        if (counts) {
+            for (const unsigned char *p = (const unsigned char *)s_clients[i].id;
+                 *p != '\0'; ++p) {
+                hash ^= *p;
+                hash *= 16777619U;
+            }
+        }
+        portEXIT_CRITICAL(&s_clients_lock);
+
+        hash ^= counts ? 1U : 0U;
+        hash *= 16777619U;
+    }
+
+    return hash;
+}
+
 size_t snapserver_get_clients(snapserver_client_info_t *out,
                               size_t max_clients)
 {
@@ -1684,9 +1714,21 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
 
     size_t count = 0;
 
-    portENTER_CRITICAL(&s_clients_lock);
+    /*
+     * Locked per client, not once around the loop.
+     *
+     * s_clients_lock is a cross-core spinlock, so holding it runs with
+     * interrupts off and spins the other core -- and audio_task takes the
+     * same lock every 20 ms frame. Copying ten clients at ~330 B each in one
+     * stretch was enough to show up in the capture cadence: a client joining
+     * pushed frame delta from 20000 to 21089 us for a whole second while
+     * every client dropped from 53 to 50 chunks/s. A snapshot that is not
+     * atomic across clients costs a status display nothing.
+     */
     for (int i = 0; i < MAX_CLIENTS && count < max_clients; ++i) {
+        portENTER_CRITICAL(&s_clients_lock);
         if (!s_clients[i].active || !s_clients[i].ready) {
+            portEXIT_CRITICAL(&s_clients_lock);
             continue;
         }
 
@@ -1710,10 +1752,10 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
         dst->latency_ms = s_clients[i].latency_ms;
         dst->last_seen_sec = s_clients[i].last_seen_sec;
         dst->last_seen_usec = s_clients[i].last_seen_usec;
+        portEXIT_CRITICAL(&s_clients_lock);
 
         ++count;
     }
-    portEXIT_CRITICAL(&s_clients_lock);
 
     /* An id is mandatory for the controller; fall back to the peer address. */
     for (size_t i = 0; i < count; ++i) {
