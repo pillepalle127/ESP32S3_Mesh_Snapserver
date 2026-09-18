@@ -68,6 +68,27 @@ static void resolve_server_host(char *out, size_t out_len)
     strlcpy(out, PROVISIONING_AP_IP_ADDR, out_len);
 }
 
+/*
+ * Last resort when the Snapserver stays unreachable: drop the STA link so
+ * Mesh-Lite rebuilds its parent choice from a fresh scan.
+ *
+ * The case this exists for is a mesh island. When the root goes away, the
+ * remaining nodes still see each other's beacons and can attach to one
+ * another; the result is associated, holds a DHCP lease and looks entirely
+ * healthy from inside, but has no route to the server and no reason to
+ * rescan. Observed on device: after a server restart only one of five
+ * clients came back, and the others needed a power cycle.
+ */
+static void force_mesh_rejoin(void)
+{
+    ESP_LOGW(TAG, "Snapserver unreachable, dropping the parent link to rescan");
+    snapclient_set_network_available(false);
+    const esp_err_t err = esp_wifi_disconnect();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not drop the parent link: %s", esp_err_to_name(err));
+    }
+}
+
 static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     (void)arg;
@@ -87,6 +108,7 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
      * it saw at startup. */
     snapclient_set_server_host(host);
     snapclient_set_host_resolver(resolve_server_host);
+    snapclient_set_unreachable_cb(force_mesh_rejoin);
     snapclient_set_network_available(true);
 
     if (!s_snapclient_started) {
@@ -167,6 +189,22 @@ static esp_err_t start_client_mesh(const device_config_t *cfg)
      * rather than the (slower) library defaults of 5 s / 2 tries / 10 s.
      */
     esp_mesh_lite_set_wifi_reconnect_interval(2, 3, 5);
+
+    /*
+     * Fusion is what merges a mesh that has split into separate islands, and
+     * it runs every 600 s by default -- ten minutes during which nodes that
+     * attached to each other after the root vanished keep a network that
+     * goes nowhere. Every 20 s instead, starting 20 s after boot so the
+     * initial join is not disturbed.
+     */
+    esp_mesh_lite_fusion_config_t fusion = {
+        .fusion_rssi_threshold = -85,
+        .fusion_start_time_sec = 20,
+        .fusion_frequency_sec = 20,
+    };
+    if (esp_mesh_lite_set_fusion_config(&fusion) != ESP_OK) {
+        ESP_LOGW(TAG, "Could not shorten the mesh fusion interval");
+    }
 
     err = esp_event_handler_instance_register(WIFI_EVENT, WIFI_EVENT_STA_DISCONNECTED,
                                               &wifi_event_handler, NULL, NULL);

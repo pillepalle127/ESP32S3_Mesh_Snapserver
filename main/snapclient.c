@@ -99,6 +99,14 @@ typedef struct __attribute__((packed)) {
  * The server sends a WireChunk every 20 ms, so several seconds of nothing
  * cannot happen on a healthy connection.
  */
+/*
+ * Consecutive failed connects before the path itself is declared the
+ * problem. Each attempt costs the connect timeout plus SNAP_CONNECT_RETRY_MS,
+ * so this is roughly a minute of getting nowhere -- long enough that an
+ * ordinary server restart is never mistaken for it.
+ */
+#define SNAP_UNREACHABLE_ATTEMPTS    25
+
 #define SNAP_RECV_TIMEOUT_US   2000000
 #define SNAP_STALL_TIMEOUT_US  6000000
 
@@ -139,6 +147,7 @@ static char s_host[64];
 /* s_host is written from the event handler and read by the client task. */
 static portMUX_TYPE s_host_lock = portMUX_INITIALIZER_UNLOCKED;
 static void (*s_host_resolver)(char *out, size_t out_len);
+static void (*s_unreachable_cb)(void);
 static uint16_t s_port = 1704;
 
 static char s_codec[16];
@@ -860,6 +869,7 @@ static void wait_for_reconnect_condition(TickType_t timeout_ticks)
 static void snap_task(void *arg)
 {
     (void)arg;
+    int failed_connects = 0;
 
     while (s_run) {
         if (!s_network_available) {
@@ -869,11 +879,22 @@ static void snap_task(void *arg)
 
         const int socket_fd = tcp_connect();
         if (socket_fd < 0) {
+            if (++failed_connects >= SNAP_UNREACHABLE_ATTEMPTS) {
+                failed_connects = 0;
+                ESP_LOGW(TAG,
+                         "No Snapserver after %d attempts; asking for a fresh "
+                         "network join", SNAP_UNREACHABLE_ATTEMPTS);
+                if (s_unreachable_cb != NULL) {
+                    s_unreachable_cb();
+                }
+            }
             if (s_run && s_network_available) {
                 wait_for_reconnect_condition(pdMS_TO_TICKS(SNAP_CONNECT_RETRY_MS));
             }
             continue;
         }
+
+        failed_connects = 0;
 
         if (!s_network_available) {
             shutdown(socket_fd, SHUT_RDWR);
@@ -912,6 +933,11 @@ static void snap_task(void *arg)
 void snapclient_set_host_resolver(void (*resolver)(char *out, size_t out_len))
 {
     s_host_resolver = resolver;
+}
+
+void snapclient_set_unreachable_cb(void (*cb)(void))
+{
+    s_unreachable_cb = cb;
 }
 
 void snapclient_set_server_host(const char *host)

@@ -52,6 +52,20 @@ void snapclient_set_server_host(const char *host);
  */
 void snapclient_set_host_resolver(void (*resolver)(char *out, size_t out_len));
 
+/*
+ * Called when the client has failed to reach the Snapserver for long enough
+ * that the network path, not the server, is the likely problem.
+ *
+ * Needed because a node can sit on a mesh that goes nowhere: when the root
+ * disappears, the remaining nodes still see each other's beacons and can
+ * attach to one another, forming an island with no route to the server.
+ * Nothing in that state looks broken from the node's own point of view -- it
+ * is associated and holds a DHCP lease -- so it never rescans, and only a
+ * power cycle brought it back. The client role uses this to force a fresh
+ * mesh join.
+ */
+void snapclient_set_unreachable_cb(void (*cb)(void));
+
 void snapclient_set_network_available(bool available);
 
 #ifdef __cplusplus
