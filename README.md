@@ -1,6 +1,6 @@
 # ESP32-S3 Mini Snapserver
 
-**Stand:** 2026-09-17
+**Stand:** 2026-09-18
 
 ## Projektziel
 
@@ -51,7 +51,8 @@ oder PC im laufenden Betrieb.
 * Web-Konfigurationsseite (HTTP, Port 80) für Mesh-Zugangsdaten, Mesh-Hop-Tiefe,
   DSP-Frequenzweiche (Enable, Trennfrequenz, Kanal-Gains, Kanalzuordnung) und
   Opus-Bitrate/Complexity, persistent in NVS gespeichert
-* mDNS-Erreichbarkeit unter `snapserver.local`
+* mDNS-Erreichbarkeit unter einem pro Gerät eindeutigen Namen
+  (`snapserver-<MAC>.local` bzw. `snapclient-<MAC>.local`)
 * Factory-Reset über die Web-Oberfläche
 * Offener Provisioning-Access-Point (`ESP32_provisioning_<MAC>`) als Fallback bei
   Erstinbetriebnahme, nach Factory-Reset, bei deaktiviertem Mesh oder nach
@@ -160,9 +161,12 @@ Die DSP-Verarbeitung benötigt für diesen Signalweg kein externes DSP-System un
 ## Web-Konfiguration
 
 Das Gerät stellt unter Port **80** eine Konfigurationsseite bereit, erreichbar über
-seine IP-Adresse oder per mDNS unter `http://snapserver.local/`. Dieselbe Seite
-läuft auf jedem Gerät, unabhängig von der Rolle — Screenshots beider Rollen
-in [Client-Rolle](#client-rolle).
+seine IP-Adresse oder per mDNS. Der mDNS-Name enthält Rolle und die letzten
+drei MAC-Bytes (`http://snapserver-E3B689.local/`,
+`http://snapclient-E2BDFD.local/`) — ein gemeinsamer Name für alle Geräte war
+nicht brauchbar, weil zwischengespeicherte Namensauflösungen dann auf dem
+falschen Gerät landen. Dieselbe Seite läuft auf jedem Gerät, unabhängig von
+der Rolle — Screenshots beider Rollen in [Client-Rolle](#client-rolle).
 
 <img src="docs/webconfig-server-screenshot.png" width="360">
 
@@ -178,6 +182,11 @@ Konfigurierbar:
   Client führt sein wiedergegebenes Signal durch dieselbe Weiche.
 * **Opus:** Bitrate, Complexity. Wirkt sofort, ohne Neustart. Nur in der
   Server-Rolle relevant (Encoder-Einstellungen).
+* **Client-Wiedergabe:** Quellenwahl, Pegelschwelle des lokalen Eingangs,
+  Delay-Trim und feste Server-Adresse wirken sofort. Die Puffergröße
+  (`bufferMs`) löst dagegen einen Neustart aus: aus ihr werden beim Start
+  mehrsekündige Puffer dimensioniert — der Ringpuffer des Clients und die
+  Verzögerungsleitung der lokalen Ausgabe des Servers.
 
 Alle Werte werden persistent im NVS gespeichert und überleben Neustarts und
 Firmware-Updates (solange sich das Konfigurationsschema nicht ändert).
@@ -230,6 +239,12 @@ In der Client-Rolle:
   „nur Netzwerk" oder „nur lokaler Eingang" erzwingbar.
 * Puffergröße (`bufferMs`) und ein zusätzlicher Delay-Trim sind konfigurierbar,
   um Mesh-Umstrukturierungen in einem dynamischen Funkumfeld zu überbrücken.
+* Die **Lautstärke ist pro Client** einstellbar und wird über die
+  Snapcast-Steuerschnittstelle gesetzt (`Client.SetVolume`, also z. B. aus
+  einer Snapcast-App heraus); der Server meldet jede Änderung sofort an den
+  betroffenen Client. Sie wirkt auf beide Quellen, weil sie die Lautstärke
+  dieses Lautsprechers ist und nicht die des Netzwerkstreams. Die eigene
+  Web-Konfigurationsseite hat dafür bisher kein Feld.
 
 ### Zeitabgleich und Drift
 
@@ -382,7 +397,7 @@ idf.py flash monitor
 ---
 
 
-## Pining
+## Pinning
 
 GPIO 4   ESP32-S3 -> PCM5102A BCK und TinySine BCLK
 
