@@ -86,6 +86,7 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
      * server restart or a parent change, and the client used to keep the one
      * it saw at startup. */
     snapclient_set_server_host(host);
+    snapclient_set_host_resolver(resolve_server_host);
     snapclient_set_network_available(true);
 
     if (!s_snapclient_started) {

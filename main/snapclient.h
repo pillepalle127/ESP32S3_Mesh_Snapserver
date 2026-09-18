@@ -40,6 +40,18 @@ esp_err_t snapclient_start(const char *host, uint16_t port);
  */
 void snapclient_set_server_host(const char *host);
 
+/*
+ * Registers a resolver the client calls before every connect attempt, so a
+ * changed mesh topology is picked up without waiting for a new DHCP lease.
+ *
+ * Pushing the address on IP_EVENT_STA_GOT_IP alone is not enough: a node
+ * that keeps its lease while the path to the root changes underneath it
+ * never gets a new event, and was seen retrying one address for minutes --
+ * "TCP connect to 192.168.5.1:1704 aborted (timeout)" every two seconds
+ * with nothing else in the log.
+ */
+void snapclient_set_host_resolver(void (*resolver)(char *out, size_t out_len));
+
 void snapclient_set_network_available(bool available);
 
 #ifdef __cplusplus

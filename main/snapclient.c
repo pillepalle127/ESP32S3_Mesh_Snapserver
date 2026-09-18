@@ -138,6 +138,7 @@ static EventGroupHandle_t s_evt;
 static char s_host[64];
 /* s_host is written from the event handler and read by the client task. */
 static portMUX_TYPE s_host_lock = portMUX_INITIALIZER_UNLOCKED;
+static void (*s_host_resolver)(char *out, size_t out_len);
 static uint16_t s_port = 1704;
 
 static char s_codec[16];
@@ -251,6 +252,18 @@ static int tcp_connect(void)
 
     if (snprintf(port_text, sizeof(port_text), "%u", (unsigned)s_port) >= (int)sizeof(port_text)) {
         return -1;
+    }
+
+    /*
+     * Re-resolved per attempt, not cached: after a parent change the root is
+     * often reachable under a different address, and nothing else would tell
+     * us. Cheap -- a config read and one mesh-lite call.
+     */
+    if (s_host_resolver != NULL) {
+        char resolved[sizeof(s_host)];
+        resolved[0] = '\0';
+        s_host_resolver(resolved, sizeof(resolved));
+        snapclient_set_server_host(resolved);
     }
 
     char host[sizeof(s_host)];
@@ -894,6 +907,11 @@ static void snap_task(void *arg)
     s_sock = -1;
     s_task_started = false;
     vTaskDelete(NULL);
+}
+
+void snapclient_set_host_resolver(void (*resolver)(char *out, size_t out_len))
+{
+    s_host_resolver = resolver;
 }
 
 void snapclient_set_server_host(const char *host)
