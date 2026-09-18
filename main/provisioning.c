@@ -140,6 +140,33 @@ esp_err_t provisioning_configure_ap_wifi(const char *ssid, const char *password,
     return esp_bridge_wifi_set_config(WIFI_IF_AP, &ap_config);
 }
 
+esp_err_t provisioning_disable_ap_pmf(void)
+{
+    wifi_config_t ap_config;
+
+    esp_err_t err = esp_wifi_get_config(WIFI_IF_AP, &ap_config);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not read SoftAP config: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    if (!ap_config.ap.pmf_cfg.capable && !ap_config.ap.pmf_cfg.required) {
+        return ESP_OK;
+    }
+
+    ap_config.ap.pmf_cfg.capable = false;
+    ap_config.ap.pmf_cfg.required = false;
+
+    err = esp_wifi_set_config(WIFI_IF_AP, &ap_config);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Could not disable SoftAP PMF: %s", esp_err_to_name(err));
+        return err;
+    }
+
+    ESP_LOGI(TAG, "SoftAP PMF disabled (mesh stations join without PMF)");
+    return ESP_OK;
+}
+
 esp_err_t provisioning_start_fallback_ap(provisioning_reason_t reason)
 {
     char ssid[33];
