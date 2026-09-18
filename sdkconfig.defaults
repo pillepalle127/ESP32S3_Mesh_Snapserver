@@ -9,8 +9,13 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_USE_CAPS_ALLOC=y
 CONFIG_FREERTOS_HZ=1000
-CONFIG_LWIP_TCP_SND_BUF_DEFAULT=8192
-CONFIG_LWIP_TCP_WND_DEFAULT=8192
+# 2 x TCP_MSS. The stream is 250 B every 20 ms per client, so an 8192 B
+# window buffers 640 ms of audio that nobody needs, and lwIP takes it from
+# internal DRAM -- the same pool the Wi-Fi driver allocates its TX buffers
+# from. Measured on device: internal free fell to 9968 B with three clients,
+# and every station stalled at once while the capture loop kept perfect time.
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=2880
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 CONFIG_SNAPSERVER_ENABLE_MESH_LITE=y
 CONFIG_MESH_LITE_ENABLE=y
