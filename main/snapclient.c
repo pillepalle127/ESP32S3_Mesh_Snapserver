@@ -101,11 +101,18 @@ typedef struct __attribute__((packed)) {
  */
 /*
  * Consecutive failed connects before the path itself is declared the
- * problem. Each attempt costs the connect timeout plus SNAP_CONNECT_RETRY_MS,
- * so this is roughly a minute of getting nowhere -- long enough that an
- * ordinary server restart is never mistaken for it.
+ * problem. Measured on device, an attempt takes about 2 s, so this is some
+ * 20 s of getting nowhere.
+ *
+ * It can be this short because a server restart does not reach the counter
+ * at all: the AP goes down with it, the client is disassociated, and
+ * snap_task blocks on EVT_NETWORK_AVAILABLE instead of counting. Failures
+ * only accumulate while the client is associated and holds a lease but
+ * still cannot reach the server -- a duplicate address after the server's
+ * DHCP table was lost, a dead path, a mesh island. None of those recover on
+ * their own, so waiting longer only costs silence.
  */
-#define SNAP_UNREACHABLE_ATTEMPTS    25
+#define SNAP_UNREACHABLE_ATTEMPTS    10
 
 #define SNAP_RECV_TIMEOUT_US   2000000
 #define SNAP_STALL_TIMEOUT_US  6000000
