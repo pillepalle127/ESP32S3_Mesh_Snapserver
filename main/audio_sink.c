@@ -1,6 +1,7 @@
 /**
  * @file audio_sink.c
- * @brief Client-role source arbitration, ring buffer and player task.
+ * @brief Client-role source arbitration, ring buffer, playback scheduler
+ *        and player task.
  */
 #include "audio_sink.h"
 
@@ -59,13 +60,26 @@ static const char *TAG = "AUDIO_SINK";
 
 /*
  * A chunk timestamp that misses the buffered stream's continuation by more
- * than this is treated as a new stream rather than as drift: the buffer is
- * dropped and the timeline re-anchored. Covers reconnects, server restarts
- * and the documented case where the server adopts a PC/Android client's
- * wall clock mid-session and its timestamps jump by months
- * (see handle_time() in snapserver.c).
+ * than this is a discontinuity. The buffered audio is kept and only the
+ * timeline follows the shift -- the usual cause is the *server* correcting
+ * its own capture timeline (TIMESTAMP_RESYNC_THRESHOLD_US in audio_i2s.c),
+ * which relabels its timestamps without interrupting the audio itself.
+ * Measured on device: with four clients the server's capture loop ran
+ * ~450 us per frame behind, hit its 100 ms threshold every ~4.5 s and
+ * re-anchored. Dropping the buffer for that meant re-prebuffering 2.4 s
+ * every 4.5 s, i.e. near-permanent silence.
  */
 #define STREAM_DISCONTINUITY_US (100LL * 1000LL)
+
+/*
+ * Beyond this the stream is treated as a genuinely new one and the buffer
+ * is dropped: no plausible capture re-anchor is this large, whereas the
+ * server adopting a PC/Android client's wall clock mid-session moves its
+ * timestamps by months (see handle_time() in snapserver.c). Reconnects
+ * don't rely on this -- they already flush when the source leaves
+ * AUDIO_SINK_SOURCE_NETWORK.
+ */
+#define STREAM_RESTART_US (1000LL * 1000LL)
 
 /*
  * Above this scheduling error, correcting by resampling would take far too
@@ -157,6 +171,15 @@ static volatile bool s_server_offset_valid;
 static volatile int64_t s_stream_buffer_us = 3000000;
 static volatile int64_t s_stream_latency_us;
 
+/*
+ * Output gain from the server's per-client volume, as a ready multiplier so
+ * the hot path does no arithmetic beyond the multiply. Deliberately a
+ * single value rather than a gain plus a "bypass" flag: it is written from
+ * the snapclient task and read from the player task, and one variable
+ * cannot be read half-updated.
+ */
+static volatile float s_volume_gain = 1.0f;
+
 static audio_resample_t s_resample;
 static float s_control_integral;
 static float s_control_ppm;
@@ -174,6 +197,16 @@ static volatile bool s_timeline_reset_pending;
 static int64_t s_last_error_us;
 static uint32_t s_resync_count;
 static uint64_t s_discontinuity_count;
+static uint64_t s_timeline_shift_count;
+
+/*
+ * Loudest captured local-input frame within the current stats window,
+ * recorded on every frame regardless of which source is playing. Without
+ * this the local input's level is only visible once it has already won the
+ * arbitration, which makes "the source delivers nothing" and "the detector
+ * never triggers" impossible to tell apart.
+ */
+static float s_local_peak_db = -120.0f;
 
 static esp_err_t ring_init(byte_ring_t *ring, size_t capacity)
 {
@@ -386,7 +419,8 @@ static void maybe_log_stats(float output_rms_db)
 
     ESP_LOGI(TAG,
              "src=%d ring=%u/%u B fed=%llu B dropped=%llu B underrun=%llu samples "
-             "output_rms=%.1f dBFS sync=%s err=%lld us ppm=%d resync=%lu disc=%llu",
+             "output_rms=%.1f dBFS local_peak=%.1f dBFS(thr %d) sync=%s err=%lld us "
+             "ppm=%d resync=%lu disc=%llu shift=%llu",
              (int)s_active_source,
              (unsigned)fill,
              (unsigned)capacity,
@@ -394,15 +428,19 @@ static void maybe_log_stats(float output_rms_db)
              (unsigned long long)s_network_bytes_dropped,
              (unsigned long long)s_network_underrun_samples,
              (double)output_rms_db,
+             (double)s_local_peak_db,
+             (int)s_local_threshold_db,
              s_server_offset_valid ? "yes" : "no",
              (long long)s_last_error_us,
              (int)audio_resample_get_ppm(&s_resample),
              (unsigned long)s_resync_count,
-             (unsigned long long)s_discontinuity_count);
+             (unsigned long long)s_discontinuity_count,
+             (unsigned long long)s_timeline_shift_count);
 
     s_network_bytes_fed = 0;
     s_network_bytes_dropped = 0;
     s_network_underrun_samples = 0;
+    s_local_peak_db = -120.0f;
     s_last_stats_us = now;
 }
 
@@ -411,8 +449,8 @@ static void maybe_log_stats(float output_rms_db)
  * positive means it is due later than it would actually be heard (too
  * early, hold), negative means it is overdue (too late, catch up).
  * Returns false while there is nothing to schedule against -- no clock
- * sync yet, or no anchored stream -- in which case playback simply follows
- * the ring buffer as it did before Stufe 2.
+ * sync yet, or no anchored stream -- in which case the caller just plays
+ * the ring buffer out at nominal rate without scheduling.
  */
 static bool scheduling_error_us(int64_t *error_us)
 {
@@ -631,9 +669,13 @@ static void player_task(void *arg)
             audio_i2s_capture_mono(local_mono, AUDIO_SINK_FRAME_SAMPLES);
         const bool have_local = (capture_result == ESP_OK);
 
-        update_local_signal_state(have_local
-                                       ? rms_dbfs(local_mono, AUDIO_SINK_FRAME_SAMPLES)
-                                       : -120.0f);
+        const float local_db = have_local
+                                   ? rms_dbfs(local_mono, AUDIO_SINK_FRAME_SAMPLES)
+                                   : -120.0f;
+        if (local_db > s_local_peak_db) {
+            s_local_peak_db = local_db;
+        }
+        update_local_signal_state(local_db);
 
         const audio_sink_source_t desired = decide_source();
         if (desired != s_active_source) {
@@ -665,6 +707,23 @@ static void player_task(void *arg)
             chosen = playout_mono;
         } else {
             memset(playout_mono, 0, sizeof(playout_mono));
+            chosen = playout_mono;
+        }
+
+        /*
+         * Volume last, after the source has been chosen: applying it
+         * earlier would bake the level into the ring buffer, and a change
+         * would only become audible buffer_ms later. Writing into
+         * playout_mono is safe for either source -- it is this task's own
+         * buffer, and in the local-input case it is otherwise unused.
+         */
+        const float gain = s_volume_gain;
+        if (gain < 1.0f) {
+            /* Attenuation only -- the mapping below never exceeds 1.0, so
+             * the result cannot leave int16 range and needs no clipping. */
+            for (size_t i = 0; i < AUDIO_SINK_FRAME_SAMPLES; ++i) {
+                playout_mono[i] = (int16_t)lrintf((float)chosen[i] * gain);
+            }
             chosen = playout_mono;
         }
 
@@ -755,7 +814,7 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm,
         const int64_t expected_us =
             s_head_ts_us + samples_to_us((int64_t)(s_ring.fill / sizeof(int16_t)));
         const int64_t gap_us = chunk_ts_us - expected_us;
-        if (gap_us > STREAM_DISCONTINUITY_US || gap_us < -STREAM_DISCONTINUITY_US) {
+        if (gap_us > STREAM_RESTART_US || gap_us < -STREAM_RESTART_US) {
             s_ring.write_pos = 0;
             s_ring.read_pos = 0;
             s_ring.fill = 0;
@@ -763,6 +822,15 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm,
             s_network_ready = false; /* rebuild the prebuffer from scratch */
             s_timeline_reset_pending = true;
             s_discontinuity_count++;
+        } else if (gap_us > STREAM_DISCONTINUITY_US || gap_us < -STREAM_DISCONTINUITY_US) {
+            /*
+             * Follow the shift and keep everything buffered: the audio is
+             * still continuous, only its labelling moved. The scheduler
+             * sees the error change by gap_us and corrects that much once,
+             * instead of the buffer being thrown away and rebuilt.
+             */
+            s_head_ts_us += gap_us;
+            s_timeline_shift_count++;
         }
     }
     xSemaphoreGive(s_ring.lock);
@@ -786,6 +854,30 @@ void audio_sink_set_stream_timing(uint32_t buffer_ms, int32_t latency_ms)
 {
     s_stream_buffer_us = (int64_t)buffer_ms * 1000LL;
     s_stream_latency_us = (int64_t)latency_ms * 1000LL;
+}
+
+void audio_sink_set_volume(int32_t percent, bool muted)
+{
+    if (percent < 0) {
+        percent = 0;
+    } else if (percent > 100) {
+        percent = 100;
+    }
+
+    /*
+     * Cubic mapping rather than a straight percentage: a linear amplitude
+     * scale crowds almost the whole audible range into the top of the
+     * control, so half volume would barely sound quieter. The exponent is
+     * the usual cheap approximation of perceived loudness and is easy to
+     * swap if it turns out too steep in practice.
+     */
+    const float fraction = (float)percent / 100.0f;
+    const float gain = muted ? 0.0f : (fraction * fraction * fraction);
+
+    s_volume_gain = gain;
+
+    ESP_LOGI(TAG, "Volume now %ld%%%s (gain %.3f)",
+             (long)percent, muted ? " (muted)" : "", (double)gain);
 }
 
 void audio_sink_set_source_mode(uint8_t mode)
