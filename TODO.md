@@ -292,3 +292,53 @@ Bugs sind umgesetzt:
   Stufe 6 und war bewusst aggressiv gewählt, weil das Zielumfeld
   „hochdynamisch" sein soll — schnelles Wiederfinden gegen stabilen Stream
   ist gegeneinander abzuwägen.
+
+- Stufe 9 (Mehr-Client-Betrieb, 2026-09-18). Fünf Clients gleichzeitig
+  laufen jetzt mit `skipped=0`; die Ursachenkette dahin steht in den Commits
+  `9c00054`…`49bb6c0`. Was daraus offen bleibt:
+
+  **Fusion-Intervall auf 20 s — beobachten.** `esp_mesh_lite_set_fusion_config()`
+  in `mesh_client.c` steht auf `fusion_frequency_sec = 20` statt der
+  voreingestellten 600. Der Grund war eine Mesh-Insel: fällt der Root weg,
+  sehen die übrigen Knoten weiterhin gegenseitig ihre Beacons und melden sich
+  aneinander an. Das Ergebnis ist assoziiert, hat eine DHCP-Lease und sieht
+  von innen gesund aus, hat aber keinen Weg zum Server — und scannt deshalb
+  nie neu. Fusion ist der Mechanismus, der getrennte Meshes wieder
+  zusammenführt, und zehn Minuten Wartezeit darauf sind zu lang.
+  Der Haken: die Doku sagt „during fusion, the device to be fused will scan
+  the primary fusion device". Ob dieser Scan auch dann läuft, wenn gar keine
+  Insel existiert, ist nicht nachlesbar — die Bibliothek liegt nur
+  vorkompiliert vor. Falls ja, wäre das alle 20 s ein kurzer Ausflug vom
+  Kanal, also genau die Störungsart, die uns die Aussetzer beschert hat.
+  Im Lauf vom 2026-09-18 war davon nichts zu sehen (65 s durchgehend
+  `err=-7…-11 ms`, `ppm 12–25`, serverseitig `skipped=0`). **Wenn wieder
+  regelmäßige kleine Einbrüche auftauchen, ist das der erste Verdächtige**;
+  Gegenmaßnahme wäre 60 s statt 20 s — immer noch zehnmal schneller als der
+  Standard. Dasselbe gilt für das schon weiter oben vermerkte
+  `esp_mesh_lite_set_wifi_reconnect_interval(2, 3, 5)`.
+
+  **Doppelte IP nach Server-Neustart — nur die Folge behoben.** Die
+  DHCP-Lease-Tabelle des Servers liegt im RAM und ist nach einem Neustart
+  leer. Clients, die durchgelaufen sind, behalten ihre Adresse, während der
+  frische DHCP-Server dieselbe an den nächsten Anfragenden vergibt. Zwei
+  Stationen, eine Adresse, ein ARP-Eintrag am Root — die SYNs des einen
+  laufen ins Leere (auf Gerät gesehen: 48 s Timeouts bei −36 dBm direkt am
+  Root, behoben erst durch einen Rejoin mit neuer Adresse). Der
+  Unreachable-Watchdog in `snapclient.c` räumt das nach ~20 s auf, die
+  Ursache bleibt. Denkbare echte Fixes: feste Adressen je Client statt DHCP,
+  oder die Lease beim Verbindungsverlust freigeben. Erst messen, ob es nach
+  dem Watchdog überhaupt noch stört.
+
+  **`SNAPSERVER_MAX_CLIENTS = 10` ist gerechnet, nicht getestet.** Nachdem
+  die Task-Stacks im PSRAM liegen, kostet ein Client intern nur noch seinen
+  lwIP-Socket, rund 6 kB. Bei ~121 kB freiem internem Heap nach dem Start
+  sollten zehn Clients rund 60 kB übrig lassen. Gemessen wurde bisher bis
+  fünf (`min_ever` ≈ 43–105 kB). Ob der WLAN-Treiber bei zehn
+  Unicast-Streams noch etwas anderes reißt, ist offen — die `heap:`-Zeile
+  beantwortet es.
+
+  **`frame delta`-Spitzen wachsen mit der Client-Zahl.** Der Mittelwert
+  bleibt bei 20000 µs, aber `max` ist von ~22 ms auf 30–38 ms gestiegen. Bei
+  40 ms DMA-Reserve ist das noch tragbar, der Abstand ist aber kleiner als
+  vorher. Frühwarnzeichen wäre die Rückkehr von
+  `AUDIO_I2S: Capture timeline drifted`.
