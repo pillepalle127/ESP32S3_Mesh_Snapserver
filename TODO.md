@@ -367,3 +367,28 @@ Bugs sind umgesetzt:
   `server_task` (accept) absenken und `client_task` auf Priorität mit den
   Sendern lassen, oder das Hello-Parsing/JSON-Bauen aus `client_task` in
   einen eigenen, niedrig priorisierten Schritt auslagern.
+
+- **Aussetzer beim Client-Abgang: Server-Rückstand statt Verwerfen
+  (2026-09-19).** Gemessen statt geraten: Ein Client wird abgeschaltet, und
+  für ~3 s bricht der Durchsatz *aller* übrigen Clients gleichzeitig auf
+  rund ein Drittel ein (vermutlich hält der AP Sendezeit und die gemeinsamen
+  WLAN-Sendepuffer mit Wiederholungen an die verschwundene Station fest —
+  nicht belegt). Der Server konnte pro Client aber nur ~0,4 s vorhalten
+  (8 Chunks Queue + TCP-Sendepuffer) und warf den Rest weg: 54–113
+  `skipped` pro Client, im Client-Log `shift`/`resync` — hörbare Löcher,
+  obwohl der Client-Puffer (3 s) den Einbruch hätte überbrücken können.
+
+  Umgesetzt in `snapserver.c`: Queue 120, Chunk-Pool 128 (Speicher im
+  PSRAM), der Sender wiederholt einen abgelehnten Chunk statt ihn zu
+  verwerfen, und verworfen wird nach Alter (`bufferMs − 600 ms`, max.
+  2,4 s). **Ergebnis auf Gerät:** Abgang eines Clients bei vier laufenden —
+  `skipped=0` bei allen übrigen, im Client-Log sichtbares Aufholen
+  (`fed` erst unter, dann über 480000 B pro 5 s), `shift`/`resync`/
+  `underrun` unverändert, `min_ever` 68 KB statt 30 KB.
+
+  Offen: Der Einbruch selbst bleibt (er wird nur überbrückt); ein Stau
+  länger als ~2,4 s verliert weiterhin Audio. Einmal gesehen, nicht
+  reproduziert: ein Level-2-Client, dessen Verbindung beim Abgang eines
+  *anderen* Clients per RST (`Connection reset by peer`, vermutlich aus der
+  NAPT seines Parents) abriss — der Client selbst merkte es erst nach 6 s
+  am Stall-Watchdog. Bei Wiederauftreten das Log des Parents mitschneiden.

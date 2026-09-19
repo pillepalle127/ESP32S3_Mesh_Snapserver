@@ -90,9 +90,37 @@ static const char *TAG = "SNAPSERVER";
  * Slots are recycled after CHUNK_POOL_SIZE chunks. A sender that has fallen
  * further behind than that finds its slot's sequence changed and drops the
  * chunk, which is the right outcome: the audio is long overdue anyway.
+ *
+ * Backlog: each client may fall up to ~2.4 s behind before anything is
+ * dropped. It used to be ~0.4 s (8 queued chunks plus the TCP send buffer),
+ * and anything beyond that was thrown away -- so a stall of a second or two,
+ * which the client's own bufferMs (3 s) could have ridden out, turned into a
+ * permanent hole in the stream instead. Measured on device: switching one
+ * client off cut the throughput of *all* others to roughly a third for ~3 s,
+ * the server discarded 54-113 chunks per remaining client, and every one of
+ * them glitched. With the backlog the same stall only delays those chunks;
+ * TCP then drains the queue much faster than real time (96 kbit/s against a
+ * link of several Mbit/s) and the client files them in by timestamp.
+ *
+ * What gets dropped now is decided by age (see max_chunk_age_us()), not by
+ * queue depth: a chunk the client could no longer play in time is useless,
+ * everything younger is worth waiting for. The pool has to span more than
+ * the longest backlog, or a queued slot would be overwritten before its
+ * sender gets to it. Pool and queue storage both live in PSRAM -- ~190 kB
+ * and ~1 kB per client of otherwise idle memory, nothing from internal DRAM.
  */
-#define CHUNK_POOL_SIZE         16
-#define CLIENT_TX_QUEUE_DEPTH    8
+#define CHUNK_POOL_SIZE        128   /* 2.56 s at 20 ms per chunk          */
+#define CLIENT_TX_QUEUE_DEPTH  120   /* 2.4 s                              */
+#define CHUNK_BACKLOG_MAX_US   2400000LL
+/* Kept free below bufferMs so a late chunk still lands before it is due. */
+#define CHUNK_AGE_MARGIN_US     600000LL
+/*
+ * Pause between retries of a chunk the socket refused. Each refused attempt
+ * has already blocked for up to CLIENT_SEND_TIMEOUT_US inside send(); the
+ * pause is taken without the send mutex so client_task's Time replies get a
+ * turn in between.
+ */
+#define SEND_RETRY_DELAY_MS       20
 #define SENDER_TASK_STACK     3584
 /* Below audio_task (6) so encoding never waits behind a blocked send. */
 #define SENDER_TASK_PRIORITY     5
@@ -247,6 +275,8 @@ typedef struct {
 
     /* Fan-out, see the CHUNK_POOL_SIZE comment above. */
     QueueHandle_t tx_queue;
+    StaticQueue_t *tx_queue_ctrl;   /* internal: holds the queue's spinlock */
+    uint8_t *tx_queue_storage;      /* PSRAM: the queued items themselves   */
     TaskHandle_t tx_task;
 
     /*
@@ -274,6 +304,31 @@ static struct {
 static chunk_slot_t *s_chunk_pool;
 static uint32_t s_chunk_write;     /* next slot to fill, wraps at CHUNK_POOL_SIZE */
 static uint32_t s_chunk_sequence;  /* never 0 once running, see chunk_slot_t */
+
+/*
+ * How old a queued chunk may get before its sender gives up on it; see
+ * max_chunk_age_us(). 32 bits on purpose: read by every sender without a
+ * lock, and at most 2.4e6 it cannot be read half-written.
+ */
+static volatile int32_t s_max_chunk_age_us = (int32_t)CHUNK_BACKLOG_MAX_US;
+
+/*
+ * The age limit follows the bufferMs the clients are told: the client plays
+ * a chunk bufferMs after its capture, so one that is older than that minus
+ * a margin would arrive too late to matter. Capped by what the pool holds.
+ */
+static int32_t max_chunk_age_us(uint16_t buffer_ms)
+{
+    const int64_t buffer_us = (int64_t)buffer_ms * 1000LL;
+    int64_t age = buffer_us - CHUNK_AGE_MARGIN_US;
+    if (age < buffer_us / 2) {
+        age = buffer_us / 2;
+    }
+    if (age > CHUNK_BACKLOG_MAX_US) {
+        age = CHUNK_BACKLOG_MAX_US;
+    }
+    return (int32_t)age;
+}
 static portMUX_TYPE s_clients_lock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_server_task;
 static TaskHandle_t s_audio_task;
@@ -531,6 +586,9 @@ static int send_server_settings(client_t *client, uint16_t refers_to)
     device_config_t cfg;
     device_config_get(&cfg);
     const uint16_t buffer_ms = cfg.buffer_ms;
+    /* Follows whatever bufferMs the clients are told, including a change
+     * made in the web config since startup. */
+    s_max_chunk_age_us = max_chunk_age_us(buffer_ms);
 
     const int json_len = snprintf(
         json,
@@ -612,11 +670,6 @@ static int send_codec_header(client_t *client, uint16_t refers_to)
 }
 
 /*
- * Builds and sends one wire chunk from a pool slot. Returns 1 when the slot
- * had already been recycled under us, which is not an error: the sender was
- * simply too far behind and the chunk is stale.
- */
-/*
  * Sends a wire chunk as a single buffer whose first sizeof(snap_base_t)
  * bytes the caller left free for the header.
  *
@@ -625,8 +678,8 @@ static int send_codec_header(client_t *client, uint16_t refers_to)
  * even when the ~262-byte payload does not, which commits us to finishing a
  * message we cannot finish. send_all() then retries with the mutex held
  * while the client's Time replies queue up behind it. As one call the
- * message is either accepted or refused outright, and a refused wire chunk
- * is simply skipped.
+ * message is either accepted or refused outright; a refused wire chunk goes
+ * back to sender_task, which retries it until it is too old to matter.
  */
 static int client_send_frame(client_t *client, uint8_t *frame, uint32_t payload_size)
 {
@@ -663,6 +716,10 @@ static int client_send_frame(client_t *client, uint8_t *frame, uint32_t payload_
     return result;
 }
 
+/* send_wire_chunk() results besides 0 (sent) and -1 (connection gone). */
+#define CHUNK_BUSY 1   /* nothing written, the peer is behind: retry it   */
+#define CHUNK_DROP 2   /* this chunk can never go out (slot reused, size) */
+
 static int send_wire_chunk(client_t *client, const tx_item_t *item)
 {
     const chunk_slot_t *slot = &s_chunk_pool[item->slot];
@@ -686,7 +743,7 @@ static int send_wire_chunk(client_t *client, const tx_item_t *item)
     const uint32_t size = slot->size;
 
     if (size > AUDIO_MAX_OPUS_PACKET) {
-        return 1;
+        return CHUNK_DROP;
     }
 
     memcpy(payload + 0, &sec, 4);
@@ -700,9 +757,10 @@ static int send_wire_chunk(client_t *client, const tx_item_t *item)
      * a mix of two chunks and must not go out.
      */
     if (slot->sequence != item->sequence) {
-        return 1;
+        return CHUNK_DROP;
     }
 
+    /* 0, -1, or 1 == CHUNK_BUSY (socket full or send mutex taken). */
     const int rc = client_send_frame(client, client->tx_payload, 12U + size);
 
     portENTER_CRITICAL(&s_clients_lock);
@@ -1221,8 +1279,37 @@ static void sender_task(void *arg)
                 (uint16_t)uxTaskGetStackHighWaterMark(NULL);
         }
 
-        const int rc = send_wire_chunk(client, &item);
-        if (rc > 0) {
+        /*
+         * A refused chunk is retried, not skipped: the peer being behind is
+         * what the backlog exists for (see CHUNK_POOL_SIZE). It is given up
+         * only once it is too old to be played in time -- the timestamp is
+         * the capture time on this device's esp_timer, so the age is exact.
+         */
+        int rc;
+        for (;;) {
+            const int64_t age_us =
+                esp_timer_get_time() - s_chunk_pool[item.slot].timestamp_us;
+            if (age_us > (int64_t)s_max_chunk_age_us) {
+                rc = CHUNK_DROP;
+                break;
+            }
+
+            rc = send_wire_chunk(client, &item);
+            if (rc != CHUNK_BUSY) {
+                break;
+            }
+
+            portENTER_CRITICAL(&s_clients_lock);
+            const bool still_wanted = client->active && client->ready && client->fd >= 0;
+            portEXIT_CRITICAL(&s_clients_lock);
+            if (!still_wanted) {
+                rc = CHUNK_DROP;
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(SEND_RETRY_DELAY_MS));
+        }
+
+        if (rc == CHUNK_DROP) {
             portENTER_CRITICAL(&s_clients_lock);
             client->chunks_skipped++;
             portEXIT_CRITICAL(&s_clients_lock);
@@ -1913,10 +2000,45 @@ bool snapserver_set_client_name(const char *id, const char *name)
     return found;
 }
 
+/*
+ * A static queue split across two memories: the StaticQueue_t (which holds
+ * the queue's spinlock) from internal RAM, the item storage from PSRAM.
+ * xQueueCreateWithCaps() would put both in the same place, and a spinlock
+ * in external memory is not something to rely on. The storage is where the
+ * size is -- CLIENT_TX_QUEUE_DEPTH items per client -- so that is the part
+ * worth keeping out of internal DRAM.
+ */
+static QueueHandle_t create_tx_queue(client_t *client)
+{
+    client->tx_queue_ctrl = heap_caps_malloc(sizeof(StaticQueue_t),
+                                             MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    client->tx_queue_storage = heap_caps_malloc(CLIENT_TX_QUEUE_DEPTH * sizeof(tx_item_t),
+                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (client->tx_queue_storage == NULL) {
+        client->tx_queue_storage = heap_caps_malloc(CLIENT_TX_QUEUE_DEPTH * sizeof(tx_item_t),
+                                                    MALLOC_CAP_8BIT);
+    }
+    if (client->tx_queue_ctrl == NULL || client->tx_queue_storage == NULL) {
+        return NULL;
+    }
+    return xQueueCreateStatic(CLIENT_TX_QUEUE_DEPTH,
+                              sizeof(tx_item_t),
+                              client->tx_queue_storage,
+                              client->tx_queue_ctrl);
+}
+
 esp_err_t snapserver_start(void)
 {
     if (s_started) {
         return ESP_OK;
+    }
+
+    {
+        device_config_t cfg;
+        device_config_get(&cfg);
+        s_max_chunk_age_us = max_chunk_age_us(cfg.buffer_ms);
+        ESP_LOGI(TAG, "Per-client backlog: up to %ld ms before chunks are dropped",
+                 (long)(s_max_chunk_age_us / 1000));
     }
 
     {
@@ -1950,7 +2072,7 @@ esp_err_t snapserver_start(void)
         s_clients[i].instance = 1;
         s_clients[i].protocol_ver = SNAP_PROTOCOL_VER;
         s_clients[i].send_mutex = xSemaphoreCreateMutex();
-        s_clients[i].tx_queue = xQueueCreate(CLIENT_TX_QUEUE_DEPTH, sizeof(tx_item_t));
+        s_clients[i].tx_queue = create_tx_queue(&s_clients[i]);
         s_clients[i].tx_payload = heap_caps_malloc(sizeof(snap_base_t) + 12U + AUDIO_MAX_OPUS_PACKET,
                                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         if (s_clients[i].tx_payload == NULL) {
@@ -1999,6 +2121,10 @@ esp_err_t snapserver_start(void)
                     vQueueDelete(s_clients[j].tx_queue);
                     s_clients[j].tx_queue = NULL;
                 }
+                heap_caps_free(s_clients[j].tx_queue_ctrl);
+                s_clients[j].tx_queue_ctrl = NULL;
+                heap_caps_free(s_clients[j].tx_queue_storage);
+                s_clients[j].tx_queue_storage = NULL;
                 free(s_clients[j].tx_payload);
                 s_clients[j].tx_payload = NULL;
                 if (s_clients[j].send_mutex != NULL) {
