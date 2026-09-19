@@ -1,0 +1,10 @@
+<resources>
+    <!--
+         Only needed for the window background before Compose content
+         attaches; the actual UI theming happens in MaterialTheme {}
+         inside MainActivity.kt. Kept off the Material Components library on
+         purpose: this app is Compose-only, no XML widgets, so there is
+         nothing else that would need it.
+    -->
+    <style name="Theme.SnapAnnounce" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

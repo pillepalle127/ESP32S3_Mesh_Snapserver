@@ -44,3 +44,12 @@ __pycache__/
 # Temporary files
 *.tmp
 *.bak
+
+# Android companion app (android/SnapAnnounce)
+android/**/build/
+android/**/.gradle/
+android/**/.idea/
+android/**/local.properties
+android/**/*.iml
+android/**/.cxx/
+android/**/captures/
