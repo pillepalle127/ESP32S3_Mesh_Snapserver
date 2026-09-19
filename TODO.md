@@ -342,3 +342,28 @@ Bugs sind umgesetzt:
   40 ms DMA-Reserve ist das noch tragbar, der Abstand ist aber kleiner als
   vorher. Frühwarnzeichen wäre die Rückkehr von
   `AUDIO_I2S: Capture timeline drifted`.
+
+- **Task-Prioritäten für `client_task`/`server_task`/Control-Tasks gesenkt
+  und wieder verworfen (2026-09-19).** Ansatz: die kurzen Verschlucker beim
+  Client-Beitritt/-Abgang kamen davon, dass `client_task` (Handshake,
+  Hello-Parsing per cJSON, Time-Antworten), `server_task` (accept) und die
+  Control-Tasks alle auf derselben Priorität wie die Sender-Tasks liefen —
+  FreeRTOS teilt bei Gleichstand reihum zu, ein beitretender Client nahm den
+  Sendern der laufenden Clients also Slots weg. Umgesetzt:
+  `SENDER_TASK_PRIORITY` unverändert bei 5, `CLIENT_TASK_PRIORITY`/
+  `SERVER_TASK_PRIORITY` auf 4, `CTRL_SERVER_PRIORITY`/`CTRL_CONN_PRIORITY`
+  auf 3.
+
+  **Ergebnis beim Nutzer: deutlich schlechter, nicht besser.** Nicht weiter
+  diagnostiziert, Änderung direkt verworfen (nie committet, `git checkout`
+  auf `snapserver.c`/`snapcontrol.c`). Vermutung, nicht verifiziert: die
+  Time-Antworten laufen über `client_task`, das jetzt gegen Sender *und*
+  `server_task` konkurriert statt mit ihnen gleichauf zu liegen — das könnte
+  Time-Sync/Handshakes ausgehungert statt nur verzögert haben, was eher zu
+  „drastisch schlechter" passt als zu leicht spürbarem Ruckeln.
+
+  Falls das Verschlucker-Problem beim Client-Beitritt nochmal angegangen
+  wird: nicht pauschal alles unter die Sender schieben. Eher gezielt nur
+  `server_task` (accept) absenken und `client_task` auf Priorität mit den
+  Sendern lassen, oder das Hello-Parsing/JSON-Bauen aus `client_task` in
+  einen eigenen, niedrig priorisierten Schritt auslagern.
