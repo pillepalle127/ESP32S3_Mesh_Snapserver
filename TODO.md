@@ -392,3 +392,120 @@ Bugs sind umgesetzt:
   *anderen* Clients per RST (`Connection reset by peer`, vermutlich aus der
   NAPT seines Parents) abriss — der Client selbst merkte es erst nach 6 s
   am Stall-Watchdog. Bei Wiederauftreten das Log des Parents mitschneiden.
+
+- **Sprachdurchsagen (`test/voice`): Stand und Offenes (2026-09-19).**
+  Nichts davon ist committet. Letzter Stand auf Gerät: Server geflasht mit
+  getrenntem Relay-/Speaker-Task, Clients auf dem Stand davor (Heap- und
+  CPU-Zeile schon drin), App mit 16 kHz installiert. Urteil des Nutzers:
+  „hört sich viel besser an“.
+
+  Gemessen bei der letzten Durchsage:
+  - Clients: `voice_underrun` 0–2,4 % statt 15 %, Kern 1 zu 65 % frei.
+  - Server: Kern 1 fast voll. `opus_audio` 76–78 % (ohne Durchsage 55 %),
+    `voice_speaker` 16–18 %, `IDLE1` 5 %. `Server decode: avg=13 ms
+    max=101 ms` (Uhrzeit, nicht CPU), 8 von 900 Paketen nicht gespielt.
+  - App: Verstärkung dauerhaft am Anschlag (24 dB), Mikrofon −33…−46 dBFS,
+    Ausgang −26…−39 dBFS RMS, also eher leise.
+
+  **Tests (für den nächsten Termin geplant):**
+  1. Lautstärke und Hall der Durchsage beurteilen.
+  2. Mikrofonquellen „Standard-Mikrofon“ und „Spracherkennung“ gegen
+     „Telefonat“ vergleichen. Eine lautere Quelle braucht weniger
+     Verstärkung und bringt weniger Hall. Danach den Regler
+     „Max. Verstärkung“ nach Gehör einstellen und den Default in
+     `SettingsStore.kt` anpassen.
+  3. Klingt der Server-Lautsprecher schlechter als die Clients? Wenn ja,
+     siehe unten „Server-Kern 1“.
+  4. Clients mit dem aktuellen Stand flashen (Code dort unverändert, nur
+     damit alle gleich sind) und eine Kette erzwingen (mehrere Knoten hinter
+     einem Relay). Dabei `heap … children=` und `cpu` des Relays
+     mitschneiden. Das beantwortet, ob die Relay-Hänger von heute am
+     internen RAM liegen.
+  5. Zwei Durchsagen direkt nacheinander, App-Kill mitten in der Durchsage,
+     WLAN-Verlust am Handy: Wächter und Unmute prüfen. Das ging schon
+     einmal, aber vor dem Umbau auf zwei Tasks.
+
+  **Offen, Durchsage:**
+  - **Server-Kern 1:** Während einer Durchsage die Komplexität des
+    Musik-Encoders senken (`audio_opus_set_complexity()` gibt es schon, mit
+    Übergabe an den Encoder-Task). Die Musik hört in der Zeit niemand. Das
+    sollte etwa ein Drittel der Encoder-Last sparen. Ungeklärt: Warum steigt
+    der Encoder während der Durchsage von 55 % auf 78 %? Vermutung:
+    Encoder und Decoder stören sich im gemeinsamen PSRAM-Cache. Nicht
+    gemessen.
+  - **Encoder allgemein:** 55 % eines Kerns für Mono mit 96 kbit/s bei
+    Komplexität 5 ist viel. Laut micro-opus-Benchmark wäre eher ~30 % zu
+    erwarten. Kandidaten: Floating-Point-Build
+    (`CONFIG_OPUS_FLOATING_POINT=y`, laut Doku beim Encodieren langsamer
+    als Fixed-Point), Pseudostack im PSRAM.
+  - **Last auf Kern 0 während der Durchsage:** `tiT` 29 % und `wifi` 25 %
+    statt 8 % und 6 %. Drei UDP-Ströme mit 25 kbit/s erklären das nicht.
+    Ursache unbekannt.
+  - **`voice_dropped` bei den Clients:** Pakete kommen in Schüben, der
+    60-ms-Puffer (`VOICE_MAILBOX_CAPACITY_SAMPLES`) läuft kurz über.
+    Größer machen kostet Latenz. Erst nach den Tests entscheiden.
+  - **Root-Bindung des Handys:** Serverseitige Erkennung, ob das Handy
+    direkt am Root hängt, plus gezieltes Verbinden per
+    `WifiNetworkSpecifier`. Siehe den Eintrag zur Standort-Berechtigung
+    unten, dort steht der Weg ohne Berechtigung.
+  - **`tools/voice_test.py`** sendet noch rohes PCM und passt nicht mehr zur
+    Opus-Firmware.
+  - **`docs/code-review-voice.md`:** Status von M3 (Vorpuffer) nachtragen,
+    ist umgesetzt. Den Umbau auf zwei Server-Tasks ergänzen.
+  - **Commits:** in logischen Gruppen (Firmware, App, Tool, Doku),
+    erst nach den Tests und nach Absprache.
+
+  **Offen, Robustheit (gehört eher auf `test/ServerClient`):**
+  - **Relay hängt sich auf**, wenn mehrere Kinder an ihm hängen (heute
+    zweimal, verschiedene Geräte: Reason-15-Abbrüche bei den Kindern bzw.
+    `STA not responded to 6 SA Query attempts`). Das schlauchförmige Netz
+    macht solche Ketten zum Normalfall, sie dürfen nicht zum Totalausfall
+    führen. Erst messen (Test 4), dann als Kandidat
+    `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` (WLAN- und lwIP-Puffer im
+    PSRAM) versuchen.
+  - **Server erstickt an einem hängenden Zweig:** interner Heap bis auf
+    172 B bzw. 128 B (`min_ever`), `send stalled` bei allen. Er muss früher
+    erkennen, dass ein Client nichts abnimmt, und aufhören, dessen Pakete in
+    die WLAN-Puffer zu schieben, statt 20 s zu warten.
+  - **Musik-Aussetzer bei 14E4 trotz −11 dBm** direkt am Server:
+    `chunks/s=0` für mehrere Sekunden, `skipped=315`, die anderen Clients
+    in derselben Zeit sauber. Einmal gesehen, Ursache unbekannt.
+
+  **Diagnose-Code, später aufräumen oder behalten:**
+  - `main/cpu_stats.c` und die FreeRTOS-Laufzeitstatistik in
+    `sdkconfig.defaults` (ein Timer-Zugriff pro Taskwechsel).
+  - `heap … children=` in der Client-Statuszeile, Decodierzeit-Messung in
+    `voice_announce.c`.
+  - Die Puffer der CPU-Anzeige liegen statisch: Auf dem 3-KB-Stack von
+    `snapstats` hatten sie einen Stack-Overflow ausgelöst.
+
+  **Hinweise für die Tests:**
+  - `idf.py monitor` setzt den ESP beim Verbinden zurück. Zum
+    Mitschneiden ohne Neustart `--no-reset` verwenden. Unter Linux löst
+    schon das Öffnen des Ports über pyserial einen Reset aus, obwohl DTR/RTS
+    vorher abgeschaltet sind (beobachtet).
+  - Die iot_bridge-Komponente meldet bei jedem Neukonfigurieren
+    fehlgeschlagene lwIP-Patches. Die Meldung ist nicht neu. Der NAPT-Patch
+    ist eingespielt, die anderen drei greifen in ESP-IDF 5.4.3 nicht.
+    Vermutung: dort schon enthalten. Nicht geprüft.
+
+- **Durchsage-App: Standort-Berechtigung wieder entfernen (vorgemerkt
+  2026-09-19, auf Nutzerwunsch; noch nicht umgesetzt, nur geplant).** Damit
+  die App erkennt, ob das Handy direkt am Root hängt, würde sie die BSSID
+  des verbundenen WLANs mit der AP-MAC des Servers vergleichen. Android gibt die BSSID nur mit
+  `ACCESS_FINE_LOCATION` heraus, eine Berechtigung, die für eine
+  Durchsage-App sachfremd ist. Das ist nur als Zwischenlösung gedacht und
+  soll wieder raus.
+
+  Ersatz ohne Berechtigung: der **Server** entscheidet. Hängt das Handy
+  direkt am Root, hat es eine eigene Adresse aus dessen DHCP, die in
+  `esp_wifi_ap_get_sta_list()` steht und keinem ESP-Knoten gehört. Hängt es
+  hinter einem Relay, sieht der Server wegen NAPT dessen Adresse, also die
+  eines bekannten Snapclients. Kriterium damit: Owner-IP aus
+  `voice_announce_rpc_start()` ist Level-1-Station **und** gehört keinem
+  ESP-Client. `Voice.Start` meldet das Ergebnis zurück (etwa
+  `"direct":false`), und die App warnt nur noch. Offen: Das gezielte
+  Verbinden mit dem Root per `WifiNetworkSpecifier` braucht die BSSID
+  weiterhin als Ziel. Sie müsste dann vom Server kommen (AP-MAC, z. B. in
+  der `Voice.Start`-Antwort oder aus `Server.GetStatus`) statt vom Handy
+  gelesen zu werden.
