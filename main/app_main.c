@@ -17,6 +17,7 @@
 #include "mesh_root.h"
 #include "snapserver.h"
 #include "status_led.h"
+#include "voice_announce.h"
 #include "webconfig.h"
 
 static const char *TAG = "APP";
@@ -140,6 +141,16 @@ void app_main(void)
         audio_sink_set_local_input_threshold_db(cfg.local_input_threshold_db);
         audio_sink_set_delay_trim_ms(cfg.delay_trim_ms);
 
+        result = voice_receive_start();
+        if (result != ESP_OK) {
+            ESP_LOGW(
+                TAG,
+                "Voice announcement receiver failed to start: %s -- "
+                "music playback is unaffected, announcements just won't "
+                "be heard on this device",
+                esp_err_to_name(result));
+        }
+
         ESP_LOGI(
             TAG,
             "ESP32-S3 Snapclient started: mesh relay, local I2S input as "
@@ -187,6 +198,16 @@ void app_main(void)
         ESP_ERROR_CHECK(result);
     }
 	ESP_ERROR_CHECK(snapcontrol_start());
+
+    result = voice_announce_start();
+    if (result != ESP_OK) {
+        ESP_LOGW(
+            TAG,
+            "Voice announcement server failed to start: %s -- "
+            "music streaming is unaffected, announcements just won't be "
+            "available",
+            esp_err_to_name(result));
+    }
 
     ESP_LOGI(
         TAG,

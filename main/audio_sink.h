@@ -6,8 +6,12 @@
  *
  * Source arbitration follows the ESP32_Mesh_Snapclient reference project
  * (network vs. A2DP there, network vs. local I2S input here): exactly one
- * source is ever fed to the DSP/output stage. Two rules differ from that
- * reference, both for reasons that only showed up on device:
+ * source is ever fed to the DSP/output stage. A live announcement (see
+ * audio_sink_feed_voice()) is not a third source but an overlay: while one
+ * plays it replaces the output, and the active source keeps running
+ * underneath exactly as on a muted client, so the music carries on
+ * seamlessly afterwards. Two rules differ from the reference, both for
+ * reasons that only showed up on device:
  *   - Network PCM is accepted while the local input is idle, including
  *     during prebuffering when nothing is playing yet. Dropping it whenever
  *     the network wasn't already the active source made prebuffering
@@ -42,6 +46,9 @@ typedef enum {
     AUDIO_SINK_SOURCE_NONE = 0,
     AUDIO_SINK_SOURCE_NETWORK,
     AUDIO_SINK_SOURCE_LOCAL_INPUT,
+    /* Only ever reported by audio_sink_current_source(), while an
+     * announcement overlays the output; never an arbiter choice. */
+    AUDIO_SINK_SOURCE_VOICE,
 } audio_sink_source_t;
 
 /*
@@ -67,6 +74,19 @@ void audio_sink_set_network_active(bool active);
 size_t audio_sink_feed_network(const int16_t *mono_pcm,
                                size_t sample_count,
                                int64_t chunk_ts_us);
+
+/*
+ * Feeds a piece of live voice-announcement PCM (from voice_announce.c's UDP
+ * receive task, a level-1-only client concern). No explicit arm/disarm call
+ * exists: receiving here IS the signal, so the announcement overlays the
+ * output purely based on how recently this was last called (see the header
+ * comment). mono_samples is typically 480 (10 ms); pushed
+ * into a small fixed mailbox that is drained, never waited on -- a
+ * deliberately different contract from audio_sink_feed_network()'s ring,
+ * matching the announcement path's "drop stale audio rather than buffer it"
+ * design.
+ */
+void audio_sink_feed_voice(const int16_t *mono, size_t mono_samples);
 
 /*
  * Clock synchronisation result from snapclient.c: offset_us is

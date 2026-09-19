@@ -21,6 +21,8 @@
  *   Group.SetMute          -> echoes the requested mute flag
  *   Group.SetClients       -> returns the current server object
  *   Server.DeleteClient    -> returns the current server object
+ *   Voice.Start            -> arms a voice announcement (see voice_announce.h)
+ *   Voice.Stop             -> ends it
  * Any other method returns a JSON-RPC "method not found" error.
  *
  * The stream is advertised as codec "opus", sampleformat 48000:16:1 (mono),
@@ -28,6 +30,7 @@
  */
 #include "snapcontrol.h"
 #include "snapserver.h"
+#include "voice_announce.h"
 
 #include <errno.h>
 #include <stdint.h>
@@ -338,8 +341,10 @@ static cJSON *dup_volume_or_default(const cJSON *params)
     return fallback;
 }
 
-/* Builds the JSON-RPC result object for a given method. */
-static cJSON *build_result(const char *method, const cJSON *params)
+/* Builds the JSON-RPC result object for a given method. fd identifies the
+ * calling connection, needed only by Voice.Start/Voice.Stop for ownership
+ * (see voice_announce.h). */
+static cJSON *build_result(const char *method, const cJSON *params, int fd)
 {
     if (strcmp(method, "Server.GetStatus") == 0) {
         /*
@@ -463,6 +468,22 @@ static cJSON *build_result(const char *method, const cJSON *params)
             "mute",
             cJSON_IsTrue(mute));
 
+    } else if (strcmp(method, "Voice.Start") == 0) {
+        /*
+         * A refusal (another connection already owns an announcement, see
+         * voice_announce.h) is an ordinary result with busy=true, not an
+         * error: "method not found" is what a firmware without
+         * announcements answers, and a client has to be able to tell the
+         * two apart.
+         */
+        const bool started = voice_announce_rpc_start(fd);
+        cJSON_AddBoolToObject(result, "active", started);
+        cJSON_AddBoolToObject(result, "busy", !started);
+
+    } else if (strcmp(method, "Voice.Stop") == 0) {
+        (void)voice_announce_rpc_stop(fd);
+        cJSON_AddBoolToObject(result, "active", false);
+
     } else {
         cJSON_Delete(result);
         return NULL;
@@ -473,7 +494,7 @@ static cJSON *build_result(const char *method, const cJSON *params)
 
 /* Serializes a JSON-RPC response for one request object. Returns malloc'ed
  * string (caller frees) or NULL on parse/alloc failure. */
-static char *handle_request_object(const cJSON *req)
+static char *handle_request_object(const cJSON *req, int fd)
 {
     const cJSON *id =
         cJSON_GetObjectItemCaseSensitive(req, "id");
@@ -513,7 +534,7 @@ static char *handle_request_object(const cJSON *req)
             "Invalid Request");
     } else {
         cJSON *result =
-            build_result(method->valuestring, params);
+            build_result(method->valuestring, params, fd);
 
         if (result != NULL) {
             cJSON_AddItemToObject(resp, "result", result);
@@ -547,7 +568,7 @@ static void process_line(int fd, const char *line)
     if (cJSON_IsArray(root)) {
         const cJSON *item = NULL;
         cJSON_ArrayForEach(item, root) {
-            char *resp = handle_request_object(item);
+            char *resp = handle_request_object(item, fd);
             if (resp != NULL) {
                 ESP_LOGI(TAG, "RPC response: %s", resp);
                 if (send_all(fd, resp, strlen(resp)) != 0 ||
@@ -558,7 +579,7 @@ static void process_line(int fd, const char *line)
             }
         }
     } else {
-        char *resp = handle_request_object(root);
+        char *resp = handle_request_object(root, fd);
         if (resp != NULL) {
             ESP_LOGI(TAG, "RPC response: %s", resp);
             if (send_all(fd, resp, strlen(resp)) != 0 ||
@@ -687,6 +708,7 @@ static void ctrl_conn_task(void *arg)
     }
 
     free(buf);
+    voice_announce_on_control_disconnect(fd);
     shutdown(fd, SHUT_RDWR);
     close(fd);
     ESP_LOGI(TAG, "Control client disconnected");

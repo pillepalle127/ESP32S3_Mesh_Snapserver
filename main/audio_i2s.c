@@ -55,6 +55,28 @@ static int16_t s_output_stereo[MAX_FRAME_SAMPLES * OUTPUT_CHANNELS];
 static int16_t s_delayed_mono[MAX_FRAME_SAMPLES];
 
 /*
+ * Server-local voice-announcement override (see audio_i2s_set_voice_active()
+ * in the header). A tiny FIFO, not a ring the size of the delay line above:
+ * announcement packets arrive in 10 ms pieces against this module's 20 ms
+ * frame cadence, so at most about one frame's worth is ever in flight here.
+ * Guarded by s_voice_lock, a separate spinlock from s_dsp_lock below since
+ * the two are never held together and this one is written from a completely
+ * different task (voice_announce.c's UDP receive loop).
+ */
+static volatile bool s_voice_active;
+/* 60 ms: announcement packets are 20 ms Opus frames, and one can arrive
+ * just before a frame is taken while the next is already in flight. */
+static int16_t s_voice_mailbox[MAX_FRAME_SAMPLES * 3];
+static volatile size_t s_voice_mailbox_fill;
+static int16_t s_voice_frame[MAX_FRAME_SAMPLES];
+static portMUX_TYPE s_voice_lock = portMUX_INITIALIZER_UNLOCKED;
+/* Prefill and diagnostics, same scheme as audio_sink.c's voice mailbox. */
+#define VOICE_PREFILL_SAMPLES (MAX_FRAME_SAMPLES * 2)
+static bool s_voice_primed;
+static uint32_t s_voice_underrun_samples;
+static uint32_t s_voice_dropped_samples;
+
+/*
  * s_lowpass/s_highpass hold both the biquad coefficients (b0,b1,b2,a1,a2,
  * changed only by audio_i2s_set_dsp_params(), from whatever task calls it)
  * and the running filter state z1/z2 (changed only by audio_i2s_read_frame()
@@ -638,6 +660,91 @@ esp_err_t audio_i2s_write_mono(const int16_t *mono, size_t mono_samples)
     return apply_dsp_and_output(mono, mono_samples);
 }
 
+void audio_i2s_set_voice_active(bool active)
+{
+    portENTER_CRITICAL(&s_voice_lock);
+    s_voice_active = active;
+    /* Drop any residue on either transition: entering with stale leftovers
+     * would play a moment of old audio, leaving without clearing would let
+     * that tail bleed into whatever plays next. */
+    s_voice_mailbox_fill = 0;
+    s_voice_primed = false;
+    portEXIT_CRITICAL(&s_voice_lock);
+}
+
+void audio_i2s_take_voice_stats(uint32_t *underrun_samples, uint32_t *dropped_samples)
+{
+    portENTER_CRITICAL(&s_voice_lock);
+    *underrun_samples = s_voice_underrun_samples;
+    *dropped_samples = s_voice_dropped_samples;
+    s_voice_underrun_samples = 0;
+    s_voice_dropped_samples = 0;
+    portEXIT_CRITICAL(&s_voice_lock);
+}
+
+void audio_i2s_feed_voice(const int16_t *mono, size_t mono_samples)
+{
+    if (mono == NULL || mono_samples == 0U) {
+        return;
+    }
+
+    const size_t capacity = sizeof(s_voice_mailbox) / sizeof(s_voice_mailbox[0]);
+    if (mono_samples > capacity) {
+        mono += mono_samples - capacity;
+        mono_samples = capacity;
+    }
+
+    portENTER_CRITICAL(&s_voice_lock);
+    /*
+     * Full: drop the *oldest* samples, not the new ones. Keeping the old
+     * would pin the latency at the mailbox's full depth after one burst of
+     * late packets and throw away the freshest speech instead.
+     */
+    if (s_voice_mailbox_fill + mono_samples > capacity) {
+        const size_t drop = s_voice_mailbox_fill + mono_samples - capacity;
+        memmove(s_voice_mailbox, s_voice_mailbox + drop,
+                (s_voice_mailbox_fill - drop) * sizeof(int16_t));
+        s_voice_mailbox_fill -= drop;
+        s_voice_dropped_samples += (uint32_t)drop;
+    }
+    memcpy(s_voice_mailbox + s_voice_mailbox_fill, mono, mono_samples * sizeof(int16_t));
+    s_voice_mailbox_fill += mono_samples;
+    portEXIT_CRITICAL(&s_voice_lock);
+}
+
+/* Drains up to mono_samples from the voice mailbox into s_voice_frame,
+ * zero-filling anything not yet received -- never waits, matching the
+ * announcement path's "drop rather than buffer" design throughout. */
+static const int16_t *assemble_voice_frame(size_t mono_samples)
+{
+    size_t take = 0;
+
+    portENTER_CRITICAL(&s_voice_lock);
+    /* Prefill, see render_voice_frame() in audio_sink.c for why. */
+    if (!s_voice_primed && s_voice_mailbox_fill >= VOICE_PREFILL_SAMPLES) {
+        s_voice_primed = true;
+    }
+    if (s_voice_primed) {
+        take = (s_voice_mailbox_fill < mono_samples) ? s_voice_mailbox_fill : mono_samples;
+        memcpy(s_voice_frame, s_voice_mailbox, take * sizeof(int16_t));
+        if (take < s_voice_mailbox_fill) {
+            memmove(s_voice_mailbox, s_voice_mailbox + take,
+                   (s_voice_mailbox_fill - take) * sizeof(int16_t));
+        }
+        s_voice_mailbox_fill -= take;
+        if (take < mono_samples) {
+            s_voice_primed = false;
+            s_voice_underrun_samples += (uint32_t)(mono_samples - take);
+        }
+    }
+    portEXIT_CRITICAL(&s_voice_lock);
+
+    if (take < mono_samples) {
+        memset(s_voice_frame + take, 0, (mono_samples - take) * sizeof(int16_t));
+    }
+    return s_voice_frame;
+}
+
 esp_err_t audio_i2s_read_frame(int16_t *mono,
                                size_t mono_samples,
                                int64_t *timestamp_us)
@@ -699,6 +806,16 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
     const int16_t *output = mono;
     if (apply_output_delay(mono, s_delayed_mono, mono_samples)) {
         output = s_delayed_mono;
+    }
+
+    /*
+     * A voice announcement overrides the local speaker only, after the
+     * delay line -- it is meant to play at the lowest latency this device
+     * can manage, not lined up with clients bufferMs later. Capture and the
+     * Opus path above are completely unaffected by this.
+     */
+    if (s_voice_active) {
+        output = assemble_voice_frame(mono_samples);
     }
 
     return apply_dsp_and_output(output, mono_samples);

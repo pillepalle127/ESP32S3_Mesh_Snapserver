@@ -71,6 +71,14 @@ static const char *TAG = "STATUS_LED";
 #define LED_LOCAL_MARK_BLANK        3   /* ~100 ms */
 
 /*
+ * A voice announcement also keeps the meter, but pulses much faster than the
+ * local-input mark -- it is meant to catch the eye as "something unusual is
+ * happening right now", not just to be distinguishable on close inspection.
+ */
+#define LED_VOICE_MARK_PERIOD      15   /* ~500 ms */
+#define LED_VOICE_MARK_BLANK        3   /* ~100 ms */
+
+/*
  * Decay per update when the level falls: full scale to dark in three
  * updates, about 100 ms. Instant attack with a release is still what keeps
  * the meter legible, but 0.12 (over 250 ms) left it sitting near the top
@@ -236,13 +244,17 @@ static void led_task(void *arg)
         float brightness;
 
         const bool metering = (state == STATUS_LED_PLAYING ||
-                               state == STATUS_LED_LOCAL_INPUT);
+                               state == STATUS_LED_LOCAL_INPUT ||
+                               state == STATUS_LED_VOICE_ANNOUNCEMENT);
         if (metering) {
             colour = level_colour(shown);
             brightness = LED_METER_FLOOR + shown * (1.0f - LED_METER_FLOOR);
 
             if (state == STATUS_LED_LOCAL_INPUT &&
                 (tick % LED_LOCAL_MARK_PERIOD) < LED_LOCAL_MARK_BLANK) {
+                brightness = 0.0f;
+            } else if (state == STATUS_LED_VOICE_ANNOUNCEMENT &&
+                       (tick % LED_VOICE_MARK_PERIOD) < LED_VOICE_MARK_BLANK) {
                 brightness = 0.0f;
             }
         } else {

@@ -5,6 +5,7 @@ idf_component_register(
         "audio_opus.c"
         "audio_resample.c"
         "audio_sink.c"
+        "cpu_stats.c"
         "device_config.c"
         "mesh_client.c"
         "mesh_root.c"
@@ -13,6 +14,7 @@ idf_component_register(
         "snapserver.c"
         "status_led.c"
 		"snapcontrol.c" # <--
+        "voice_announce.c"
         "webconfig.c"
     INCLUDE_DIRS "."
     EMBED_TXTFILES "webconfig_page.html"

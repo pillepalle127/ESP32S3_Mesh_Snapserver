@@ -64,6 +64,36 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
                               size_t max_clients);
 
 /*
+ * IPs of currently connected clients that are direct children of this
+ * node's own AP -- i.e. a matching MAC exists in
+ * esp_wifi_ap_get_sta_list(), the same "level 1" test stats_task already
+ * uses for its per-client RSSI. Used by voice_announce.c to restrict
+ * announcement fan-out to the one hop that cannot stall mid-rearrangement
+ * for seconds at a time; a client one or more levels down is deliberately
+ * excluded, not queried differently. Returns the number of entries written.
+ */
+size_t snapserver_get_level1_client_ips(char ips[][16], size_t max_ips);
+
+/*
+ * Announcement mute (voice_announce.c). While active, every client that is
+ * not level 1 is sent muted=true in its ServerSettings -- on top of the
+ * control app's own mute, which stays untouched, so nothing needs restoring
+ * afterwards. Level 1 is decided by MAC, not IP: behind NAPT a level-2+
+ * client shows up at its level-1 parent's IP.
+ *
+ * snapserver_set_announcement() only flips the flag; it is cheap and safe
+ * from any task, and a client that connects from then on gets the right
+ * state in its handshake. snapserver_refresh_announcement() pushes
+ * ServerSettings to every connected client whose announcement mute differs
+ * from what it was last sent -- after a flip, and periodically while an
+ * announcement runs so a client that changes level is caught. It may block
+ * on each client's send mutex, so call it from a task with room to wait,
+ * not from the JSON-RPC handler.
+ */
+void snapserver_set_announcement(bool active);
+void snapserver_refresh_announcement(void);
+
+/*
  * Applies a volume change requested via the control protocol.
  * Returns true if a client with this id exists.
  */

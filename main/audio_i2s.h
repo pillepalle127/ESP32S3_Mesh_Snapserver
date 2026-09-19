@@ -144,3 +144,33 @@ void audio_i2s_take_led_peak(int16_t *left, int16_t *right);
  * out whichever source (network or local input) is currently active.
  */
 esp_err_t audio_i2s_write_mono(const int16_t *mono, size_t mono_samples);
+
+/*
+ * Overrides the server's own local-speaker output only, bypassing the
+ * output delay line above -- a voice announcement is meant to come out of
+ * this speaker at the lowest latency available, not lined up with clients
+ * bufferMs later. Used by voice_announce.c. Deactivating drops whatever is
+ * still queued rather than draining it, so a stale tail can never play once
+ * an announcement has ended.
+ *
+ * Capture, its timestamp and the Opus path stay completely unaffected --
+ * this only changes what audio_i2s_read_frame() writes to the physical
+ * output at its very last step. Client role: unused, the same effect is
+ * already reached by feeding audio_i2s_write_mono() from audio_sink.c.
+ */
+void audio_i2s_set_voice_active(bool active);
+
+/*
+ * Queues up to mono_samples of live announcement PCM for the server's local
+ * speaker (see audio_i2s_set_voice_active()). Frames may arrive in smaller
+ * pieces than one audio_i2s_read_frame() call consumes -- e.g. 480-sample
+ * (10 ms) network packets against a 960-sample (20 ms) frame cadence -- and
+ * are assembled FIFO; any samples still missing when a frame is due are
+ * zero-filled rather than waited for, matching the "never buffer, never
+ * wait" design of the whole announcement path.
+ */
+void audio_i2s_feed_voice(const int16_t *mono, size_t mono_samples);
+
+/* Reads and clears the announcement mailbox counters: samples zero-filled
+ * because it ran dry, and samples dropped because it overflowed. */
+void audio_i2s_take_voice_stats(uint32_t *underrun_samples, uint32_t *dropped_samples);

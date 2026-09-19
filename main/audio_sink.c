@@ -11,10 +11,12 @@
 #include "audio_i2s.h"
 #include "status_led.h"
 #include "audio_resample.h"
+#include "cpu_stats.h"
 #include "device_config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -48,6 +50,24 @@ static const char *TAG = "AUDIO_SINK";
  * (disconnect, or local input pre-empting it) does.
  */
 #define NETWORK_PREBUFFER_PERCENT 80U
+
+/*
+ * How long since the last received voice-announcement packet before the
+ * arbiter releases VOICE back to whatever SOURCE_MODE would otherwise pick.
+ * Comfortably above ordinary packet loss/jitter (announcement packets arrive
+ * every ~10 ms, so this absorbs dozens of consecutive drops without
+ * flapping mid-sentence) while still short enough that a dead phone/network
+ * mid-announcement recovers to music well under half a second later -- this
+ * timeout doubles as the client's entire "announcement over" signal, no
+ * explicit message from the server needed.
+ */
+#define VOICE_INACTIVITY_TIMEOUT_US (400LL * 1000LL)
+
+/* ~40 ms: at most about one frame's worth of announcement audio is ever in
+ * flight between the 10 ms packet cadence and this task's 20 ms tick. */
+#define VOICE_MAILBOX_CAPACITY_SAMPLES (AUDIO_SINK_FRAME_SAMPLES * 3U)
+/* 40 ms, two announcement packets, see render_voice_frame(). */
+#define VOICE_PREFILL_SAMPLES (AUDIO_SINK_FRAME_SAMPLES * 2U)
 
 /*
  * The ring is sized well above buffer_ms rather than at it: buffer_ms is
@@ -146,6 +166,27 @@ static bool s_network_ready;
 static bool s_local_signal_present;
 static uint32_t s_local_attack_count;
 static int64_t s_local_last_active_us;
+
+/*
+ * Voice-announcement mailbox: pushed by voice_announce.c's UDP receive task
+ * (a separate task from this one), drained here. Deliberately not the main
+ * s_ring -- this holds at most ~40 ms and is never waited on, only ever
+ * drained of whatever has actually arrived, per the announcement path's
+ * "drop stale audio, don't smooth it" design. s_voice_last_packet_us is also
+ * what decide_source() checks, so a feed doubles as the arm signal.
+ */
+static portMUX_TYPE s_voice_lock = portMUX_INITIALIZER_UNLOCKED;
+static int16_t s_voice_mailbox[VOICE_MAILBOX_CAPACITY_SAMPLES];
+static size_t s_voice_mailbox_fill;
+static volatile int64_t s_voice_last_packet_us;
+/* An announcement currently overlays the output (player task's view). */
+static volatile bool s_voice_on;
+/* Playback from the mailbox has its prefill, see render_voice_frame(). */
+static bool s_voice_primed;
+/* Diagnostics for the stats line: samples zero-filled because the mailbox
+ * ran dry, and samples thrown away because it overflowed. */
+static uint64_t s_voice_underrun_samples;
+static uint64_t s_voice_dropped_samples;
 
 static uint64_t s_network_bytes_fed;
 static uint64_t s_network_bytes_dropped;
@@ -375,6 +416,31 @@ static audio_sink_source_t network_source_or_none(void)
     return AUDIO_SINK_SOURCE_NETWORK;
 }
 
+/*
+ * An announcement is playing. Not a source in decide_source(): it overlays
+ * whatever source is active, which keeps running underneath -- see
+ * player_task. Recency of the last packet is both the arm and the disarm
+ * signal, see VOICE_INACTIVITY_TIMEOUT_US.
+ */
+static bool voice_recent(void)
+{
+    return (esp_timer_get_time() - s_voice_last_packet_us) < VOICE_INACTIVITY_TIMEOUT_US;
+}
+
+/* LED state for a source once no announcement is covering it. */
+static status_led_state_t led_for_source(audio_sink_source_t source)
+{
+    switch (source) {
+    case AUDIO_SINK_SOURCE_LOCAL_INPUT:
+        return STATUS_LED_LOCAL_INPUT;
+    case AUDIO_SINK_SOURCE_NETWORK:
+        return STATUS_LED_PLAYING;
+    default:
+        /* Prebuffering counts as playing, a lost connection does not. */
+        return s_network_active ? STATUS_LED_PLAYING : STATUS_LED_NO_SERVER;
+    }
+}
+
 static audio_sink_source_t decide_source(void)
 {
     const uint8_t mode = s_source_mode;
@@ -419,10 +485,11 @@ static void maybe_log_stats(float output_rms_db)
     xSemaphoreGive(s_ring.lock);
 
     ESP_LOGI(TAG,
-             "src=%d ring=%u/%u B fed=%llu B dropped=%llu B underrun=%llu samples "
+             "src=%d%s ring=%u/%u B fed=%llu B dropped=%llu B underrun=%llu samples "
              "output_rms=%.1f dBFS local_peak=%.1f dBFS(thr %d) sync=%s err=%lld us "
-             "ppm=%d resync=%lu disc=%llu shift=%llu",
+             "ppm=%d resync=%lu disc=%llu shift=%llu voice_underrun=%llu voice_dropped=%llu",
              (int)s_active_source,
+             s_voice_on ? "+voice" : "",
              (unsigned)fill,
              (unsigned)capacity,
              (unsigned long long)s_network_bytes_fed,
@@ -436,7 +503,27 @@ static void maybe_log_stats(float output_rms_db)
              (int)audio_resample_get_ppm(&s_resample),
              (unsigned long)s_resync_count,
              (unsigned long long)s_discontinuity_count,
-             (unsigned long long)s_timeline_shift_count);
+             (unsigned long long)s_timeline_shift_count,
+             (unsigned long long)s_voice_underrun_samples,
+             (unsigned long long)s_voice_dropped_samples);
+    s_voice_underrun_samples = 0;
+    s_voice_dropped_samples = 0;
+
+    /*
+     * Same format as the server's heap line. A client is also a mesh relay,
+     * and a relay carrying several children has twice hung completely
+     * (2026-09-19, WLAN stack unresponsive, no log) -- internal RAM is the
+     * suspect, so every client reports it together with how many stations
+     * it currently carries.
+     */
+    wifi_sta_list_t stations = {0};
+    const int children = (esp_wifi_ap_get_sta_list(&stations) == ESP_OK) ? stations.num : -1;
+    ESP_LOGI(TAG, "heap: internal free=%u B largest=%u B min_ever=%u B children=%d",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+             children);
+    cpu_stats_log(TAG, 2);
 
     s_network_bytes_fed = 0;
     s_network_bytes_dropped = 0;
@@ -658,6 +745,49 @@ static bool render_network_frame(int16_t *playout_mono)
     return true;
 }
 
+/*
+ * Drains up to AUDIO_SINK_FRAME_SAMPLES from the voice mailbox into out,
+ * zero-filling anything not yet received. Mirrors
+ * audio_i2s.c's assemble_voice_frame() for the server's own local speaker --
+ * kept as a separate, small implementation here rather than shared, since
+ * the two run in different roles and the whole function is a few lines.
+ */
+static void render_voice_frame(int16_t *out)
+{
+    size_t take = 0;
+
+    portENTER_CRITICAL(&s_voice_lock);
+    /*
+     * Prefill: announcement packets are 20 ms, the same as this task's
+     * tick, so without any cushion every bit of Wi-Fi jitter lands a packet
+     * just after the tick and leaves a hole. Playback therefore only starts
+     * (and restarts after running dry) once VOICE_PREFILL_SAMPLES are in --
+     * a fixed, small delay instead of a stream of small dropouts.
+     */
+    if (!s_voice_primed && s_voice_mailbox_fill >= VOICE_PREFILL_SAMPLES) {
+        s_voice_primed = true;
+    }
+    if (s_voice_primed) {
+        take = (s_voice_mailbox_fill < AUDIO_SINK_FRAME_SAMPLES)
+                   ? s_voice_mailbox_fill : AUDIO_SINK_FRAME_SAMPLES;
+        memcpy(out, s_voice_mailbox, take * sizeof(int16_t));
+        if (take < s_voice_mailbox_fill) {
+            memmove(s_voice_mailbox, s_voice_mailbox + take,
+                   (s_voice_mailbox_fill - take) * sizeof(int16_t));
+        }
+        s_voice_mailbox_fill -= take;
+        if (take < AUDIO_SINK_FRAME_SAMPLES) {
+            s_voice_primed = false;
+            s_voice_underrun_samples += AUDIO_SINK_FRAME_SAMPLES - take;
+        }
+    }
+    portEXIT_CRITICAL(&s_voice_lock);
+
+    if (take < AUDIO_SINK_FRAME_SAMPLES) {
+        memset(out + take, 0, (AUDIO_SINK_FRAME_SAMPLES - take) * sizeof(int16_t));
+    }
+}
+
 static void player_task(void *arg)
 {
     (void)arg;
@@ -678,13 +808,17 @@ static void player_task(void *arg)
         }
         update_local_signal_state(local_db);
 
+        const bool voice = voice_recent();
+
         const audio_sink_source_t desired = decide_source();
         if (desired != s_active_source) {
             ESP_LOGI(TAG, "Switching source %d -> %d", (int)s_active_source, (int)desired);
-            if (desired == AUDIO_SINK_SOURCE_LOCAL_INPUT) {
-                status_led_set_state(STATUS_LED_LOCAL_INPUT);
-            } else if (desired == AUDIO_SINK_SOURCE_NETWORK) {
-                status_led_set_state(STATUS_LED_PLAYING);
+            if (!voice) {
+                if (desired == AUDIO_SINK_SOURCE_LOCAL_INPUT) {
+                    status_led_set_state(STATUS_LED_LOCAL_INPUT);
+                } else if (desired == AUDIO_SINK_SOURCE_NETWORK) {
+                    status_led_set_state(STATUS_LED_PLAYING);
+                }
             }
             /*
              * Only flush when *leaving* the network source: its queued
@@ -703,6 +837,26 @@ static void player_task(void *arg)
             s_active_source = desired;
         }
 
+        if (voice != s_voice_on) {
+            ESP_LOGI(TAG, "Announcement %s", voice ? "started" : "ended");
+            s_voice_on = voice;
+            /* Every announcement starts with an empty mailbox and a fresh
+             * prefill, never with a leftover tail of the previous one. */
+            portENTER_CRITICAL(&s_voice_lock);
+            s_voice_mailbox_fill = 0;
+            s_voice_primed = false;
+            portEXIT_CRITICAL(&s_voice_lock);
+            if (!voice) {
+                status_led_set_state(led_for_source(s_active_source));
+            }
+        }
+        if (voice) {
+            /* Every frame, not just on the edge: snapclient.c sets its own
+             * states (e.g. PLAYING on a reconnect) and would otherwise
+             * overwrite this for the rest of the announcement. */
+            status_led_set_state(STATUS_LED_VOICE_ANNOUNCEMENT);
+        }
+
         const int16_t *chosen;
         if (s_active_source == AUDIO_SINK_SOURCE_LOCAL_INPUT && have_local) {
             chosen = local_mono;
@@ -714,6 +868,25 @@ static void player_task(void *arg)
         } else {
             memset(playout_mono, 0, sizeof(playout_mono));
             chosen = playout_mono;
+        }
+
+        /*
+         * An announcement replaces the output but not the source: the music
+         * frame above was rendered as usual and is simply not played -- the
+         * same thing a muted client does. The ring keeps draining at its
+         * normal rate, the timeline and the drift control keep running, and
+         * when the announcement ends playback carries on exactly where a
+         * muted level-2 client is, with nothing to rebuffer. Stopping the
+         * music instead, as this first did, let the ring overflow after
+         * ~buffer_ms and forced a flush and a fresh prebuffer.
+         *
+         * local_mono is free to hold the announcement: the local-input level
+         * was measured above, and the local input isn't played while an
+         * announcement covers it.
+         */
+        if (voice) {
+            render_voice_frame(local_mono);
+            chosen = local_mono;
         }
 
         /*
@@ -783,6 +956,36 @@ esp_err_t audio_sink_start(uint16_t buffer_ms)
 void audio_sink_set_network_active(bool active)
 {
     s_network_active = active;
+}
+
+void audio_sink_feed_voice(const int16_t *mono, size_t mono_samples)
+{
+    if (!s_started || mono == NULL || mono_samples == 0U) {
+        return;
+    }
+
+    if (mono_samples > VOICE_MAILBOX_CAPACITY_SAMPLES) {
+        mono += mono_samples - VOICE_MAILBOX_CAPACITY_SAMPLES;
+        mono_samples = VOICE_MAILBOX_CAPACITY_SAMPLES;
+    }
+
+    portENTER_CRITICAL(&s_voice_lock);
+    /* Full: drop the oldest samples, see audio_i2s_feed_voice(). */
+    if (s_voice_mailbox_fill + mono_samples > VOICE_MAILBOX_CAPACITY_SAMPLES) {
+        const size_t drop =
+            s_voice_mailbox_fill + mono_samples - VOICE_MAILBOX_CAPACITY_SAMPLES;
+        memmove(s_voice_mailbox, s_voice_mailbox + drop,
+                (s_voice_mailbox_fill - drop) * sizeof(int16_t));
+        s_voice_mailbox_fill -= drop;
+        s_voice_dropped_samples += drop;
+    }
+    memcpy(s_voice_mailbox + s_voice_mailbox_fill, mono, mono_samples * sizeof(int16_t));
+    s_voice_mailbox_fill += mono_samples;
+    portEXIT_CRITICAL(&s_voice_lock);
+
+    /* Outside the critical section: only decide_source() reads this, and a
+     * stale read by a few microseconds is harmless against a 400 ms window. */
+    s_voice_last_packet_us = esp_timer_get_time();
 }
 
 size_t audio_sink_feed_network(const int16_t *mono_pcm,
@@ -905,5 +1108,5 @@ void audio_sink_set_delay_trim_ms(int16_t delay_trim_ms)
 
 audio_sink_source_t audio_sink_current_source(void)
 {
-    return s_active_source;
+    return s_voice_on ? AUDIO_SINK_SOURCE_VOICE : s_active_source;
 }

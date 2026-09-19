@@ -26,6 +26,7 @@
 #include <arpa/inet.h>
 
 #include "cJSON.h"
+#include "cpu_stats.h"
 #include "device_config.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -263,6 +264,11 @@ typedef struct {
     bool muted;
     int32_t latency_ms;
 
+    /* Announcement mute last pushed in ServerSettings, see
+     * snapserver_refresh_announcement(). Kept apart from `muted`, which is
+     * the control app's setting and must survive an announcement. */
+    bool voice_muted_sent;
+
     int32_t last_seen_sec;
     int32_t last_seen_usec;
 
@@ -329,6 +335,16 @@ static int32_t max_chunk_age_us(uint16_t buffer_ms)
     }
     return (int32_t)age;
 }
+/*
+ * True while a voice announcement runs (voice_announce.c). Every client that
+ * is not a direct child of this AP is then sent muted=true in its
+ * ServerSettings, on top of whatever the control app set -- see
+ * send_server_settings() and snapserver_refresh_announcement().
+ */
+static volatile bool s_announcement_active;
+
+static int level1_match_rssi(const char *mac, const wifi_sta_list_t *sta_list);
+
 static portMUX_TYPE s_clients_lock = portMUX_INITIALIZER_UNLOCKED;
 static TaskHandle_t s_server_task;
 static TaskHandle_t s_audio_task;
@@ -570,18 +586,53 @@ static int client_send_msg(client_t *client,
     return result;
 }
 
+/*
+ * Level-1 test for one client, by MAC (a level-2+ client reaches us through
+ * its parent's NAPT and so shows up at the *parent's* IP -- only the MAC
+ * tells them apart). Own function and noinline so the ~200 B station list
+ * only occupies the stack while it is being looked at, not for the whole
+ * send that follows. Unknown means "not level 1": during an announcement
+ * that errs towards muting, which is the safe side.
+ */
+static bool __attribute__((noinline)) mac_is_level1_now(const char *mac)
+{
+    if (mac == NULL || mac[0] == '\0') {
+        return false;
+    }
+    wifi_sta_list_t sta_list;
+    if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK) {
+        return false;
+    }
+    return level1_match_rssi(mac, &sta_list) != 127;
+}
+
 static int send_server_settings(client_t *client, uint16_t refers_to)
 {
     char json[128];
     int32_t volume = 100;
     bool muted = false;
     int32_t latency = 0;
+    char mac[24];
 
     portENTER_CRITICAL(&s_clients_lock);
     volume = client->volume_percent;
     muted = client->muted;
     latency = client->latency_ms;
+    strlcpy(mac, client->mac, sizeof(mac));
     portEXIT_CRITICAL(&s_clients_lock);
+
+    /*
+     * An announcement mutes every client that doesn't receive it (anything
+     * below level 1), so music can't clash with it in the same room. Added
+     * on top of the control app's own mute rather than written into it, so
+     * nothing has to be remembered and restored afterwards -- and a client
+     * that (re)connects mid-announcement gets it right in its handshake.
+     */
+    const bool voice_muted = s_announcement_active && !mac_is_level1_now(mac);
+    portENTER_CRITICAL(&s_clients_lock);
+    client->voice_muted_sent = voice_muted;
+    portEXIT_CRITICAL(&s_clients_lock);
+    const bool effective_muted = muted || voice_muted;
 
     device_config_t cfg;
     device_config_get(&cfg);
@@ -596,7 +647,7 @@ static int send_server_settings(client_t *client, uint16_t refers_to)
         "{\"bufferMs\":%u,\"latency\":%ld,\"muted\":%s,\"volume\":%ld}",
         (unsigned)buffer_ms,
         (long)latency,
-        muted ? "true" : "false",
+        effective_muted ? "true" : "false",
         (long)volume);
 
     if (json_len <= 0 || (size_t)json_len >= sizeof(json)) {
@@ -610,10 +661,11 @@ static int send_server_settings(client_t *client, uint16_t refers_to)
     memcpy(payload + sizeof(len), json, len);
 
     ESP_LOGI(TAG,
-             "Sending ServerSettings: bufferMs=%u latency=%ld muted=%s volume=%ld",
+             "Sending ServerSettings: bufferMs=%u latency=%ld muted=%s%s volume=%ld",
              (unsigned)buffer_ms,
              (long)latency,
-             muted ? "true" : "false",
+             effective_muted ? "true" : "false",
+             voice_muted ? " (announcement)" : "",
              (long)volume);
 
     return client_send_msg(client,
@@ -1326,6 +1378,28 @@ static void sender_task(void *arg)
  * Prints everything the audio path measures, at low priority and off the
  * real-time path. See STATS_TASK_STACK for why this matters.
  */
+/*
+ * Level-1 = direct child of this node's own AP: matches mac against
+ * esp_wifi_ap_get_sta_list(). Returns the real RSSI on a match, or 127 ("no
+ * station matched") for a level-2+ client relayed via NAPT, or a phone that
+ * reported no MAC in its Hello -- the sentinel stats_task's log line always
+ * used, factored out here so snapserver_get_level1_client_ips() can reuse
+ * the exact same test instead of a second, possibly diverging one.
+ */
+static int level1_match_rssi(const char *mac, const wifi_sta_list_t *sta_list)
+{
+    for (int k = 0; k < sta_list->num; ++k) {
+        const uint8_t *m = sta_list->sta[k].mac;
+        char text[24];
+        snprintf(text, sizeof(text), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 m[0], m[1], m[2], m[3], m[4], m[5]);
+        if (strcasecmp(text, mac) == 0) {
+            return (int)sta_list->sta[k].rssi;
+        }
+    }
+    return 127;
+}
+
 static void stats_task(void *arg)
 {
     (void)arg;
@@ -1413,17 +1487,7 @@ static void stats_task(void *arg)
             /* 127 means "no station matched": the Snapcast client is not a
              * direct child of this AP -- a node one mesh level down, or a
              * phone that reported no MAC in its Hello. */
-            int rssi = 127;
-            for (int k = 0; k < sta_list.num; ++k) {
-                const uint8_t *m = sta_list.sta[k].mac;
-                char text[24];
-                snprintf(text, sizeof(text), "%02X:%02X:%02X:%02X:%02X:%02X",
-                         m[0], m[1], m[2], m[3], m[4], m[5]);
-                if (strcasecmp(text, mac) == 0) {
-                    rssi = (int)sta_list.sta[k].rssi;
-                    break;
-                }
-            }
+            const int rssi = level1_match_rssi(mac, &sta_list);
 
             /* A reconnect resets the counter; avoid an unsigned wrap. */
             const uint32_t chunk_rate =
@@ -1509,6 +1573,15 @@ static void stats_task(void *arg)
             audio_i2s_take_output_peak(&peak_left, &peak_right);
             ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767)",
                      (int)peak_left, (int)peak_right);
+
+            uint32_t voice_underrun = 0;
+            uint32_t voice_dropped = 0;
+            audio_i2s_take_voice_stats(&voice_underrun, &voice_dropped);
+            if (voice_underrun != 0U || voice_dropped != 0U) {
+                ESP_LOGI(TAG, "voice mailbox: underrun=%lu dropped=%lu samples",
+                         (unsigned long)voice_underrun, (unsigned long)voice_dropped);
+            }
+            cpu_stats_log(TAG, 2);
             last_peak_us = now_us;
         }
     }
@@ -1748,6 +1821,7 @@ static void server_task(void *arg)
                 s_clients[i].protocol_ver = SNAP_PROTOCOL_VER;
                 s_clients[i].volume_percent = 100;
                 s_clients[i].muted = false;
+                s_clients[i].voice_muted_sent = false;
                 s_clients[i].latency_ms = 0;
                 s_clients[i].id[0] = '\0';
                 s_clients[i].name[0] = '\0';
@@ -1895,6 +1969,69 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
     }
 
     return count;
+}
+
+size_t snapserver_get_level1_client_ips(char ips[][16], size_t max_ips)
+{
+    if (ips == NULL || max_ips == 0U) {
+        return 0;
+    }
+
+    wifi_sta_list_t sta_list;
+    if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK) {
+        sta_list.num = 0;
+    }
+
+    size_t count = 0;
+    for (int i = 0; i < MAX_CLIENTS && count < max_ips; ++i) {
+        portENTER_CRITICAL(&s_clients_lock);
+        const bool active = s_clients[i].active && s_clients[i].ready;
+        char peer[16];
+        char mac[24];
+        strlcpy(peer, s_clients[i].peer, sizeof(peer));
+        strlcpy(mac, s_clients[i].mac, sizeof(mac));
+        portEXIT_CRITICAL(&s_clients_lock);
+
+        if (!active || level1_match_rssi(mac, &sta_list) == 127) {
+            continue;
+        }
+
+        strlcpy(ips[count], peer, sizeof(ips[count]));
+        ++count;
+    }
+
+    return count;
+}
+
+void snapserver_set_announcement(bool active)
+{
+    s_announcement_active = active;
+}
+
+void snapserver_refresh_announcement(void)
+{
+    wifi_sta_list_t sta_list;
+    if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK) {
+        sta_list.num = 0;
+    }
+    const bool active = s_announcement_active;
+
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+        char mac[24];
+        portENTER_CRITICAL(&s_clients_lock);
+        const bool live = s_clients[i].active && s_clients[i].ready;
+        const bool sent = s_clients[i].voice_muted_sent;
+        strlcpy(mac, s_clients[i].mac, sizeof(mac));
+        portEXIT_CRITICAL(&s_clients_lock);
+
+        if (!live) {
+            continue;
+        }
+        const bool want = active && level1_match_rssi(mac, &sta_list) == 127;
+        if (want != sent) {
+            (void)send_server_settings(&s_clients[i], 0);
+        }
+    }
 }
 
 /*

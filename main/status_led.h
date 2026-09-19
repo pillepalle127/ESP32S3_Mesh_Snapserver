@@ -29,6 +29,7 @@ typedef enum {
     STATUS_LED_NO_SERVER,       /* orange       */
     STATUS_LED_PLAYING,         /* green        */
     STATUS_LED_LOCAL_INPUT,     /* cyan         */
+    STATUS_LED_VOICE_ANNOUNCEMENT, /* level colour, fast pulse */
 } status_led_state_t;
 
 /*

@@ -23,3 +23,15 @@ CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=4096
 CONFIG_MESH_SOFTAP_SSID_PREFIX="SnapMesh"
 CONFIG_MESH_SOFTAP_PASSWORD="criticalmass"
 CONFIG_LWIP_MAX_SOCKETS=24
+# lwIP's tcpip task runs at priority 18. Left unpinned it also runs on core
+# 1 and preempts audio_task (priority 6) there -- during a voice announcement
+# that showed up as "Capture timeline drifted" four times in nine seconds.
+# Core 0 already hosts the Wi-Fi driver it works with anyway.
+CONFIG_LWIP_TCPIP_TASK_AFFINITY_CPU0=y
+# Per-task CPU load for the stats lines (main/cpu_stats.c). Diagnostic; the
+# run-time counter is esp_timer based, so it costs one timer read per
+# context switch.
+CONFIG_FREERTOS_USE_TRACE_FACILITY=y
+CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
+CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
