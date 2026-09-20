@@ -130,7 +130,10 @@ Damit wird ausdrücklich keine getrennte Frequenzweiche für den linken und rech
 
 Die lokale DSP-Verarbeitung erfolgt direkt auf dem ESP32-S3.
 
-Vorgesehen ist eine **Linkwitz-Riley-Frequenzweiche 4. Ordnung (LR4)**.
+Umgesetzt ist eine **Linkwitz-Riley-Frequenzweiche 4. Ordnung (LR4)**, je
+Zweig als zwei kaskadierte Biquads in `audio_i2s.c`. Trennfrequenz, Gains und
+Kanalzuordnung kommen aus der Konfiguration und lassen sich im laufenden
+Betrieb ändern.
 
 Die Frequenzweiche arbeitet auf dem zuvor aus L und R gebildeten Monosignal.
 
@@ -566,16 +569,20 @@ GPIO 7   ESP32-S3 DOUT -> PCM5102A DIN
 
 Das Projekt befindet sich in aktiver Entwicklung.
 
-Der Schwerpunkt liegt derzeit auf:
+Im Betrieb bewährt: Snapcast-Übertragung und Zeit-Sync über das Mesh
+(Regelfehler wenige Millisekunden), LR4-Frequenzweiche, Rollenumschaltung
+Server/Client, Web-Konfiguration, Sprachdurchsagen mit rund 90 ms Latenz.
 
-* stabiler Audioübertragung
-* korrekter Snapcast-Synchronisation
-* stabiler Zeitbasis
-* ESP-Mesh-Lite-Integration
-* DSP-Frequenzweiche
-* zuverlässiger I2S-Verarbeitung
-* möglichst geringer zusätzlicher Latenz
-* Sprachdurchsagen: Pegel, Reichweite im Mesh und Stabilität der Relays
+In Arbeit:
+
+* Stabilität der Relays: ein Knoten mit mehreren Kindern hängt sich
+  gelegentlich auf
+* der Server hält einen blockierten Client zu lange durch und geht dabei
+  selbst auf dem internen Heap auf Grund
+* ungeklärte akustische Artefakte, die bereits im aufgenommenen Signal
+  stecken
+* echte Messung des Versatzes zwischen Server- und Client-Lautsprecher
+  statt Beurteilung nach Gehör
 
 Offene Punkte und Messergebnisse aus dem Gerätebetrieb stehen in
 [TODO.md](TODO.md).
