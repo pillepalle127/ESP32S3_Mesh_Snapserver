@@ -269,6 +269,19 @@ typedef struct {
      * the control app's setting and must survive an announcement. */
     bool voice_muted_sent;
 
+    /* Announcement flag last pushed, so snapserver_refresh_announcement()
+     * knows which clients still need to hear about a change. */
+    bool announcement_sent;
+
+    /*
+     * One of our own clients, i.e. it said so in its Hello ("SnapMesh").
+     * Those get the announcement as a flag of its own and silence their
+     * music themselves, so the server does not have to know who is deep
+     * enough in the tree to miss it. A foreign Snapcast client knows no
+     * such flag and is muted outright instead.
+     */
+    bool is_snapmesh;
+
     int32_t last_seen_sec;
     int32_t last_seen_usec;
 
@@ -586,26 +599,6 @@ static int client_send_msg(client_t *client,
     return result;
 }
 
-/*
- * Level-1 test for one client, by MAC (a level-2+ client reaches us through
- * its parent's NAPT and so shows up at the *parent's* IP -- only the MAC
- * tells them apart). Own function and noinline so the ~200 B station list
- * only occupies the stack while it is being looked at, not for the whole
- * send that follows. Unknown means "not level 1": during an announcement
- * that errs towards muting, which is the safe side.
- */
-static bool __attribute__((noinline)) mac_is_level1_now(const char *mac)
-{
-    if (mac == NULL || mac[0] == '\0') {
-        return false;
-    }
-    wifi_sta_list_t sta_list;
-    if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK) {
-        return false;
-    }
-    return level1_match_rssi(mac, &sta_list) != 127;
-}
-
 static int send_server_settings(client_t *client, uint16_t refers_to)
 {
     char json[128];
@@ -622,15 +615,37 @@ static int send_server_settings(client_t *client, uint16_t refers_to)
     portEXIT_CRITICAL(&s_clients_lock);
 
     /*
-     * An announcement mutes every client that doesn't receive it (anything
-     * below level 1), so music can't clash with it in the same room. Added
-     * on top of the control app's own mute rather than written into it, so
-     * nothing has to be remembered and restored afterwards -- and a client
-     * that (re)connects mid-announcement gets it right in its handshake.
+     * Music must not clash with an announcement in the same room, but who
+     * actually hears the announcement depends on the mesh tree, which the
+     * server cannot see past the first level (everything deeper hides
+     * behind its parent's NAPT).
+     *
+     * So our own clients get the plain fact that an announcement is running
+     * and silence their music themselves; they play the announcement if it
+     * reaches them, at the user's volume. `muted` keeps its original
+     * meaning for them: the control app's setting, which must survive an
+     * announcement.
+     *
+     * A foreign Snapcast client (Android, iOS, desktop) knows no such flag
+     * and cannot receive an announcement either -- that runs over our own
+     * UDP channel, not over Snapcast. For it the announcement is therefore
+     * folded into `muted`, whatever its level: a phone sitting right next
+     * to the root is as unable to play the announcement as one three hops
+     * away, so it has to fall silent for it. Sent on top of the user's mute
+     * rather than written into it, so nothing has to be restored
+     * afterwards, and a client that (re)connects mid-announcement gets it
+     * right in its handshake.
      */
-    const bool voice_muted = s_announcement_active && !mac_is_level1_now(mac);
+    bool is_snapmesh = false;
+    portENTER_CRITICAL(&s_clients_lock);
+    is_snapmesh = client->is_snapmesh;
+    portEXIT_CRITICAL(&s_clients_lock);
+
+    const bool announcement = s_announcement_active;
+    const bool voice_muted = announcement && !is_snapmesh;
     portENTER_CRITICAL(&s_clients_lock);
     client->voice_muted_sent = voice_muted;
+    client->announcement_sent = announcement;
     portEXIT_CRITICAL(&s_clients_lock);
     const bool effective_muted = muted || voice_muted;
 
@@ -644,11 +659,13 @@ static int send_server_settings(client_t *client, uint16_t refers_to)
     const int json_len = snprintf(
         json,
         sizeof(json),
-        "{\"bufferMs\":%u,\"latency\":%ld,\"muted\":%s,\"volume\":%ld}",
+        "{\"bufferMs\":%u,\"latency\":%ld,\"muted\":%s,\"volume\":%ld,"
+        "\"announcement\":%s}",
         (unsigned)buffer_ms,
         (long)latency,
         effective_muted ? "true" : "false",
-        (long)volume);
+        (long)volume,
+        announcement ? "true" : "false");
 
     if (json_len <= 0 || (size_t)json_len >= sizeof(json)) {
         return -1;
@@ -661,12 +678,14 @@ static int send_server_settings(client_t *client, uint16_t refers_to)
     memcpy(payload + sizeof(len), json, len);
 
     ESP_LOGI(TAG,
-             "Sending ServerSettings: bufferMs=%u latency=%ld muted=%s%s volume=%ld",
+             "Sending ServerSettings: bufferMs=%u latency=%ld muted=%s%s volume=%ld"
+             " announcement=%s",
              (unsigned)buffer_ms,
              (long)latency,
              effective_muted ? "true" : "false",
              voice_muted ? " (announcement)" : "",
-             (long)volume);
+             (long)volume,
+             announcement ? "true" : "false");
 
     return client_send_msg(client,
                            SNAP_TYPE_SERVER,
@@ -1042,6 +1061,8 @@ static bool handle_hello(client_t *client,
     copy_json_string(version, sizeof(version), root, "Version", "0.0.0");
 
     const int32_t instance = json_int_or(root, "Instance", 1);
+    /* Our own clients say so here, see send_hello() in snapclient.c. */
+    const bool is_snapmesh = json_int_or(root, "SnapMesh", 0) != 0;
 
     cJSON_Delete(root);
 
@@ -1058,6 +1079,7 @@ static bool handle_hello(client_t *client,
     strlcpy(client->os, os, sizeof(client->os));
     strlcpy(client->version, version, sizeof(client->version));
     client->instance = instance;
+    client->is_snapmesh = is_snapmesh;
     client->protocol_ver = proto;
     client->last_seen_sec = seen_sec;
     client->last_seen_usec = seen_usec;
@@ -1576,10 +1598,17 @@ static void stats_task(void *arg)
 
             uint32_t voice_underrun = 0;
             uint32_t voice_dropped = 0;
-            audio_i2s_take_voice_stats(&voice_underrun, &voice_dropped);
-            if (voice_underrun != 0U || voice_dropped != 0U) {
-                ESP_LOGI(TAG, "voice mailbox: underrun=%lu dropped=%lu samples",
-                         (unsigned long)voice_underrun, (unsigned long)voice_dropped);
+            uint32_t voice_wait_avg = 0;
+            uint32_t voice_wait_max = 0;
+            audio_i2s_take_voice_stats(&voice_underrun, &voice_dropped,
+                                       &voice_wait_avg, &voice_wait_max);
+            if (voice_underrun != 0U || voice_dropped != 0U || voice_wait_max != 0U) {
+                ESP_LOGI(TAG,
+                         "voice mailbox: underrun=%lu dropped=%lu samples, "
+                         "wait avg=%lu ms max=%lu ms (+%lld ms I2S)",
+                         (unsigned long)voice_underrun, (unsigned long)voice_dropped,
+                         (unsigned long)voice_wait_avg, (unsigned long)voice_wait_max,
+                         (long long)(AUDIO_I2S_TX_LATENCY_US / 1000));
             }
             cpu_stats_log(TAG, 2);
             last_peak_us = now_us;
@@ -1822,6 +1851,8 @@ static void server_task(void *arg)
                 s_clients[i].volume_percent = 100;
                 s_clients[i].muted = false;
                 s_clients[i].voice_muted_sent = false;
+                s_clients[i].announcement_sent = false;
+                s_clients[i].is_snapmesh = false;
                 s_clients[i].latency_ms = 0;
                 s_clients[i].id[0] = '\0';
                 s_clients[i].name[0] = '\0';
@@ -2010,25 +2041,24 @@ void snapserver_set_announcement(bool active)
 
 void snapserver_refresh_announcement(void)
 {
-    wifi_sta_list_t sta_list;
-    if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK) {
-        sta_list.num = 0;
-    }
     const bool active = s_announcement_active;
 
     for (int i = 0; i < MAX_CLIENTS; ++i) {
-        char mac[24];
         portENTER_CRITICAL(&s_clients_lock);
         const bool live = s_clients[i].active && s_clients[i].ready;
-        const bool sent = s_clients[i].voice_muted_sent;
-        strlcpy(mac, s_clients[i].mac, sizeof(mac));
+        const bool is_snapmesh = s_clients[i].is_snapmesh;
+        const bool muted_sent = s_clients[i].voice_muted_sent;
+        const bool announcement_sent = s_clients[i].announcement_sent;
         portEXIT_CRITICAL(&s_clients_lock);
 
         if (!live) {
             continue;
         }
-        const bool want = active && level1_match_rssi(mac, &sta_list) == 127;
-        if (want != sent) {
+
+        /* Our clients act on the flag, the others on the mute; push to
+         * whichever of the two has gone stale. */
+        const bool want_muted = active && !is_snapmesh;
+        if (want_muted != muted_sent || active != announcement_sent) {
             (void)send_server_settings(&s_clients[i], 0);
         }
     }

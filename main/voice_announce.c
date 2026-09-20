@@ -13,7 +13,11 @@
 #include <sys/socket.h>
 
 #include "audio_i2s.h"
+#include "audio_opus.h"
 #include "audio_sink.h"
+#include "device_config.h"
+#include "esp_netif.h"
+#include "esp_wifi.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -63,6 +67,17 @@ static const char *TAG = "VOICE";
  *   nobody else notices.
  */
 #define VOICE_SERVER_TASK_CORE     0
+
+/*
+ * A client decodes on core 0, away from its player task (audio_sink.c runs
+ * it on core 1 at the same priority). Sharing a core cost the player its
+ * 20 ms tick whenever a decode burst landed: measured during an
+ * announcement, the playback error drifted to -76 ms and forced a hard
+ * resync, i.e. the music went out of step with the other speakers
+ * (2026-09-20). Core 0 carries only the Snapcast receive task there, with
+ * ~70 % idle.
+ */
+#define VOICE_CLIENT_TASK_CORE     0
 #define VOICE_SPEAKER_TASK_CORE    1
 #define VOICE_SPEAKER_TASK_PRIORITY 4
 #define VOICE_SPEAKER_TASK_STACK 10240
@@ -70,10 +85,18 @@ static const char *TAG = "VOICE";
 #define VOICE_SPEAKER_QUEUE_DEPTH    6
 
 /*
- * Wire format on both hops (phone -> server -> level-1 clients): a 4-byte
- * little-endian sequence number, then one Opus packet, 48 kHz mono, as the
- * phone's encoder cut it (normally 20 ms). An empty payload is the server's
- * silence primer, see voice_server_task.
+ * Wire format.
+ *
+ * Phone -> server: a 4-byte little-endian sequence number, then one Opus
+ * packet as the phone's encoder cut it (normally 20 ms of 16 kHz mono
+ * speech).
+ *
+ * Server -> clients: the same, plus one byte between the sequence number
+ * and the payload that says how many further hops the packet may take. The
+ * server sets VOICE_RELAY_HOPS; a client with children forwards a copy with
+ * one less while the byte is not zero, so a level-2 client hears the
+ * announcement too. An empty payload is the server's silence primer, see
+ * voice_server_task.
  *
  * Opus rather than raw PCM, which this first used: at 768 kbit/s per
  * level-1 client an announcement needed about nine times the music's
@@ -82,9 +105,28 @@ static const char *TAG = "VOICE";
  * and the queues it built were the latency one could hear. Opus at voice
  * bitrates is some 25 times smaller for ~10 ms more delay.
  */
-#define VOICE_HEADER_BYTES           4U
-#define VOICE_MAX_PAYLOAD         1275U   /* largest legal Opus packet */
-#define VOICE_MAX_PACKET (VOICE_HEADER_BYTES + VOICE_MAX_PAYLOAD)
+#define VOICE_HEADER_BYTES           4U   /* phone -> server              */
+#define VOICE_MESH_HEADER_BYTES      5U   /* server -> clients, with hops */
+#define VOICE_MAX_PAYLOAD         1275U   /* largest legal Opus packet    */
+#define VOICE_MAX_PACKET (VOICE_MESH_HEADER_BYTES + VOICE_MAX_PAYLOAD)
+
+/*
+ * How many hops past the root an announcement may travel. 1 means the
+ * server, its direct clients and their children.
+ *
+ * Why not further: every hop inherits the tail risk of a mesh that is
+ * rearranging -- a relay can stall for seconds while it rejoins, which
+ * music rides out on its buffer and an announcement cannot. Why not zero,
+ * as this started: clients a few metres from the server routinely attach to
+ * each other rather than to it, because a neighbour two metres away is the
+ * stronger signal (seen on device: -9 dBm to the neighbour against -64 dBm
+ * to the server). Those nodes were silent although they stood in the same
+ * room.
+ */
+#define VOICE_RELAY_HOPS             1U
+
+/* Diagnostics: echo back one in this many packets, see voice_server_task. */
+#define VOICE_ECHO_EVERY            50U
 #define VOICE_SAMPLE_RATE        48000
 #define VOICE_MAX_DECODE_SAMPLES  5760U   /* 120 ms, Opus' longest frame */
 #define VOICE_PRIMER_SAMPLES       480U   /* 10 ms of silence per primer */
@@ -271,6 +313,28 @@ static size_t refresh_level1_ips(void)
     return count;
 }
 
+/*
+ * The music encoder and the announcement decoder share core 1, and during an
+ * announcement the encoder alone took 78 % of it -- the decoder then missed
+ * 15 % of the packets and this device's own speaker sounded broken
+ * (2026-09-20). Nobody hears the music while an announcement runs: it is
+ * encoded only to keep the clients' timeline intact, and they discard or
+ * mute it. So it is encoded as cheaply as Opus can for the duration.
+ */
+#define VOICE_MUSIC_COMPLEXITY 0
+
+static void lower_music_complexity(void)
+{
+    (void)audio_opus_set_complexity(VOICE_MUSIC_COMPLEXITY);
+}
+
+static void restore_music_complexity(void)
+{
+    device_config_t cfg;
+    device_config_get(&cfg);
+    (void)audio_opus_set_complexity((int32_t)cfg.opus_complexity);
+}
+
 /* Call with s_state_mutex held. Unmuting the others is voice_server_task's
  * job: it sees the state change within VOICE_POLL_MS and pushes it. */
 static void stop_locked(const char *reason)
@@ -280,6 +344,7 @@ static void stop_locked(const char *reason)
     }
     s_active = false;
     s_owner_fd = -1;
+    restore_music_complexity();
     audio_i2s_set_voice_active(false);
     snapserver_set_announcement(false);
     status_led_set_state(STATUS_LED_PLAYING);
@@ -314,6 +379,7 @@ bool voice_announce_rpc_start(int fd)
     s_owner_ip = owner_ip;
     ++s_session;
     s_started_us = esp_timer_get_time();
+    lower_music_complexity();
     audio_i2s_set_voice_active(true);
     snapserver_set_announcement(true);
     status_led_set_state(STATUS_LED_VOICE_ANNOUNCEMENT);
@@ -354,10 +420,22 @@ void voice_announce_on_control_disconnect(int fd)
  * newer" check stays simple. Reordering on the phone's side is filtered
  * here, before renumbering.
  */
-static void relay_to_level1(uint8_t *packet, size_t len, uint32_t *out_sequence)
+static void relay_to_level1(const uint8_t *payload, size_t payload_len,
+                            uint32_t *out_sequence)
 {
+    if (payload_len > VOICE_MAX_PAYLOAD) {
+        return;
+    }
+
+    /* Static, not on the stack: one caller, and the stack is in PSRAM. */
+    static uint8_t packet[VOICE_MAX_PACKET];
     const uint32_t sequence = (*out_sequence)++;
     memcpy(packet, &sequence, sizeof(sequence));
+    packet[VOICE_HEADER_BYTES] = (uint8_t)VOICE_RELAY_HOPS;
+    if (payload_len > 0U) {
+        memcpy(packet + VOICE_MESH_HEADER_BYTES, payload, payload_len);
+    }
+    const size_t len = VOICE_MESH_HEADER_BYTES + payload_len;
 
     char ips[SNAPSERVER_MAX_CLIENTS][16];
     size_t count;
@@ -462,7 +540,6 @@ static void voice_server_task(void *arg)
     }
 
     uint8_t buf[VOICE_MAX_PACKET + 32];
-    uint8_t primer[VOICE_HEADER_BYTES];
 
     uint32_t seen_session = 0;
     bool was_active = false;
@@ -560,15 +637,31 @@ static void voice_server_task(void *arg)
             last_refresh_us = now;
         }
 
+        /*
+         * Every VOICE_ECHO_EVERY-th packet goes straight back to the phone,
+         * which measures the round trip from it. That closes the last gap
+         * in the announcement's latency budget: capture and encoding are
+         * measured in the app, queueing and output here, but the Wi-Fi leg
+         * was the one part nobody could see. Four bytes, so the phone can
+         * tell an echo from anything else, and rare enough to cost nothing.
+         */
+        if (got_audio && (phone_sequence % VOICE_ECHO_EVERY) == 0U) {
+            uint8_t echo[VOICE_HEADER_BYTES];
+            memcpy(echo, &phone_sequence, sizeof(phone_sequence));
+            (void)sendto(s_server_fd, echo, sizeof(echo), 0,
+                         (struct sockaddr *)&from, sizeof(from));
+        }
+
         if (got_audio) {
-            /* The clients decode for themselves -- relayed untouched but
-             * for the sequence number. */
-            relay_to_level1(buf, (size_t)n, &out_sequence);
+            /* The clients decode for themselves -- the Opus packet goes out
+             * untouched, only the header is the server's own. */
+            const size_t payload_len = (size_t)n - VOICE_HEADER_BYTES;
+            relay_to_level1(buf + VOICE_HEADER_BYTES, payload_len, &out_sequence);
 
             /* This device's own speaker, decoded by voice_speaker_task. */
             msg->kind = SPEAKER_MSG_AUDIO;
             msg->lost = (lost > 255U) ? 255U : (uint8_t)lost;
-            msg->len = (uint16_t)((size_t)n - VOICE_HEADER_BYTES);
+            msg->len = (uint16_t)payload_len;
             memcpy(msg->payload, buf + VOICE_HEADER_BYTES, msg->len);
             speaker_post(msg);
         } else if (!have_audio && now - last_primer_us >= VOICE_FRAME_US) {
@@ -579,7 +672,7 @@ static void voice_server_task(void *arg)
              * stops together with everyone else's instead of running on for
              * however long the phone takes.
              */
-            relay_to_level1(primer, sizeof(primer), &out_sequence);
+            relay_to_level1(NULL, 0, &out_sequence);
             last_primer_us = now;
         }
     }
@@ -675,6 +768,76 @@ static int s_client_fd = -1;
 static TaskHandle_t s_client_task;
 static voice_decoder_t s_client_decoder;
 
+/*
+ * Children of this node, i.e. the stations on its own SoftAP. Announcements
+ * are relayed to them while the packet's hop byte allows it, which is what
+ * gets a level-2 client -- invisible to the server behind its parent's NAPT
+ * -- to hear an announcement at all.
+ */
+#define VOICE_MAX_CHILDREN ESP_WIFI_MAX_CONN_NUM
+
+static char s_child_ips[VOICE_MAX_CHILDREN][16];
+static size_t s_child_count;
+static int64_t s_children_refreshed_us;
+
+/*
+ * Resolves the children's addresses: the AP's station list gives the MACs,
+ * the DHCP server the address it handed each of them. Both are cheap, but
+ * not free, so this runs once per announcement and then about once a
+ * second, same cadence as the server's level-1 refresh.
+ */
+static void refresh_children(void)
+{
+    s_child_count = 0;
+
+    esp_netif_t *ap_netif = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap_netif == NULL) {
+        return;
+    }
+
+    wifi_sta_list_t sta_list;
+    if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK || sta_list.num == 0) {
+        return;
+    }
+
+    esp_netif_pair_mac_ip_t pairs[VOICE_MAX_CHILDREN] = {0};
+    const int num = (sta_list.num > VOICE_MAX_CHILDREN) ? VOICE_MAX_CHILDREN : sta_list.num;
+    for (int i = 0; i < num; ++i) {
+        memcpy(pairs[i].mac, sta_list.sta[i].mac, sizeof(pairs[i].mac));
+    }
+    if (esp_netif_dhcps_get_clients_by_mac(ap_netif, num, pairs) != ESP_OK) {
+        return;
+    }
+
+    for (int i = 0; i < num; ++i) {
+        if (pairs[i].ip.addr == 0) {
+            continue; /* associated but no lease yet */
+        }
+        esp_ip4addr_ntoa(&pairs[i].ip, s_child_ips[s_child_count],
+                         (int)sizeof(s_child_ips[s_child_count]));
+        ++s_child_count;
+    }
+}
+
+/* Forwards one packet, with its hop count already decremented, to every
+ * child. Called before decoding: a slow decode must not delay the branch
+ * below us, the same lesson the server learned the hard way. */
+static void relay_to_children(uint8_t *packet, size_t len, uint8_t hops_left)
+{
+    packet[VOICE_HEADER_BYTES] = hops_left;
+
+    for (size_t i = 0; i < s_child_count; ++i) {
+        struct sockaddr_in dst = {0};
+        dst.sin_family = AF_INET;
+        dst.sin_port = htons(VOICE_ANNOUNCE_PORT);
+        if (inet_pton(AF_INET, s_child_ips[i], &dst.sin_addr) != 1) {
+            continue;
+        }
+        (void)sendto(s_client_fd, packet, len, 0,
+                     (struct sockaddr *)&dst, sizeof(dst));
+    }
+}
+
 static void voice_client_task(void *arg)
 {
     (void)arg;
@@ -686,7 +849,7 @@ static void voice_client_task(void *arg)
 
     for (;;) {
         const int n = recvfrom(s_client_fd, buf, sizeof(buf), 0, NULL, NULL);
-        if (n < (int)VOICE_HEADER_BYTES || n > (int)VOICE_MAX_PACKET) {
+        if (n < (int)VOICE_MESH_HEADER_BYTES || n > (int)VOICE_MAX_PACKET) {
             continue;
         }
 
@@ -699,6 +862,15 @@ static void voice_client_task(void *arg)
             have_sequence = false;
             voice_decoder_log_stats(&s_client_decoder, "Previous announcement");
             voice_decoder_reset(&s_client_decoder);
+            refresh_children();
+            s_children_refreshed_us = now;
+            if (s_child_count != 0U) {
+                ESP_LOGI(TAG, "Announcement: relaying to %u child node(s)",
+                         (unsigned)s_child_count);
+            }
+        } else if (now - s_children_refreshed_us > VOICE_REFRESH_US) {
+            refresh_children();
+            s_children_refreshed_us = now;
         }
         last_packet_us = now;
 
@@ -715,7 +887,13 @@ static void voice_client_task(void *arg)
         last_sequence = sequence;
         have_sequence = true;
 
-        const size_t payload_len = (size_t)n - VOICE_HEADER_BYTES;
+        /* Pass it on first, decode afterwards. */
+        const uint8_t hops_left = buf[VOICE_HEADER_BYTES];
+        if (hops_left > 0U && s_child_count != 0U) {
+            relay_to_children(buf, (size_t)n, (uint8_t)(hops_left - 1U));
+        }
+
+        const size_t payload_len = (size_t)n - VOICE_MESH_HEADER_BYTES;
         if (payload_len == 0) {
             /* The server's silence primer. */
             memset(s_client_decoder.pcm, 0, VOICE_PRIMER_SAMPLES * sizeof(int16_t));
@@ -729,7 +907,8 @@ static void voice_client_task(void *arg)
                 audio_sink_feed_voice(s_client_decoder.pcm, (size_t)samples);
             }
         }
-        const int samples = voice_decode(&s_client_decoder, buf + VOICE_HEADER_BYTES, payload_len);
+        const int samples = voice_decode(&s_client_decoder,
+                                         buf + VOICE_MESH_HEADER_BYTES, payload_len);
         if (samples > 0) {
             audio_sink_feed_voice(s_client_decoder.pcm, (size_t)samples);
         }
@@ -766,13 +945,19 @@ esp_err_t voice_receive_start(void)
         return ESP_FAIL;
     }
 
+    /* The same socket forwards to this node's children, see
+     * relay_to_children(): a stuck child must not hold up the others. */
+    const struct timeval client_snd_timeout = { .tv_sec = 0, .tv_usec = VOICE_SEND_TIMEOUT_US };
+    (void)setsockopt(s_client_fd, SOL_SOCKET, SO_SNDTIMEO,
+                     &client_snd_timeout, sizeof(client_snd_timeout));
+
     if (xTaskCreatePinnedToCoreWithCaps(voice_client_task,
                                         "voice_client",
                                         VOICE_CLIENT_TASK_STACK,
                                         NULL,
                                         VOICE_TASK_PRIORITY,
                                         &s_client_task,
-                                        1,
+                                        VOICE_CLIENT_TASK_CORE,
                                         TASK_STACK_CAPS) != pdPASS) {
         ESP_LOGE(TAG, "Could not create voice_client_task");
         close(s_client_fd);

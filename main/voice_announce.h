@@ -10,28 +10,29 @@
  * path end to end instead of an option bolted onto the Snapcast one:
  *
  *   - UDP, not TCP: a stuck send must never hold up the next packet.
- *   - Raw 48 kHz/16-bit mono PCM, not Opus: no encode/decode latency, and
- *     bandwidth was never the scarce resource here.
- *   - 480-sample (10 ms) packets, not the pipeline's usual 960 (20 ms):
- *     960 samples of PCM plus a header exceeds the 1500 B MTU, and IP
- *     fragmentation would turn one lost fragment into a lost whole chunk --
- *     actively harmful for a "drop, don't wait" channel.
- *   - Delivered only to level-1 clients (direct children of the root's own
- *     AP): not because a hop costs much transit time, but because a hop can
- *     stall for seconds during a mesh rearrangement, which music's buffer
- *     absorbs invisibly and an unbuffered stream cannot absorb at all.
+ *   - Opus at speech bitrates (~25 kbit/s, 16 kHz wideband as the phone
+ *     sends it). Raw PCM, which this started with, needed about nine times
+ *     the music's airtime per client and congested the shared channel.
+ *   - Delivered to the server's own speaker, to its direct clients, and one
+ *     hop further (VOICE_RELAY_HOPS in voice_announce.c): each client
+ *     forwards to its own children, which the server cannot address itself
+ *     because they sit behind their parent's NAPT. The depth is limited
+ *     because every hop inherits the tail risk of a rearranging mesh -- a
+ *     relay can stall for seconds, which music's buffer absorbs invisibly
+ *     and an unbuffered stream cannot absorb at all.
  *
- * Clients that do not receive the announcement (level 2+) must not keep
- * playing music through it -- that would clash acoustically with the
- * announcement in the same room. They are muted instead, through the
- * ServerSettings "muted" field, which already reaches every client at every
- * hop depth reliably (snapserver_set_announcement() in snapserver.h). That
- * mute is added on top of the control app's own setting rather than written
- * into it, so there is nothing to restore afterwards. Level-1 clients are
- * not muted this way -- their output gain applies to every source, the
- * announcement included -- they switch to the announcement locally instead
- * (audio_sink.c). Until the phone's microphone delivers, the server sends
- * them silence, so their music stops at the same moment as everyone else's.
+ * No client may keep playing music through an announcement -- that would
+ * clash acoustically with it in the same room. Which clients actually hear
+ * the announcement depends on the mesh tree, which the server cannot see
+ * past the first level, so it does not try: ServerSettings carries a flag
+ * of its own ("announcement", snapserver_set_announcement() in
+ * snapserver.h), and each of our clients silences its music for as long as
+ * the flag is set, playing the announcement if it reaches them
+ * (audio_sink.c). The listener's own volume and mute keep their meaning and
+ * apply to the announcement as well. A foreign Snapcast client knows no
+ * such flag and is muted outright instead; it never receives an
+ * announcement anyway. Until the phone's microphone delivers, the server
+ * sends silence, so music stops everywhere at the same moment.
  *
  * Start/stop is signalled over the existing JSON-RPC control channel (port
  * 1705, snapcontrol.c) as two new methods, Voice.Start/Voice.Stop -- not
@@ -58,10 +59,9 @@ extern "C" {
 /* Starts the UDP relay + mute bookkeeping. Server role only. Idempotent. */
 esp_err_t voice_announce_start(void);
 
-/* Starts the UDP receiver that feeds audio_sink_feed_voice(). Client role
- * only (level-1 clients act on what arrives; level-2+ simply never receive
- * anything, see the header comment above -- both run the same code).
- * Idempotent. */
+/* Starts the UDP receiver that feeds audio_sink_feed_voice() and forwards
+ * to this node's own children while the packet's hop count allows it.
+ * Client role only. Idempotent. */
 esp_err_t voice_receive_start(void);
 
 /*

@@ -63,11 +63,21 @@ static const char *TAG = "AUDIO_SINK";
  */
 #define VOICE_INACTIVITY_TIMEOUT_US (400LL * 1000LL)
 
-/* ~40 ms: at most about one frame's worth of announcement audio is ever in
- * flight between the 10 ms packet cadence and this task's 20 ms tick. */
-#define VOICE_MAILBOX_CAPACITY_SAMPLES (AUDIO_SINK_FRAME_SAMPLES * 3U)
-/* 40 ms, two announcement packets, see render_voice_frame(). */
-#define VOICE_PREFILL_SAMPLES (AUDIO_SINK_FRAME_SAMPLES * 2U)
+/* 100 ms of room, so a burst of packets has somewhere to land; what is
+ * actually kept is bounded by VOICE_MAX_FILL_SAMPLES below, which must stay
+ * smaller than this or it would never take effect. */
+#define VOICE_MAILBOX_CAPACITY_SAMPLES (AUDIO_SINK_FRAME_SAMPLES * 5U)
+/*
+ * 20 ms, one announcement packet, see render_voice_frame(). The prefill is
+ * pure added latency on a path built for speed, so it stays at the minimum
+ * that covers packet-to-packet jitter; the voice_underrun counter in the
+ * stats line says when that is no longer enough.
+ */
+#define VOICE_PREFILL_SAMPLES (AUDIO_SINK_FRAME_SAMPLES)
+/* Target the queue is trimmed back to once it stays above it, see
+ * audio_sink_feed_voice() and audio_i2s.c for the reasoning. */
+#define VOICE_TARGET_FILL_SAMPLES (AUDIO_SINK_FRAME_SAMPLES)
+#define VOICE_TRIM_AFTER_FEEDS  25U
 
 /*
  * The ring is sized well above buffer_ms rather than at it: buffer_ms is
@@ -187,6 +197,13 @@ static bool s_voice_primed;
  * ran dry, and samples thrown away because it overflowed. */
 static uint64_t s_voice_underrun_samples;
 static uint64_t s_voice_dropped_samples;
+/* Consecutive feeds that found the mailbox above its target, see there. */
+static uint32_t s_voice_above_target;
+
+/* Queueing delay of the announcement in this mailbox, see feed_voice(). */
+static uint32_t s_voice_wait_total_ms;
+static uint32_t s_voice_wait_count;
+static uint32_t s_voice_wait_max_ms;
 
 static uint64_t s_network_bytes_fed;
 static uint64_t s_network_bytes_dropped;
@@ -221,6 +238,8 @@ static volatile int64_t s_stream_latency_us;
  * cannot be read half-updated.
  */
 static volatile float s_volume_gain = 1.0f;
+/* Set from ServerSettings, see audio_sink_set_announcement(). */
+static volatile bool s_announcement_active;
 
 static audio_resample_t s_resample;
 static float s_control_integral;
@@ -487,7 +506,8 @@ static void maybe_log_stats(float output_rms_db)
     ESP_LOGI(TAG,
              "src=%d%s ring=%u/%u B fed=%llu B dropped=%llu B underrun=%llu samples "
              "output_rms=%.1f dBFS local_peak=%.1f dBFS(thr %d) sync=%s err=%lld us "
-             "ppm=%d resync=%lu disc=%llu shift=%llu voice_underrun=%llu voice_dropped=%llu",
+             "ppm=%d resync=%lu disc=%llu shift=%llu voice_underrun=%llu voice_dropped=%llu "
+             "voice_wait=%lu/%lu ms",
              (int)s_active_source,
              s_voice_on ? "+voice" : "",
              (unsigned)fill,
@@ -505,9 +525,15 @@ static void maybe_log_stats(float output_rms_db)
              (unsigned long long)s_discontinuity_count,
              (unsigned long long)s_timeline_shift_count,
              (unsigned long long)s_voice_underrun_samples,
-             (unsigned long long)s_voice_dropped_samples);
+             (unsigned long long)s_voice_dropped_samples,
+             (unsigned long)((s_voice_wait_count != 0U)
+                             ? (s_voice_wait_total_ms / s_voice_wait_count) : 0U),
+             (unsigned long)s_voice_wait_max_ms);
     s_voice_underrun_samples = 0;
     s_voice_dropped_samples = 0;
+    s_voice_wait_total_ms = 0;
+    s_voice_wait_count = 0;
+    s_voice_wait_max_ms = 0;
 
     /*
      * Same format as the server's heap line. A client is also a mesh relay,
@@ -516,6 +542,19 @@ static void maybe_log_stats(float output_rms_db)
      * suspect, so every client reports it together with how many stations
      * it currently carries.
      */
+    /*
+     * Peak after the crossover, i.e. what actually reaches the two DAC
+     * channels. output_rms above is measured before it, so a signal that
+     * disappears in the DSP stage -- a channel gain turned down, a
+     * misconfigured split -- looks identical there. Same measurement the
+     * server prints.
+     */
+    int16_t dsp_left = 0;
+    int16_t dsp_right = 0;
+    audio_i2s_take_output_peak(&dsp_left, &dsp_right);
+    ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767)",
+             (int)dsp_left, (int)dsp_right);
+
     wifi_sta_list_t stations = {0};
     const int children = (esp_wifi_ap_get_sta_list(&stations) == ESP_OK) ? stations.num : -1;
     ESP_LOGI(TAG, "heap: internal free=%u B largest=%u B min_ever=%u B children=%d",
@@ -887,6 +926,18 @@ static void player_task(void *arg)
         if (voice) {
             render_voice_frame(local_mono);
             chosen = local_mono;
+        } else if (s_announcement_active) {
+            /*
+             * An announcement runs somewhere in the mesh but not here --
+             * either it is not relayed this far, or its packets have not
+             * arrived yet. Music in the same room would clash with it, so
+             * this speaker stays silent. The frame above was still
+             * rendered, exactly as for a muted client: the ring keeps
+             * draining, the timeline and the drift control keep running,
+             * and playback resumes seamlessly afterwards.
+             */
+            memset(local_mono, 0, AUDIO_SINK_FRAME_SAMPLES * sizeof(local_mono[0]));
+            chosen = local_mono;
         }
 
         /*
@@ -970,6 +1021,16 @@ void audio_sink_feed_voice(const int16_t *mono, size_t mono_samples)
     }
 
     portENTER_CRITICAL(&s_voice_lock);
+    /* Queueing delay of this audio: what is already in the mailbox plays
+     * first. See audio_i2s_feed_voice(), same measurement on the server. */
+    const uint32_t wait_ms =
+        (uint32_t)(s_voice_mailbox_fill * 1000U / AUDIO_I2S_SAMPLE_RATE);
+    s_voice_wait_total_ms += wait_ms;
+    ++s_voice_wait_count;
+    if (wait_ms > s_voice_wait_max_ms) {
+        s_voice_wait_max_ms = wait_ms;
+    }
+
     /* Full: drop the oldest samples, see audio_i2s_feed_voice(). */
     if (s_voice_mailbox_fill + mono_samples > VOICE_MAILBOX_CAPACITY_SAMPLES) {
         const size_t drop =
@@ -981,6 +1042,22 @@ void audio_sink_feed_voice(const int16_t *mono, size_t mono_samples)
     }
     memcpy(s_voice_mailbox + s_voice_mailbox_fill, mono, mono_samples * sizeof(int16_t));
     s_voice_mailbox_fill += mono_samples;
+
+    /* Cut back a backlog that survives, not a single burst -- same rule and
+     * the same reasoning as audio_i2s_feed_voice(). */
+    if (s_voice_mailbox_fill > VOICE_TARGET_FILL_SAMPLES) {
+        ++s_voice_above_target;
+    } else {
+        s_voice_above_target = 0;
+    }
+    if (s_voice_above_target >= VOICE_TRIM_AFTER_FEEDS) {
+        const size_t drop = s_voice_mailbox_fill - VOICE_TARGET_FILL_SAMPLES;
+        memmove(s_voice_mailbox, s_voice_mailbox + drop,
+                (s_voice_mailbox_fill - drop) * sizeof(int16_t));
+        s_voice_mailbox_fill -= drop;
+        s_voice_dropped_samples += drop;
+        s_voice_above_target = 0;
+    }
     portEXIT_CRITICAL(&s_voice_lock);
 
     /* Outside the critical section: only decide_source() reads this, and a
@@ -1089,6 +1166,17 @@ void audio_sink_set_volume(int32_t percent, bool muted)
 
     ESP_LOGI(TAG, "Volume now %ld%%%s (gain %.3f)",
              (long)percent, muted ? " (muted)" : "", (double)gain);
+}
+
+void audio_sink_set_announcement(bool active)
+{
+    if (s_announcement_active == active) {
+        return;
+    }
+    s_announcement_active = active;
+    ESP_LOGI(TAG, "Announcement %s: music stays silent%s",
+             active ? "started" : "ended",
+             active ? " until it ends" : ", playback resumes");
 }
 
 void audio_sink_set_source_mode(uint8_t mode)

@@ -108,6 +108,18 @@ void audio_sink_set_stream_timing(uint32_t buffer_ms, int32_t latency_ms);
  */
 void audio_sink_set_volume(int32_t percent, bool muted);
 
+/*
+ * An announcement is running somewhere in the mesh (the "announcement" flag
+ * in ServerSettings). While it is, this speaker plays no music, whether or
+ * not the announcement itself reaches it -- music in the same room would
+ * clash with it. The announcement, if it arrives, is played by the overlay
+ * (audio_sink_feed_voice()) and is not affected by this.
+ *
+ * Separate from audio_sink_set_volume()'s mute, which is the listener's own
+ * setting and silences the announcement as well.
+ */
+void audio_sink_set_announcement(bool active);
+
 /* SOURCE_MODE_AUTO / _NETWORK_ONLY / _LOCAL_ONLY from device_config.h.
  * Safe to call before audio_sink_start(); the value just isn't used yet. */
 void audio_sink_set_source_mode(uint8_t mode);

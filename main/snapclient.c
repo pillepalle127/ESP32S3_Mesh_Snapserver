@@ -405,7 +405,12 @@ static int send_hello(int socket_fd)
         "\"OS\":\"esp-idf\","
         "\"Arch\":\"xtensa\","
         "\"Instance\":1,"
-        "\"SnapStreamProtocolVersion\":2"
+        "\"SnapStreamProtocolVersion\":2,"
+        /* Tells our own server that this client understands the
+         * "announcement" flag in ServerSettings and silences its music by
+         * itself, so it must not be muted outright for an announcement it
+         * may well receive. A stock Snapserver ignores the field. */
+        "\"SnapMesh\":1"
         "}",
         mac_text, client_name, client_name);
 
@@ -712,6 +717,16 @@ static void handle_server_settings(const uint8_t *payload, uint32_t size)
         const int32_t percent = cJSON_IsNumber(volume) ? (int32_t)volume->valuedouble : 100;
         audio_sink_set_volume(percent, cJSON_IsTrue(muted));
     }
+
+    /*
+     * Our own extension: an announcement is running somewhere in the mesh.
+     * Music stays silent for its duration wherever this client sits in the
+     * tree; the announcement itself plays if it reaches this node (it is
+     * relayed one hop past the root, see voice_announce.c). Missing field,
+     * e.g. from a stock Snapserver, means no announcement.
+     */
+    const cJSON *announcement = cJSON_GetObjectItemCaseSensitive(root, "announcement");
+    audio_sink_set_announcement(cJSON_IsTrue(announcement));
 
     cJSON_Delete(root);
 }

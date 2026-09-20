@@ -34,6 +34,14 @@
  * know how far ahead of the speaker the I2S write call actually is: a frame
  * handed to i2s_channel_write() is only heard once the queued DMA backlog
  * has drained, i.e. about AUDIO_I2S_TX_LATENCY_US later in steady state.
+ *
+ * These 40 ms are also the last 40 ms of an announcement's end-to-end
+ * delay, so halving them was tried (2026-09-20) and deliberately reverted:
+ * the queue is shared with the music, where it is the only cushion against
+ * a late frame from this device's own audio task -- measured frame deltas
+ * reach ~30 ms against a 20 ms tick. Buying announcement latency with the
+ * music's safety margin is the wrong trade; if those 20 ms are ever worth
+ * it, they have to be taken for the announcement alone.
  */
 #define AUDIO_I2S_DMA_DESC_NUM    8
 #define AUDIO_I2S_DMA_FRAME_NUM 240
@@ -171,6 +179,13 @@ void audio_i2s_set_voice_active(bool active);
  */
 void audio_i2s_feed_voice(const int16_t *mono, size_t mono_samples);
 
-/* Reads and clears the announcement mailbox counters: samples zero-filled
- * because it ran dry, and samples dropped because it overflowed. */
-void audio_i2s_take_voice_stats(uint32_t *underrun_samples, uint32_t *dropped_samples);
+/*
+ * Reads and clears the announcement mailbox counters: samples zero-filled
+ * because it ran dry, samples dropped because it overflowed, and how long
+ * arriving audio had to wait here before playback (average and worst case
+ * since the last call). That wait is the announcement's only variable delay
+ * on this device -- everything else in its path is a constant.
+ */
+void audio_i2s_take_voice_stats(uint32_t *underrun_samples, uint32_t *dropped_samples,
+                                uint32_t *wait_avg_ms, uint32_t *wait_max_ms);
+

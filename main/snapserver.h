@@ -75,11 +75,15 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
 size_t snapserver_get_level1_client_ips(char ips[][16], size_t max_ips);
 
 /*
- * Announcement mute (voice_announce.c). While active, every client that is
- * not level 1 is sent muted=true in its ServerSettings -- on top of the
- * control app's own mute, which stays untouched, so nothing needs restoring
- * afterwards. Level 1 is decided by MAC, not IP: behind NAPT a level-2+
- * client shows up at its level-1 parent's IP.
+ * Announcement state (voice_announce.c). While active, ServerSettings
+ * carries "announcement":true, and our own clients (they say so in their
+ * Hello) silence their music for its duration wherever they sit in the
+ * mesh, playing the announcement if it reaches them. The control app's own
+ * mute and volume are untouched and keep applying to both.
+ *
+ * A foreign Snapcast client knows no such flag, so for it the announcement
+ * is folded into muted=true unless it is level 1 -- decided by MAC, not IP,
+ * since behind NAPT a deeper client shows up at its parent's IP.
  *
  * snapserver_set_announcement() only flips the flag; it is cheap and safe
  * from any task, and a client that connects from then on gets the right
