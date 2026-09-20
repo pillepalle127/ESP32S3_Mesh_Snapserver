@@ -333,6 +333,12 @@ lieber, als auf sie zu warten.
 5. `Voice.Stop`, eine Sekunde ohne Ton, drei Minuten Gesamtdauer oder der
    Abbruch der Steuerverbindung beenden die Durchsage.
 
+Gemessene Latenz vom Mund bis zum Lautsprecher, etwa **90 ms**, aufgeteilt in
+rund 30 ms Aufnahme und Opus-Encoder im Handy, 6 ms WLAN, 10 bis 20 ms
+Sprachpuffer im ESP und 40 ms I2S-Ausgabe. Die Werte stehen in den Logzeilen
+der App (`mic_lag`, `enc_lag`, `rtt`) und der Firmware (`voice mailbox: …
+wait`).
+
 ### Reichweite und Stummschaltung
 
 Warum nur ein Hop: Jede Ebene erbt das Risiko eines sich umbauenden Meshes.
@@ -358,14 +364,29 @@ Vorpuffern.
 ### Android-App
 
 Die App liegt unter `android/SnapAnnounce` (Kotlin, Jetpack Compose, ab
-Android 8). Sie besteht aus einem verriegelnden Knopf, der Server-IP und einem
-Einstellungsmenü für Mikrofonquelle, Höchstverstärkung und Zielpegel der
-Durchsage. Aufnahme und Versand laufen in einem Vordergrunddienst weiter, auch
-bei gesperrtem Bildschirm.
+Android 8).
 
-Eine Pegelautomatik hebt leise Mikrofone an und begrenzt Spitzen, damit die
-Durchsage neben der Musik bestehen kann. Die richtigen Werte hängen von Handy
-und Raum ab und werden nach Gehör eingestellt.
+<img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce" width="320">
+
+Der Hauptbildschirm hat nur das Nötige: die Server-IP, den Status und den
+verriegelnden Knopf. Ein Druck startet die Durchsage, der nächste beendet sie.
+Aufnahme und Versand laufen in einem Vordergrunddienst weiter, auch bei
+gesperrtem Bildschirm, und solange eine Durchsage läuft hält die App eine
+WLAN-Sperre, damit Android das Funkmodul nicht schlafen legt.
+
+Hinter **Einstellungen** liegt, was einmal je Handy und Raum eingestellt und
+dann in Ruhe gelassen wird:
+
+* **Mikrofonquelle.** Vier Möglichkeiten, Standard ist „Standard-Mikrofon“.
+  Auf einem Galaxy A56 liefert „Telefonat“ nur −40 dBFS, wo das
+  Standard-Mikrofon −5 dBFS erreicht.
+* **Max. Verstärkung.** Obergrenze der Pegelautomatik. Mehr heißt lauter, aber
+  auch mehr Raum und mehr Rückkopplungsgefahr.
+* **Durchsage-Pegel.** Wie laut die Durchsage neben der Musik stehen soll. Zur
+  Orientierung: Musik erreicht die Clients mit etwa −24 bis −28 dBFS.
+
+Eine Pegelautomatik mit Begrenzer hält den eingestellten Pegel. Die richtigen
+Werte hängen von Handy und Raum ab und werden nach Gehör eingestellt.
 
 ### Grenzen
 
