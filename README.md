@@ -1,6 +1,6 @@
 # ESP32-S3 Mini Snapserver
 
-**Stand:** 2026-09-18
+**Stand:** 2026-09-20
 
 ## Projektziel
 
@@ -16,6 +16,7 @@ Als **Server** übernimmt der ESP32-S3 mehrere Aufgaben:
 * Snapcast-kompatibler Audiostream
 * TCP-Verbindung für Audio auf Port **1704**
 * JSON-RPC-Steuerung auf Port **1705**
+* Sprachdurchsagen vom Handy auf Port **1706**, siehe [Sprachdurchsagen](#sprachdurchsagen)
 * eigenständiger ESP-Mesh-Lite-Root
 * Verteilung des Audiosignals an Snapclients
 * lokale digitale Frequenzweiche für die angeschlossene Audiohardware
@@ -59,6 +60,9 @@ oder PC im laufenden Betrieb.
   mehreren erfolglosen Mesh-Boots
 * Client-Rolle (Snapcast-Empfang, Mesh-Relay) über dieselbe Web-Konfiguration
   wählbar, siehe [Client-Rolle](#client-rolle)
+* Sprachdurchsagen von einem Android-Handy über einen eigenen, ungepufferten
+  Kanal, mit automatischer Stummschaltung der Musik, siehe
+  [Sprachdurchsagen](#sprachdurchsagen)
 
 ---
 
@@ -284,6 +288,97 @@ Der ESP32-S3 stellt die für Snapcast benötigten Netzwerkdienste bereit.
 
 Damit kann sich beispielsweise ein normaler PC-Snapclient mit dem ESP32-S3 verbinden.
 
+### Fremde Snapclients
+
+Offizielle Snapclients (PC, Android, iOS) funktionieren für Musik ohne
+Einschränkung: Sie verbinden sich auf Port 1704, werden von einer
+Snapcast-Control-App wie jeder andere Client in Lautstärke und Stummschaltung
+geregelt und laufen synchron mit den ESP32-Clients.
+
+Zwei Dinge sind ihnen gegenüber anders:
+
+* **Sprachdurchsagen empfangen sie nicht.** Die laufen über einen eigenen
+  UDP-Kanal, der nicht Teil des Snapcast-Protokolls ist. Damit Musik nicht
+  gegen eine laufende Durchsage anspielt, schaltet der Server fremde Clients
+  für deren Dauer stumm (`muted` in den ServerSettings), unabhängig davon, wo
+  im Mesh sie hängen. Danach kehrt der vorherige Zustand zurück; die im
+  Control-App gesetzte Stummschaltung bleibt davon unberührt.
+* **Eigene Protokollfelder ignorieren sie.** Unsere Clients kennzeichnen sich
+  im Hello mit `"SnapMesh":1` und werten in den ServerSettings zusätzlich
+  `"announcement"` aus. Beide Felder sind Erweiterungen; ein fremder Client
+  überliest sie, und ein fremder Snapserver würde `"SnapMesh":1` ebenso
+  überlesen.
+
+---
+
+## Sprachdurchsagen
+
+Zusätzlich zur Musik kann über ein Android-Handy eine **Durchsage** gesprochen
+werden. Sie läuft bewusst nicht über den Snapcast-Stream: Der ist auf
+Lückenlosigkeit ausgelegt und puffert dafür rund drei Sekunden. Eine Durchsage
+braucht das Gegenteil, nämlich niedrige Latenz, und verwirft verspätete Pakete
+lieber, als auf sie zu warten.
+
+### Ablauf
+
+1. Die App meldet die Durchsage über die bestehende JSON-RPC-Verbindung an
+   (`Voice.Start` auf Port 1705). Über TCP, weil ein verlorenes Start- oder
+   Stoppsignal nicht passieren darf.
+2. Sie nimmt auf und sendet Opus-Pakete an **UDP Port 1706** des Servers,
+   16 kHz Mono, etwa 25 kbit/s.
+3. Der Server gibt die Durchsage auf seinem eigenen Lautsprecher aus und
+   verteilt sie an seine direkt verbundenen Clients.
+4. Jeder dieser Clients reicht sie an seine eigenen Kinder weiter, einen Hop
+   weit. Weiter entfernte Knoten bekommen sie nicht.
+5. `Voice.Stop`, eine Sekunde ohne Ton, drei Minuten Gesamtdauer oder der
+   Abbruch der Steuerverbindung beenden die Durchsage.
+
+### Reichweite und Stummschaltung
+
+Warum nur ein Hop: Jede Ebene erbt das Risiko eines sich umbauenden Meshes.
+Ein Relay kann beim Neuverbinden Sekunden stehen, was die Musik dank Puffer
+überspielt und eine Durchsage nicht. Warum überhaupt ein Hop: Clients, die
+wenige Meter vom Server entfernt nebeneinander stehen, hängen sich im Betrieb
+aneinander statt an den Server, weil der Nachbar das stärkere Signal ist. Ohne
+Weiterleitung wären sie stumm, obwohl sie im selben Raum stehen.
+
+Während einer Durchsage spielt **kein** Gerät Musik. Der Server sendet dazu in
+den ServerSettings eine eigene Flagge (`"announcement"`), und jeder unserer
+Clients hält seine Musik an, solange sie steht. Wer die Durchsage empfängt,
+gibt sie aus; wer nicht, bleibt still. Lautstärke und Stummschaltung des
+Nutzers behalten ihre Bedeutung und wirken auch auf die Durchsage: Ein leise
+gestellter Lautsprecher gibt auch die Durchsage leiser wieder, ein
+stummgeschalteter bleibt stumm.
+
+Nach dem Ende läuft die Musik sofort weiter. Der Stream wird währenddessen
+nämlich nicht angehalten, sondern nur nicht ausgegeben. Dadurch bleiben
+Ringpuffer und Zeitachse intakt, und es entsteht keine Wartezeit für neues
+Vorpuffern.
+
+### Android-App
+
+Die App liegt unter `android/SnapAnnounce` (Kotlin, Jetpack Compose, ab
+Android 8). Sie besteht aus einem verriegelnden Knopf, der Server-IP und einem
+Einstellungsmenü für Mikrofonquelle, Höchstverstärkung und Zielpegel der
+Durchsage. Aufnahme und Versand laufen in einem Vordergrunddienst weiter, auch
+bei gesperrtem Bildschirm.
+
+Eine Pegelautomatik hebt leise Mikrofone an und begrenzt Spitzen, damit die
+Durchsage neben der Musik bestehen kann. Die richtigen Werte hängen von Handy
+und Raum ab und werden nach Gehör eingestellt.
+
+### Grenzen
+
+* **Keine Echounterdrückung gegenüber den Lautsprechern.** Androids
+  Echounterdrückung kennt nur die eigene Telefonwiedergabe. Steht der Sprecher
+  neben einem Lautsprecher, hallt es. Abhilfe: Handy nah an den Mund, weg von
+  den Lautsprechern.
+* **Knoten tiefer als einen Hop hinter dem Server bleiben stumm**, sie hören
+  weder Musik noch Durchsage.
+* **Eine Durchsage zur Zeit.** Ein zweites `Voice.Start` wird mit `busy`
+  abgelehnt.
+* **Das Handy muss im Mesh-WLAN sein**, am besten direkt am Server.
+
 ---
 
 ## Zeitbasis
@@ -318,6 +413,20 @@ Provisioning-AP zurück statt dauerhaft unerreichbar zu bleiben.
 Weitere Geräte können dem Mesh als **Client** beitreten und dort empfangenes
 Audio wiedergeben, siehe [Client-Rolle](#client-rolle).
 
+### Ports
+
+| Port | Protokoll | Zweck |
+| --- | --- | --- |
+| 80 | TCP | Web-Konfiguration |
+| 1704 | TCP | Snapcast-Audiostream |
+| 1705 | TCP | Snapcast JSON-RPC, dazu `Voice.Start`/`Voice.Stop` |
+| 1706 | UDP | Sprachdurchsagen, Handy → Server → Clients |
+
+Die Ebenen des Meshes sind durch NAPT getrennt. Ein Gerät ab Ebene 2 ist
+deshalb vom Server aus nicht direkt adressierbar und erscheint dort unter der
+Adresse seines Elternknotens. Aus demselben Grund reicht bei Durchsagen jeder
+Knoten selbst an seine Kinder weiter, statt dass der Server sie anspricht.
+
 ---
 
 ## Projektstruktur
@@ -325,20 +434,27 @@ Audio wiedergeben, siehe [Client-Rolle](#client-rolle).
 Die wichtigsten Komponenten befinden sich unter anderem in:
 
 ```text
-components/
-├── audio_i2s/
-│   ├── CMakeLists.txt
-│   ├── audio_i2s.c
-│   └── include/
-│
-├── ...
-│
 main/
-├── ...
-│
-CMakeLists.txt
-sdkconfig
-README.md
+├── app_main.c            Rollenwahl und Start
+├── audio_i2s.c           I2S, Mono-Mischung, Frequenzweiche
+├── audio_opus.c          Opus-Encoder (Server)
+├── audio_sink.c          Wiedergabe, Quellenwahl, Drift (Client)
+├── audio_resample.c      Feinregelung der Abspielrate
+├── snapserver.c          Snapcast-Server, Port 1704
+├── snapclient.c          Snapcast-Client
+├── snapcontrol.c         JSON-RPC, Port 1705
+├── voice_announce.c      Sprachdurchsagen, UDP 1706
+├── mesh_root.c           Mesh als Root (Server)
+├── mesh_client.c         Mesh-Beitritt als Relay (Client)
+├── webconfig.c           Konfigurationsseite, Port 80
+├── device_config.c       Einstellungen im NVS
+├── provisioning.c        Provisioning-AP
+├── status_led.c          Status-LED
+└── cpu_stats.c           Diagnose: CPU-Last je Task
+
+android/SnapAnnounce/     Android-App für Durchsagen
+tools/                    Hilfsskripte
+docs/                     Notizen und Screenshots
 ```
 
 Die genaue Struktur kann sich während der Entwicklung noch ändern.
@@ -394,6 +510,21 @@ Build und Monitor können auch kombiniert werden:
 idf.py flash monitor
 ```
 
+### Android-App
+
+Am einfachsten über Android Studio: `android/SnapAnnounce` öffnen und
+ausführen. Auf der Kommandozeile mit einem installierten Gradle 8.13 und
+JDK 21:
+
+```bash
+cd android/SnapAnnounce
+JAVA_HOME=/pfad/zu/jdk-21 gradle assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+Das Wrapper-Skript `gradlew` liegt nicht im Repository, nur
+`gradle/wrapper/gradle-wrapper.properties` mit der erwarteten Version.
+
 ---
 
 
@@ -423,6 +554,10 @@ Der Schwerpunkt liegt derzeit auf:
 * DSP-Frequenzweiche
 * zuverlässiger I2S-Verarbeitung
 * möglichst geringer zusätzlicher Latenz
+* Sprachdurchsagen: Pegel, Reichweite im Mesh und Stabilität der Relays
+
+Offene Punkte und Messergebnisse aus dem Gerätebetrieb stehen in
+[TODO.md](TODO.md).
 
 Änderungen an Audioformat, Buffergrößen, Filterparametern und Netzwerkverhalten sind während der Entwicklung möglich.
 
