@@ -146,6 +146,19 @@ void audio_i2s_take_output_peak(int16_t *left, int16_t *right);
 void audio_i2s_take_led_peak(int16_t *left, int16_t *right);
 
 /*
+ * Deviation of this device's I2S clock from AUDIO_I2S_SAMPLE_RATE, in ppm,
+ * measured against esp_timer since the first frame written out. Positive means
+ * the I2S unit runs fast.
+ *
+ * Diagnostic for playback sync: server and clients each run their own
+ * crystal and divider, and the client's drift control can only correct
+ * +-200 ppm of the difference. Comparing this number between a server and
+ * its clients says whether a standing offset is a clock difference or
+ * something in the timeline.
+ */
+int32_t audio_i2s_clock_ppm(void);
+
+/*
  * Runs the mono input through the LR4 crossover (or bypasses it) and writes
  * the resulting sub/wideband pair to the TX side -- just the DSP+output half
  * of audio_i2s_read_frame(). Used by the client role (audio_sink.c) to play

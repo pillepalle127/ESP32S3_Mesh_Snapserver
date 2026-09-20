@@ -151,6 +151,10 @@ static uint32_t s_dsp_generation;
 static int64_t s_stream_anchor_us;
 static int64_t s_samples_captured;
 
+/* Clock check, see apply_dsp_and_output() and audio_i2s_clock_ppm(). */
+static int64_t s_rate_anchor_us;
+static int64_t s_rate_samples;
+
 /*
  * Output delay line for the server's own speaker (see
  * audio_i2s_set_output_delay()). Samples are written at s_delay_write and
@@ -466,14 +470,31 @@ esp_err_t audio_i2s_set_output_delay(uint32_t delay_ms, uint32_t max_delay_ms)
         (size_t)(AUDIO_I2S_TX_LATENCY_US * AUDIO_I2S_SAMPLE_RATE / 1000000LL);
     samples = (samples > tx_queue_samples) ? (samples - tx_queue_samples) : 0U;
 
+    /*
+     * And minus two frames. One of them is explained: a chunk is
+     * timestamped at the instant its frame *starts*, and the clients play
+     * it that many ms after that instant, while these samples only reach
+     * the delay line once the frame has been captured in full.
+     *
+     * The second was set by ear (2026-09-20): with only the first one the
+     * server still trailed audibly. What it stands for is not pinned down
+     * -- candidates are the Opus encoder's lookahead and the client's own
+     * frame assembly. Since it was tuned rather than derived, it is the
+     * first thing to revisit if the speakers ever need realigning.
+     */
+    samples = (samples > 2U * MAX_FRAME_SAMPLES) ? (samples - 2U * MAX_FRAME_SAMPLES) : 0U;
+
     if (samples > s_delay_capacity) {
         samples = s_delay_capacity;
     }
     s_delay_samples = samples;
 
-    ESP_LOGI(TAG, "Local output delayed by %u ms (%u samples, %u ms of it the TX queue)",
+    ESP_LOGI(TAG,
+             "Local output delayed by %u ms (%u samples; %u ms TX queue and "
+             "%u ms of frames taken off)",
              (unsigned)delay_ms, (unsigned)samples,
-             (unsigned)(AUDIO_I2S_TX_LATENCY_US / 1000));
+             (unsigned)(AUDIO_I2S_TX_LATENCY_US / 1000),
+             (unsigned)(2U * MAX_FRAME_SAMPLES * 1000U / AUDIO_I2S_SAMPLE_RATE));
     return ESP_OK;
 }
 
@@ -645,6 +666,27 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     }
     portEXIT_CRITICAL(&s_dsp_lock);
 
+    /*
+     * Clock check, counted here rather than on the capture side: both roles
+     * write exactly one frame per audio tick, while a client only *reads*
+     * when its player loop gets that far. Counting reads made the clients
+     * look 1200-1500 ppm slow where the server showed -180, which was the
+     * measurement, not the clock (2026-09-20).
+     *
+     * What it measures: the I2S unit's own rate against esp_timer. Both
+     * derive from the same crystal, so a crystal error cancels out and what
+     * is left is the divider's error against 48 kHz. Comparing the number
+     * between server and clients says whether a standing playback offset is
+     * a clock difference -- the drift control can only correct +-200 ppm of
+     * one -- or something in the timeline.
+     */
+    if (s_rate_anchor_us == 0) {
+        s_rate_anchor_us = esp_timer_get_time();
+        s_rate_samples = 0;
+    } else {
+        s_rate_samples += (int64_t)mono_samples;
+    }
+
     const size_t stereo_bytes =
         mono_samples * OUTPUT_CHANNELS * sizeof(int16_t);
     size_t bytes_written = 0;
@@ -668,6 +710,28 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     }
 
     return ESP_OK;
+}
+
+int32_t audio_i2s_clock_ppm(void)
+{
+    const int64_t anchor = s_rate_anchor_us;
+    const int64_t samples = s_rate_samples;
+    if (anchor == 0 || samples < AUDIO_I2S_SAMPLE_RATE) {
+        return 0; /* less than a second of audio, too short to mean much */
+    }
+
+    const int64_t elapsed_us = esp_timer_get_time() - anchor;
+    if (elapsed_us <= 0) {
+        return 0;
+    }
+
+    /* How many samples the timer says should have arrived, against how many
+     * did. Positive means the I2S clock runs fast. */
+    const int64_t expected = elapsed_us * AUDIO_I2S_SAMPLE_RATE / 1000000LL;
+    if (expected == 0) {
+        return 0;
+    }
+    return (int32_t)((samples - expected) * 1000000LL / expected);
 }
 
 void audio_i2s_take_led_peak(int16_t *left, int16_t *right)

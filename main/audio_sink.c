@@ -128,7 +128,13 @@ static const char *TAG = "AUDIO_SINK";
  */
 #define CONTROL_KP 0.0015f
 #define CONTROL_KI 0.00002f
-#define CONTROL_INTEGRAL_CLAMP_PPM 100.0f
+/*
+ * The integral term carries whatever standing rate difference exists, so
+ * it must not be the narrower of the two limits -- held at 100 ppm it
+ * would cap the correction no matter how wide AUDIO_RESAMPLE_MAX_PPM was.
+ * Same value as that limit.
+ */
+#define CONTROL_INTEGRAL_CLAMP_PPM 500.0f
 /* Maximum ppm change per 20 ms frame, so corrections ramp instead of step. */
 #define CONTROL_SLEW_PPM_PER_FRAME 5.0f
 
@@ -552,8 +558,8 @@ static void maybe_log_stats(float output_rms_db)
     int16_t dsp_left = 0;
     int16_t dsp_right = 0;
     audio_i2s_take_output_peak(&dsp_left, &dsp_right);
-    ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767)",
-             (int)dsp_left, (int)dsp_right);
+    ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767), I2S clock %+ld ppm",
+             (int)dsp_left, (int)dsp_right, (long)audio_i2s_clock_ppm());
 
     wifi_sta_list_t stations = {0};
     const int children = (esp_wifi_ap_get_sta_list(&stations) == ESP_OK) ? stations.num : -1;

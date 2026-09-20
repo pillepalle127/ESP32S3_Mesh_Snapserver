@@ -13,10 +13,21 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Control range the caller may request. Wider than any realistic crystal
- * pair (2 x +-20 ppm) so there is headroom to catch up after a resync,
- * still far below the point where pitch shift becomes audible. */
-#define AUDIO_RESAMPLE_MAX_PPM 200
+/*
+ * Control range the caller may request.
+ *
+ * 200 ppm was chosen for a crystal pair (2 x +-20 ppm) plus headroom. On
+ * device the controller was seen sitting at that limit while the playback
+ * error grew past 70 ms, until a hard resync jumped it back -- audible as
+ * the speakers drifting apart and then snapping into place. In steady
+ * state, though, the clients settle at well under 50 ppm, so the limit is
+ * about catching up, not about a standing rate difference.
+ *
+ * 500 ppm gives that headroom without inventing a rate difference nobody
+ * has measured: 0.05 % is under a cent of pitch, inaudible, and the
+ * scheduler only ever asks for what the error actually needs.
+ */
+#define AUDIO_RESAMPLE_MAX_PPM 500
 
 typedef struct {
     uint64_t phase; /* 32.32 position of the next output sample */
