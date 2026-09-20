@@ -31,6 +31,10 @@ static const char *TAG = "AUDIO_I2S";
  */
 #define TIMESTAMP_RESYNC_THRESHOLD_US 100000LL
 
+/* How far ahead of bufferMs the server's own speaker plays, on top of the
+ * TX queue. See audio_i2s_set_output_delay() for what it is made of. */
+#define SERVER_LEAD_MS 20U
+
 typedef struct {
     float b0;
     float b1;
@@ -471,18 +475,23 @@ esp_err_t audio_i2s_set_output_delay(uint32_t delay_ms, uint32_t max_delay_ms)
     samples = (samples > tx_queue_samples) ? (samples - tx_queue_samples) : 0U;
 
     /*
-     * And minus two frames. One of them is explained: a chunk is
-     * timestamped at the instant its frame *starts*, and the clients play
-     * it that many ms after that instant, while these samples only reach
-     * the delay line once the frame has been captured in full.
+     * And minus SERVER_LEAD_MS on top of that. 20 ms of it are explained: a
+     * chunk is timestamped at the instant its frame *starts*, and the
+     * clients play it that many ms after that instant, while these samples
+     * only reach the delay line once the frame has been captured in full.
      *
-     * The second was set by ear (2026-09-20): with only the first one the
-     * server still trailed audibly. What it stands for is not pinned down
-     * -- candidates are the Opus encoder's lookahead and the client's own
-     * frame assembly. Since it was tuned rather than derived, it is the
-     * first thing to revisit if the speakers ever need realigning.
+     * Nothing beyond that. 30, 40 and 50 ms were each tried by ear and all
+     * of them sounded worse, so the derived value stands. Tuning further by
+     * ear went nowhere, which is no surprise: the clients' drift control
+     * moves their playback by more than these steps -- the error swings by
+     * tens of ms and a hard resync shifts it in one go -- so the target was
+     * never still. Anything more here needs a measurement of when a known
+     * marker actually leaves each speaker, not another listening pass.
+     * delay_trim_ms is gone from the server, so this is the only handle.
      */
-    samples = (samples > 2U * MAX_FRAME_SAMPLES) ? (samples - 2U * MAX_FRAME_SAMPLES) : 0U;
+    const size_t lead_samples =
+        (size_t)SERVER_LEAD_MS * (AUDIO_I2S_SAMPLE_RATE / 1000U);
+    samples = (samples > lead_samples) ? (samples - lead_samples) : 0U;
 
     if (samples > s_delay_capacity) {
         samples = s_delay_capacity;
@@ -491,10 +500,10 @@ esp_err_t audio_i2s_set_output_delay(uint32_t delay_ms, uint32_t max_delay_ms)
 
     ESP_LOGI(TAG,
              "Local output delayed by %u ms (%u samples; %u ms TX queue and "
-             "%u ms of frames taken off)",
+             "%u ms lead taken off)",
              (unsigned)delay_ms, (unsigned)samples,
              (unsigned)(AUDIO_I2S_TX_LATENCY_US / 1000),
-             (unsigned)(2U * MAX_FRAME_SAMPLES * 1000U / AUDIO_I2S_SAMPLE_RATE));
+             (unsigned)SERVER_LEAD_MS);
     return ESP_OK;
 }
 

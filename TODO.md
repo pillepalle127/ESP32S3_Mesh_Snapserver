@@ -498,11 +498,20 @@ Bugs sind umgesetzt:
   2. **20 ms Framelänge.** Ein Chunk wird auf den *Anfang* seines Frames
      gestempelt, erreicht die Verzögerungsleitung aber erst, wenn der Frame
      vollständig aufgenommen ist. Ebenfalls dort abgezogen.
-  3. **Weitere 20 ms, nach Gehör gesetzt.** Nicht hergeleitet. Kandidaten
-     sind die Vorausschau des Opus-Encoders (~6,5 ms) und der Frameaufbau
-     im Client. **Das ist die erste Stelle, an der man drehen sollte**,
-     falls die Lautsprecher je neu auszurichten sind. `delay_trim_ms` steht
-     dafür nicht mehr zur Verfügung, es ist im Server ausgebaut.
+  3. **Kein weiterer Zuschlag.** `SERVER_LEAD_MS` steht auf 20 ms, also
+     genau dem hergeleiteten Wert aus Punkt 2. Nach Gehör wurden 30, 40 und
+     50 ms probiert, alle klangen schlechter.
+
+     **Weiteres Einstellen nach Gehör ist sinnlos**, solange die Clients
+     ihre Wiedergabe selbst um mehr verschieben, als diese Schritte groß
+     sind: Der Regelfehler schwankt um zehn und mehr Millisekunden, und ein
+     harter Resync verschiebt ihn in einem Sprung. Für eine echte Aussage
+     bräuchte es eine Messung, wann ein bekanntes Signal tatsächlich jeden
+     Lautsprecher verlässt. Kandidaten für einen echten Restversatz sind
+     die Vorausschau des Opus-Encoders (~6,5 ms) und der Frameaufbau im
+     Client. **Das ist die erste Stelle, an der man drehen sollte**, falls
+     die Lautsprecher je neu auszurichten sind. `delay_trim_ms` steht dafür
+     nicht mehr zur Verfügung, es ist im Server ausgebaut.
 
   **Drift-Regelung:** `AUDIO_RESAMPLE_MAX_PPM` und
   `CONTROL_INTEGRAL_CLAMP_PPM` standen auf 200 bzw. 100 ppm. Beobachtet
