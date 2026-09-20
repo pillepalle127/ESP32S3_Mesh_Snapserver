@@ -489,6 +489,52 @@ Bugs sind umgesetzt:
     ist eingespielt, die anderen drei greifen in ESP-IDF 5.4.3 nicht.
     Vermutung: dort schon enthalten. Nicht geprüft.
 
+- **Wiedergabe-Synchronität Server gegen Clients (2026-09-20).** Der Server
+  lag hörbar hinter seinen Clients. Drei Ursachen, zwei davon hergeleitet,
+  eine nach Gehör:
+  1. **40 ms TX-Warteschlange.** Die Clients planen ihre Wiedergabe um
+     `AUDIO_I2S_TX_LATENCY_US` früher, die Verzögerungsleitung des Servers
+     tat das nicht. Behoben in `audio_i2s_set_output_delay()`.
+  2. **20 ms Framelänge.** Ein Chunk wird auf den *Anfang* seines Frames
+     gestempelt, erreicht die Verzögerungsleitung aber erst, wenn der Frame
+     vollständig aufgenommen ist. Ebenfalls dort abgezogen.
+  3. **Weitere 20 ms, nach Gehör gesetzt.** Nicht hergeleitet. Kandidaten
+     sind die Vorausschau des Opus-Encoders (~6,5 ms) und der Frameaufbau
+     im Client. **Das ist die erste Stelle, an der man drehen sollte**,
+     falls die Lautsprecher je neu auszurichten sind. `delay_trim_ms` steht
+     dafür nicht mehr zur Verfügung, es ist im Server ausgebaut.
+
+  **Drift-Regelung:** `AUDIO_RESAMPLE_MAX_PPM` und
+  `CONTROL_INTEGRAL_CLAMP_PPM` standen auf 200 bzw. 100 ppm. Beobachtet
+  wurde, wie die Regelung am Anschlag klebte, während der Fehler auf über
+  70 ms wuchs und dann per hartem Resync zurücksprang. Beide stehen jetzt
+  auf 500 ppm. Im eingeschwungenen Zustand braucht die Regelung nur
+  einstellige bis niedrige zweistellige ppm, die Grenze ist also Reserve
+  zum Aufholen, keine Dauerkorrektur.
+
+- **`audio_i2s_clock_ppm()` ist unzuverlässig (2026-09-20).** Die Funktion
+  soll den I2S-Takt gegen `esp_timer` messen. Ihre Werte schwanken zwischen
+  Läufen desselben Geräts um mehrere hundert ppm (Server einmal −600, dann
+  −295), was ein Quarz nicht tut. Ursache vermutlich der Ankerzeitpunkt vor
+  dem eingeschwungenen Zustand. Auf einer früheren Fassung, die im
+  Aufnahmepfad statt im Ausgabepfad zählte, waren die Werte noch stärker
+  verfälscht, weil ein Client nicht in jedem Durchlauf liest.
+
+  **Konsequenz: Die daraus abgeleitete Behauptung, der Server laufe ~870 ppm
+  neben seinen Clients, ist nicht belegt.** Entweder die Messung reparieren
+  (Anker erst nach einigen Sekunden setzen, über ein gleitendes Fenster
+  statt seit dem Start rechnen) oder sie wieder entfernen.
+
+- **Akustische Artefakte im Eingangssignal (2026-09-20, ungeklärt).** Traten
+  gleichzeitig auf Server und allen Clients auf, nur bei laufendem Stream,
+  und verschwanden nach einigen Minuten von selbst. Der Server-Lautsprecher
+  hängt nicht am Netzwerk, sein Signal kommt direkt vom I2S-Eingang: Mesh,
+  Snapcast, Ringpuffer, Drift-Regelung und Durchsage-Pfad scheiden damit
+  aus, die Störung steckt bereits im aufgenommenen Signal. Zähler zeigten
+  nichts (`underrun=0`, `skipped=0`, keine Clipping-Spitzen, Peaks bei
+  13000–18000 von 32767). Zum Eingrenzen fehlt eine feinere Messung des
+  Eingangspegels, etwa die Zahl der Frames je Sekunde unter einer Schwelle.
+
 - **Durchsage-App: Standort-Berechtigung wieder entfernen (vorgemerkt
   2026-09-19, auf Nutzerwunsch; noch nicht umgesetzt, nur geplant).** Damit
   die App erkennt, ob das Handy direkt am Root hängt, würde sie die BSSID
