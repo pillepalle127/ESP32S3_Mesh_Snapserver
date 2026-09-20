@@ -29,14 +29,18 @@ import kotlin.math.tanh
  *  - It starts at startGainDb, so the first words aren't quiet while the
  *    gain is still climbing.
  *
- * The defaults are deliberately moderate. -14 dBFS / +42 dB was tried and
- * overdrove: the limiter worked hard on every loud syllable, and at that
- * much gain the phone picked up the room and the speakers' own delayed
- * output nearly as strongly as the voice -- audible as echo. The ceiling is
- * set by ear in the app (SettingsStore.maxGainDb).
+ * Both knobs are set by ear in the app (SettingsStore), because the right
+ * values depend on the phone's microphone and on how loud the music is:
+ *  - targetRmsDbfs decides how loud the announcement is next to the music.
+ *    Measured on device (2026-09-20): music arrives at the clients at -24
+ *    to -28 dBFS RMS, so the announcement has to land in that region.
+ *  - maxGainDb caps how far a quiet microphone may be lifted. Too much and
+ *    the phone picks up the room and the speakers' own delayed output
+ *    nearly as strongly as the voice -- audible as echo. -14 dBFS with
+ *    +42 dB was tried and overdrove badly.
  */
 class VoiceAgc(
-    targetRmsDbfs: Double = -18.0,
+    targetRmsDbfs: Double = -12.0,
     private val maxGainDb: Double = 24.0,
     gateDbfs: Double = -60.0,
     private val attackDbPerFrame: Double = 3.0,

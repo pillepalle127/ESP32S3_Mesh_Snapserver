@@ -22,14 +22,17 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.ui.semantics.Role
 import kotlin.math.roundToInt
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -41,6 +44,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -102,6 +107,8 @@ class MainActivity : ComponentActivity() {
                     onMicSourceChange = { settings.micSource = it },
                     initialMaxGainDb = settings.maxGainDb,
                     onMaxGainChange = { settings.maxGainDb = it },
+                    initialTargetRmsDbfs = settings.targetRmsDbfs,
+                    onTargetRmsChange = { settings.targetRmsDbfs = it },
                     onToggle = { armed ->
                         when {
                             armed -> stopAnnouncement()
@@ -170,11 +177,17 @@ private fun AnnounceScreen(
     onMicSourceChange: (Int) -> Unit,
     initialMaxGainDb: Int,
     onMaxGainChange: (Int) -> Unit,
+    initialTargetRmsDbfs: Int,
+    onTargetRmsChange: (Int) -> Unit,
     onToggle: (armed: Boolean) -> Unit,
 ) {
     var host by remember { mutableStateOf(initialHost) }
     var micSource by remember { mutableStateOf(initialMicSource) }
     var maxGainDb by remember { mutableStateOf(initialMaxGainDb) }
+    var targetRmsDbfs by remember { mutableStateOf(initialTargetRmsDbfs) }
+    /* Everything that is set once and then left alone lives behind this,
+     * so the screen one actually uses is the button and nothing else. */
+    var showSettings by remember { mutableStateOf(false) }
     val armed = uiState.state == AnnounceState.CONNECTING || uiState.state == AnnounceState.ON_AIR
 
     Scaffold { padding ->
@@ -213,57 +226,38 @@ private fun AnnounceScreen(
                 },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(120.dp),
+                    .height(160.dp),
             ) {
-                Text(
-                    text = if (armed) "Durchsage beenden" else "Durchsage starten",
-                    style = MaterialTheme.typography.titleLarge,
-                )
-            }
-
-            // Changes apply to the next announcement; locked while one runs.
-            Text("Mikrofon", style = MaterialTheme.typography.titleMedium,
-                 modifier = Modifier.fillMaxWidth())
-            for ((source, label) in MIC_SOURCES) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .selectable(
-                            selected = micSource == source,
-                            enabled = !armed,
-                            role = Role.RadioButton,
-                            onClick = {
-                                micSource = source
-                                onMicSourceChange(source)
-                            },
-                        ),
+                /* The logo carries the button; the label only says what a
+                 * press does now. Tinted to the button's content colour so
+                 * the black artwork stays readable on both the idle and the
+                 * red "on air" background. */
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    RadioButton(selected = micSource == source, onClick = null, enabled = !armed)
-                    Text(label, style = MaterialTheme.typography.bodyMedium,
-                         modifier = Modifier.padding(start = 8.dp))
+                    Image(
+                        painter = painterResource(R.drawable.cm_logo),
+                        contentDescription = null,
+                        colorFilter = ColorFilter.tint(
+                            if (armed) {
+                                MaterialTheme.colorScheme.onError
+                            } else {
+                                MaterialTheme.colorScheme.onPrimary
+                            }
+                        ),
+                        modifier = Modifier.height(84.dp),
+                    )
+                    Text(
+                        text = if (armed) "Durchsage beenden" else "Durchsage starten",
+                        style = MaterialTheme.typography.titleLarge,
+                    )
                 }
             }
 
-            Text(
-                "Max. Verstärkung: $maxGainDb dB",
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Slider(
-                value = maxGainDb.toFloat(),
-                onValueChange = { maxGainDb = (it / 3f).roundToInt() * 3 },
-                onValueChangeFinished = { onMaxGainChange(maxGainDb) },
-                valueRange = 0f..SettingsStore.MAX_GAIN_LIMIT_DB.toFloat(),
-                steps = SettingsStore.MAX_GAIN_LIMIT_DB / 3 - 1,
-                enabled = !armed,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Text(
-                "Mehr Verstärkung = lauter, aber auch mehr Hall und Rückkopplung. " +
-                    "Handy nah an den Mund halten, von den Lautsprechern weg.",
-                style = MaterialTheme.typography.bodySmall,
-            )
+            TextButton(onClick = { showSettings = true }, enabled = !armed) {
+                Text("Einstellungen")
+            }
 
             Text(
                 "Das Handy muss mit dem Mesh-WLAN verbunden sein, möglichst direkt " +
@@ -272,16 +266,121 @@ private fun AnnounceScreen(
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+
+        if (showSettings) {
+            SettingsDialog(
+                micSource = micSource,
+                onMicSourceChange = {
+                    micSource = it
+                    onMicSourceChange(it)
+                },
+                maxGainDb = maxGainDb,
+                onMaxGainChange = {
+                    maxGainDb = it
+                    onMaxGainChange(it)
+                },
+                targetRmsDbfs = targetRmsDbfs,
+                onTargetRmsChange = {
+                    targetRmsDbfs = it
+                    onTargetRmsChange(it)
+                },
+                onDismiss = { showSettings = false },
+            )
+        }
     }
 }
 
 /** Selectable microphone sources, see SettingsStore.micSource. */
 private val MIC_SOURCES = listOf(
-    MediaRecorder.AudioSource.VOICE_COMMUNICATION to "Telefonat (Rauschunterdrückung)",
     MediaRecorder.AudioSource.MIC to "Standard-Mikrofon",
-    MediaRecorder.AudioSource.VOICE_RECOGNITION to "Spracherkennung (unbearbeitet)",
     MediaRecorder.AudioSource.UNPROCESSED to "Roh (ohne jede Bearbeitung)",
+    MediaRecorder.AudioSource.VOICE_RECOGNITION to "Spracherkennung (unbearbeitet)",
+    MediaRecorder.AudioSource.VOICE_COMMUNICATION to "Telefonat (leise, Rauschunterdrückung)",
 )
+
+/*
+ * Set once for a given phone and room, then left alone -- so it lives here
+ * rather than on the screen one reaches for to make an announcement.
+ */
+@Composable
+private fun SettingsDialog(
+    micSource: Int,
+    onMicSourceChange: (Int) -> Unit,
+    maxGainDb: Int,
+    onMaxGainChange: (Int) -> Unit,
+    targetRmsDbfs: Int,
+    onTargetRmsChange: (Int) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var gain by remember { mutableStateOf(maxGainDb) }
+    var target by remember { mutableStateOf(targetRmsDbfs) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Fertig") } },
+        title = { Text("Einstellungen") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("Mikrofon", style = MaterialTheme.typography.titleMedium)
+                for ((source, label) in MIC_SOURCES) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = micSource == source,
+                                role = Role.RadioButton,
+                                onClick = { onMicSourceChange(source) },
+                            ),
+                    ) {
+                        RadioButton(selected = micSource == source, onClick = null)
+                        Text(label, style = MaterialTheme.typography.bodyMedium,
+                             modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+
+                Text("Max. Verstärkung: $gain dB",
+                     style = MaterialTheme.typography.titleMedium)
+                Slider(
+                    value = gain.toFloat(),
+                    onValueChange = { gain = (it / 3f).roundToInt() * 3 },
+                    onValueChangeFinished = { onMaxGainChange(gain) },
+                    valueRange = 0f..SettingsStore.MAX_GAIN_LIMIT_DB.toFloat(),
+                    steps = SettingsStore.MAX_GAIN_LIMIT_DB / 3 - 1,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "Mehr Verstärkung = lauter, aber auch mehr Hall und " +
+                        "Rückkopplung. Handy nah an den Mund halten, von den " +
+                        "Lautsprechern weg.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
+                Text("Durchsage-Pegel: $target dBFS",
+                     style = MaterialTheme.typography.titleMedium)
+                Slider(
+                    value = target.toFloat(),
+                    onValueChange = { target = (it / 2f).roundToInt() * 2 },
+                    onValueChangeFinished = { onTargetRmsChange(target) },
+                    valueRange = SettingsStore.MIN_TARGET_RMS_DBFS.toFloat()..
+                        SettingsStore.MAX_TARGET_RMS_DBFS.toFloat(),
+                    steps = (SettingsStore.MAX_TARGET_RMS_DBFS -
+                        SettingsStore.MIN_TARGET_RMS_DBFS) / 2 - 1,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Text(
+                    "So laut soll die Durchsage sein. Die Musik kommt bei den " +
+                        "Clients mit etwa -24 bis -28 dBFS an. Höher heißt lauter, " +
+                        "aber auch stärker zusammengedrückt.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        },
+    )
+}
 
 @Composable
 private fun StatusLine(uiState: UiState) {

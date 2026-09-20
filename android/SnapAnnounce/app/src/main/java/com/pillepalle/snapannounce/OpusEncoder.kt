@@ -30,6 +30,18 @@ class OpusEncoder(private val sampleRate: Int, bitrate: Int) {
     private val info = MediaCodec.BufferInfo()
     private val out = ByteArray(1275)
     private var samplesIn = 0L
+    private var samplesOut = 0L
+
+    /**
+     * Audio handed in but not yet handed back, in milliseconds -- the delay
+     * the encoder itself adds. Part of it is Opus' own frame and lookahead,
+     * the rest is however much MediaCodec keeps in flight, which is not
+     * documented and differs between devices. Measured because it sits in
+     * the announcement's end-to-end latency, which is the whole point of
+     * this path.
+     */
+    val backlogMs: Double
+        get() = (samplesIn - samplesOut) * 1000.0 / sampleRate
 
     init {
         val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_OPUS, sampleRate, 1).apply {
@@ -69,6 +81,11 @@ class OpusEncoder(private val sampleRate: Int, bitrate: Int) {
             if (outIndex < 0) break
 
             val isConfig = (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
+            if (!isConfig) {
+                /* One packet is one Opus frame; 20 ms is what this encoder
+                 * produces at every rate we use. */
+                samplesOut += sampleRate / 50
+            }
             if (!isConfig && info.size in 1..out.size) {
                 val output = codec.getOutputBuffer(outIndex)
                 if (output != null) {

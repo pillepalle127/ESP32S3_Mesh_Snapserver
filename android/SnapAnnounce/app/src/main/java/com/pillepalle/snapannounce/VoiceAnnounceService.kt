@@ -10,11 +10,14 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioFormat
 import android.media.AudioRecord
+import android.media.AudioTimestamp
 import android.media.MediaRecorder
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Binder
 import android.os.IBinder
 import android.os.Process
@@ -85,6 +88,8 @@ class VoiceAnnounceService : Service() {
 
     private var announceJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
+    private lateinit var wifi: WifiManager
+    private var wifiLock: WifiManager.WifiLock? = null
 
     @Volatile private var capturing = false
     @Volatile private var stopReason: String? = null
@@ -93,7 +98,44 @@ class VoiceAnnounceService : Service() {
         super.onCreate()
         settings = SettingsStore(this)
         connectivity = getSystemService(ConnectivityManager::class.java)
+        wifi = getSystemService(WifiManager::class.java)
         createNotificationChannel()
+    }
+
+    /**
+     * Keeps the Wi-Fi radio awake and on the low-latency path while an
+     * announcement runs.
+     *
+     * Without this, Android is free to put the radio into power save, which
+     * parks outgoing packets until the next beacon and delivers them in
+     * bursts -- exactly the kind of delay this path cannot buffer away.
+     * WIFI_MODE_FULL_LOW_LATENCY (Android 10+) additionally asks the driver
+     * to favour latency over throughput; it costs battery and is therefore
+     * held only for the duration of an announcement.
+     */
+    private fun acquireWifiLock() {
+        if (wifiLock != null) {
+            return
+        }
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            @Suppress("DEPRECATION")
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        wifiLock = wifi.createWifiLock(mode, "SnapAnnounce:voice").apply {
+            setReferenceCounted(false)
+            acquire()
+        }
+    }
+
+    private fun releaseWifiLock() {
+        wifiLock?.let {
+            if (it.isHeld) {
+                it.release()
+            }
+        }
+        wifiLock = null
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -230,7 +272,8 @@ class VoiceAnnounceService : Service() {
         }
 
         val captureError = withContext(Dispatchers.IO) {
-            captureAndSend(host, network, settings.micSource, settings.maxGainDb)
+            captureAndSend(host, network, settings.micSource, settings.maxGainDb,
+                           settings.targetRmsDbfs)
         }
         ticker.cancel()
         capturing = false
@@ -257,7 +300,8 @@ class VoiceAnnounceService : Service() {
      * [capturing] was cleared, or an error message if it could not run.
      */
     @SuppressLint("MissingPermission") // checked by MainActivity before starting
-    private fun captureAndSend(host: String, network: Network, micSource: Int, maxGainDb: Int): String? {
+    private fun captureAndSend(host: String, network: Network, micSource: Int, maxGainDb: Int,
+                               targetRmsDbfs: Int): String? {
         val minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
         if (minBuffer <= 0) return "Mikrofon unterstützt 16 kHz nicht"
 
@@ -319,13 +363,50 @@ class VoiceAnnounceService : Service() {
         var outSumSquares = 0.0
         var outSamples = 0
         var lastError: String? = null
-        val agc = VoiceAgc(maxGainDb = maxGainDb.toDouble(),
+        val agc = VoiceAgc(targetRmsDbfs = targetRmsDbfs.toDouble(),
+                           maxGainDb = maxGainDb.toDouble(),
                            startGainDb = minOf(20, maxGainDb).toDouble())
         Log.i(TAG, "Streaming Opus to $address:${SettingsStore.VOICE_PORT} " +
-            "source=$micSource max_gain=$maxGainDb dB")
+            "source=$micSource max_gain=$maxGainDb dB target=$targetRmsDbfs dBFS")
+
+        /*
+         * Round-trip measurement. The firmware echoes back every 50th
+         * packet as its bare 4-byte sequence number (voice_announce.c), and
+         * this thread matches it against when that packet left. Half the
+         * round trip is the Wi-Fi leg of the announcement -- the one part
+         * of its delay that could not be measured on either end.
+         */
+        val sendTimesNs = LongArray(SEND_TIME_SLOTS)
+        val rttSumMs = java.util.concurrent.atomic.AtomicLong(0)
+        val rttMaxMs = java.util.concurrent.atomic.AtomicLong(0)
+        val rttCount = java.util.concurrent.atomic.AtomicLong(0)
+        val echoThread = Thread {
+            val buf = ByteArray(16)
+            val reply = DatagramPacket(buf, buf.size)
+            socket.soTimeout = 500
+            while (capturing) {
+                try {
+                    socket.receive(reply)
+                } catch (_: IOException) {
+                    continue // timeout, or the socket was closed on the way out
+                }
+                if (reply.length != HEADER_BYTES) continue
+                val seq = (buf[0].toInt() and 0xFF) or ((buf[1].toInt() and 0xFF) shl 8) or
+                    ((buf[2].toInt() and 0xFF) shl 16) or ((buf[3].toInt() and 0xFF) shl 24)
+                val sentNs = sendTimesNs[seq and (SEND_TIME_SLOTS - 1)]
+                if (sentNs == 0L) continue
+                val rtt = (System.nanoTime() - sentNs) / 1_000_000L
+                rttSumMs.addAndGet(rtt)
+                rttCount.incrementAndGet()
+                if (rtt > rttMaxMs.get()) rttMaxMs.set(rtt)
+            }
+        }
+        echoThread.isDaemon = true
+        echoThread.start()
 
         val oldPriority = Process.getThreadPriority(Process.myTid())
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+        acquireWifiLock()
 
         try {
             recorder.startRecording()
@@ -364,6 +445,7 @@ class VoiceAnnounceService : Service() {
                     packet[3] = (seq ushr 24).toByte()
                     System.arraycopy(payload, 0, packet, HEADER_BYTES, length)
                     datagram.length = HEADER_BYTES + length
+                    sendTimesNs[seq and (SEND_TIME_SLOTS - 1)] = System.nanoTime()
                     try {
                         socket.send(datagram)
                         sent++
@@ -381,7 +463,8 @@ class VoiceAnnounceService : Service() {
                     Log.i(
                         TAG,
                         ("sent=$sent failed=$failed rate=%.0f kbit/s mic_peak=%.1f dBFS " +
-                            "out_peak=%.1f dBFS out_rms=%.1f dBFS gain=%.1f dB%s").format(
+                            "out_peak=%.1f dBFS out_rms=%.1f dBFS gain=%.1f dB " +
+                            "mic_lag=%.0f ms enc_lag=%.0f ms rtt=%d/%d ms%s").format(
                             sentBytes * 8 / seconds / 1000.0,
                             dbfs(micPeak),
                             dbfs(outPeak),
@@ -392,6 +475,10 @@ class VoiceAnnounceService : Service() {
                                 -120.0
                             },
                             agc.gainDb,
+                            micLagMs(recorder, frames.toLong() * FRAME_SAMPLES),
+                            encoder.backlogMs,
+                            if (rttCount.get() > 0) rttSumMs.get() / rttCount.get() else 0L,
+                            rttMaxMs.get(),
                             lastError?.let { " last_error=$it" } ?: "",
                         ),
                     )
@@ -412,8 +499,30 @@ class VoiceAnnounceService : Service() {
             recorder.release()
             encoder.release()
             socket.close()
+            releaseWifiLock()
             Process.setThreadPriority(oldPriority)
         }
+    }
+
+    /**
+     * How old the audio just read from [recorder] already was, in
+     * milliseconds: the delay of the phone's own capture chain, from the
+     * microphone through the audio HAL to this thread.
+     *
+     * AudioRecord.getTimestamp() gives a frame position together with the
+     * monotonic time at which that frame was captured. The difference
+     * between the frames read since then and that anchor, plus the time
+     * since, is the lag. Returns 0 when the device does not supply a
+     * timestamp, which some do not.
+     */
+    private fun micLagMs(recorder: AudioRecord, framesRead: Long): Double {
+        val ts = AudioTimestamp()
+        if (recorder.getTimestamp(ts, AudioTimestamp.TIMEBASE_MONOTONIC) != AudioRecord.SUCCESS) {
+            return 0.0
+        }
+        val pending = framesRead - ts.framePosition
+        val sinceAnchorMs = (System.nanoTime() - ts.nanoTime) / 1_000_000.0
+        return pending * 1000.0 / SAMPLE_RATE + sinceAnchorMs
     }
 
     private fun peakOf(samples: ShortArray): Int {
@@ -548,6 +657,9 @@ class VoiceAnnounceService : Service() {
 
         /** Wire format, see voice_announce.c. */
         private const val HEADER_BYTES = 4
+
+        /** Send times kept for the round-trip measurement; power of two. */
+        private const val SEND_TIME_SLOTS = 256
         private const val MAX_OPUS_PACKET = 1275
 
         /** Wideband speech is clear at this rate; raw PCM was 768 kbit/s. */
