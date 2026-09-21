@@ -555,22 +555,45 @@ Das Wrapper-Skript `gradlew` liegt nicht im Repository, nur
 
 ## Pinning
 
-GPIO 4   ESP32-S3 -> PCM5102A BCK und TinySine BCLK
-
-GPIO 6   ESP32-S3 -> PCM5102A LCK und TinySine LRCLK
-
-GPIO 5   TinySine DOUT -> ESP32-S3 DIN
-
-GPIO 7   ESP32-S3 DOUT -> PCM5102A DIN
-
-GPIO 10  Schleifer des Lautstärkepotis, siehe [Lautstärkeregler](#lautstärkeregler)
+| GPIO | Funktion | konfiguriert in |
+|------|----------|-----------------|
+| 4 | ESP32-S3 → PCM5102A BCK und TinySine BCLK | `main/audio_i2s.h` |
+| 6 | ESP32-S3 → PCM5102A LCK und TinySine LRCLK | `main/audio_i2s.h` |
+| 5 | TinySine DOUT → ESP32-S3 DIN | `main/audio_i2s.h` |
+| 7 | ESP32-S3 DOUT → PCM5102A DIN | `main/audio_i2s.h` |
+| 10 | Schleifer des Lautstärkepotis | `menuconfig` |
+| 48 | WS2812-Status-LED | `menuconfig` |
 
 Dieselbe Verdrahtung als Zeichnung, mit Spannungsversorgung und Masse:
 
 <img src="docs/Verdrahtungsplan.png" width="600">
 
-Die GPIO-Zuordnung steht als `#define`-Block am Kopf von `main/audio_i2s.h`
-und ist vor dem ersten Bauen an die eigene Hardware anzupassen.
+### Wo die Pinbelegung konfiguriert wird
+
+Zwei getrennte Orte, und das ist kein Versehen:
+
+**I2S — im Quelltext.** Die vier Pins stehen als `#define`-Block am Kopf von
+`main/audio_i2s.h` und sind **vor dem ersten Bauen** an die eigene Hardware
+anzupassen. Darunter liegt ein zweiter, auskommentierter Block für eine
+abweichende Verdrahtung (GPIO 17, 8, 5, 18); beim Umschalten ist zu beachten,
+dass GPIO 8 dann für das Poti ausfällt.
+
+Der I2S-Treiber übernimmt die Pins einmal beim Start, weshalb sie keine
+Laufzeiteinstellung sind.
+
+**Poti und LED — im `menuconfig`.** Beide sind zur Bauzeit einstellbar, ohne
+Quelltext anzufassen:
+
+```
+idf.py menuconfig  →  Snapserver Mesh Project Configuration
+    Volume knob on an ADC pin        (ein/aus, Vorgabe: ein)
+    Volume knob GPIO                 (1 bis 10, Vorgabe: 10)
+    Status LED (on-board WS2812)     (ein/aus, Vorgabe: ein)
+    Status LED GPIO                  (0 bis 48, Vorgabe: 48)
+```
+
+Alles andere — Mesh, DSP, Opus, Puffergrößen — wird nicht hier, sondern zur
+**Laufzeit** über die Web-Oberfläche eingestellt und im NVS gehalten.
 
 ---
 
@@ -602,11 +625,55 @@ wirksam — beide multiplizieren sich, keine überschreibt die andere.
 Die Kennlinie ist kubisch, dieselbe wie bei der Snapcast-Lautstärke. Linear
 gedreht säße der ganze brauchbare Bereich im obersten Viertel.
 
-**Warum GPIO 10:** ADC2 ist bei laufendem WLAN nicht lesbar, es bleibt also
-ADC1 mit GPIO 1 bis 10. Davon sind 4 bis 7 das I2S, 8 die Alternativbelegung
-in `audio_i2s.h` und 3 ein Strapping-Pin. Frei wären außerdem 1, 2 und 9;
-umstellen lässt sich der Pin unter `Snapserver Mesh Project Configuration →
-Volume knob GPIO`, abschalten über `Volume knob on an ADC pin`.
+### Mögliche Pins
+
+**Nur ADC1, also GPIO 1 bis 10.** ADC2 teilt sich die Hardware mit dem
+WLAN-Funkmodul und ist nicht lesbar, solange das Funkmodul läuft — was hier
+immer der Fall ist. Ein Pin auf ADC2 würde am Schreibtisch funktionieren und
+in dem Moment ausfallen, in dem das Mesh hochkommt. Deshalb doppelt
+abgesichert: `menuconfig` lässt nur 1 bis 10 zu, und die Firmware prüft beim
+Start zusätzlich, auf welcher Einheit der Pin liegt, und verweigert den
+Dienst mit einer Meldung statt still Unsinn zu messen.
+
+Innerhalb von ADC1:
+
+| GPIO | ADC1-Kanal | Status |
+|------|-----------|--------|
+| 1 | CH0 | frei |
+| 2 | CH1 | frei |
+| 3 | CH2 | **ungeeignet** — Strapping-Pin (JTAG-Auswahl), das Poti zöge ihn beim Booten auf einen beliebigen Pegel |
+| 4 | CH3 | belegt — I2S BCLK |
+| 5 | CH4 | belegt — I2S DIN |
+| 6 | CH5 | belegt — I2S LRCLK |
+| 7 | CH6 | belegt — I2S DOUT |
+| 8 | CH7 | belegt in der auskommentierten Alternativbelegung in `audio_i2s.h` (LRCLK); bei der aktiven Belegung frei |
+| 9 | CH8 | frei |
+| 10 | CH9 | **Vorgabe** |
+
+### Einschränkungen
+
+- **Messfehler durch den Pull-up.** Er liegt bei rund 45 kΩ gegen die
+  Schleiferimpedanz, die bei einem 10-kΩ-Poti in Mittelstellung mit etwa
+  2,5 kΩ am höchsten ist. Das verschiebt die Anzeige dort um **rund 2,6 %**;
+  an beiden Enden ist sie exakt. Für Lautstärke ist das nicht hörbar. Wer es
+  genauer will, nimmt einen externen 100-kΩ-Widerstand vom Schleifer nach
+  3V3 und schaltet den internen Pull-up ab — dann sind es etwa 1,2 %.
+- **Der Pinwert ist nicht zur Laufzeit änderbar.** Er wird zur Bauzeit
+  gesetzt; eine Änderung erfordert `menuconfig` und einen neuen Flash-Vorgang.
+- **Der Pin ist belegt, auch ohne Poti.** Solange die Funktion eingeschaltet
+  ist, steht GPIO 10 für nichts anderes zur Verfügung. Wird er gebraucht,
+  entweder auf 1, 2 oder 9 ausweichen oder die Funktion ganz abschalten.
+- **Kein Totalausfall bei Fehlern.** Lässt sich der ADC nicht öffnen, bleibt
+  die Ausgabestufe bei voller Lautstärke und der Rest läuft weiter. Die
+  Meldung steht im Log.
+- **Sehr schnelles Drehen wird geglättet.** Abgefragt wird alle 50 ms, der
+  neue Wert dann über einen 20-ms-Frame eingeblendet. Ein Ruck am Knopf
+  erreicht den Lautsprecher also mit bis zu 70 ms Verzögerung — gewollt,
+  denn ein sofortiger Sprung wäre ein hörbares Knacken.
+- **Ein Totband von gut 1 %** verhindert, dass die letzten Bits des ADC die
+  Lautstärke zittern lassen. Sehr kleine Drehungen bleiben deshalb ohne
+  Wirkung. Die Endanschläge sind davon ausgenommen, damit „ganz aus" und
+  „ganz auf" in jedem Fall erreichbar bleiben.
 
 ---
 
