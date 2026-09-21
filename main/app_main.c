@@ -17,6 +17,7 @@
 #include "mesh_root.h"
 #include "snapserver.h"
 #include "status_led.h"
+#include "volume_pot.h"
 #include "voice_announce.h"
 #include "webconfig.h"
 
@@ -134,6 +135,18 @@ void app_main(void)
         .wideband_channel = cfg.wideband_channel,
     };
     ESP_ERROR_CHECK(audio_i2s_set_dsp_params(&dsp_params));
+
+    /*
+     * Not fatal: without the knob the output stage stays at the full
+     * volume it defaults to, which is exactly what a board with no
+     * potentiometer fitted is supposed to do.
+     */
+    result = volume_pot_start();
+    if (result != ESP_OK && result != ESP_ERR_NOT_SUPPORTED) {
+        ESP_LOGW(TAG,
+                 "Volume knob unavailable: %s -- playing at full volume",
+                 esp_err_to_name(result));
+    }
 
     if (client_role) {
         ESP_ERROR_CHECK(audio_sink_start(cfg.buffer_ms));

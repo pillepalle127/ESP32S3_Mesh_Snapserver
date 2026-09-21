@@ -130,6 +130,18 @@ static lr4_filter_t s_highpass;
 static audio_dsp_params_t s_dsp_params;
 static float s_sub_gain_linear = 1.0f;
 static float s_wideband_gain_linear = 1.0f;
+/*
+ * Local master volume, fed by the knob in volume_pot.c. The target is
+ * written from that task under s_dsp_lock; the current value belongs to
+ * the audio task alone, which walks it towards the target across one
+ * frame. Splitting the two is what lets the knob move at any moment
+ * without the ramp ever being touched by two tasks at once.
+ *
+ * It defaults to 1.0 so a build without a knob -- or one whose ADC failed
+ * to start -- plays at full volume rather than silence.
+ */
+static float s_master_volume_target = 1.0f;
+static float s_master_volume_current = 1.0f;
 static portMUX_TYPE s_dsp_lock = portMUX_INITIALIZER_UNLOCKED;
 /*
  * Bumped under s_dsp_lock every time audio_i2s_set_dsp_params() installs a
@@ -313,6 +325,24 @@ void audio_i2s_get_dsp_params(audio_dsp_params_t *out)
 
     portENTER_CRITICAL(&s_dsp_lock);
     *out = s_dsp_params;
+    portEXIT_CRITICAL(&s_dsp_lock);
+}
+
+void audio_i2s_set_master_volume(float linear)
+{
+    /*
+     * Written as a lower bound rather than "< 0.0f" so a NaN -- which
+     * compares false against everything -- lands on silence instead of
+     * being multiplied into every sample of the output.
+     */
+    if (!(linear >= 0.0f)) {
+        linear = 0.0f;
+    } else if (linear > 1.0f) {
+        linear = 1.0f;
+    }
+
+    portENTER_CRITICAL(&s_dsp_lock);
+    s_master_volume_target = linear;
     portEXIT_CRITICAL(&s_dsp_lock);
 }
 
@@ -596,6 +626,7 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     audio_dsp_params_t dsp;
     float sub_gain_linear;
     float wideband_gain_linear;
+    float master_target;
     uint32_t dsp_generation;
     portENTER_CRITICAL(&s_dsp_lock);
     lowpass = s_lowpass;
@@ -603,8 +634,20 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     dsp = s_dsp_params;
     sub_gain_linear = s_sub_gain_linear;
     wideband_gain_linear = s_wideband_gain_linear;
+    master_target = s_master_volume_target;
     dsp_generation = s_dsp_generation;
     portEXIT_CRITICAL(&s_dsp_lock);
+
+    /*
+     * Walk the master volume to its new value across the frame instead of
+     * applying it to the first sample. A step in gain is a discontinuity
+     * in the waveform, and at 50 knob readings per second that would be a
+     * click on every one of them.
+     */
+    float master = s_master_volume_current;
+    const float master_step = (mono_samples > 0U)
+                                  ? ((master_target - master) / (float)mono_samples)
+                                  : 0.0f;
 
     for (size_t i = 0; i < mono_samples; ++i) {
         const int16_t mono_sample = mono[i];
@@ -618,6 +661,16 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
             subwoofer = lr4_process(&lowpass, (float)mono_sample) * sub_gain_linear;
             wideband = lr4_process(&highpass, (float)mono_sample) * wideband_gain_linear;
         }
+
+        /*
+         * Last thing before the samples leave: the knob attenuates what
+         * this speaker plays and nothing else. The Opus encoder is fed
+         * from a separate copy that never passes through here, so turning
+         * one box down leaves every other box untouched.
+         */
+        master += master_step;
+        subwoofer *= master;
+        wideband *= master;
 
         const int16_t sub_sample = float_to_int16(subwoofer);
         const int16_t wide_sample = float_to_int16(wideband);
@@ -648,6 +701,12 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
             *led_wide = abs_wide;
         }
     }
+
+    /*
+     * Land exactly on the target rather than keeping the accumulated sum,
+     * so repeated ramps cannot drift away from it through rounding.
+     */
+    s_master_volume_current = master_target;
 
     /*
      * Write the updated filter memory back so the next frame continues from

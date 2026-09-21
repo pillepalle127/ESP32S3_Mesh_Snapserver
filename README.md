@@ -20,6 +20,7 @@ Als **Server** übernimmt der ESP32-S3 mehrere Aufgaben:
 * eigenständiger ESP-Mesh-Lite-Root
 * Verteilung des Audiosignals an Snapclients
 * lokale digitale Frequenzweiche für die angeschlossene Audiohardware
+* Lautstärkepoti am eigenen Lautsprecher, siehe [Lautstärkeregler](#lautstärkeregler)
 * Web-Konfigurationsoberfläche für Mesh-, DSP- und Opus-Einstellungen
 * Provisioning-AP-Fallback, falls das Gerät sonst nicht erreichbar wäre
 
@@ -562,12 +563,50 @@ GPIO 5   TinySine DOUT -> ESP32-S3 DIN
 
 GPIO 7   ESP32-S3 DOUT -> PCM5102A DIN
 
+GPIO 10  Schleifer des Lautstärkepotis, siehe [Lautstärkeregler](#lautstärkeregler)
+
 Dieselbe Verdrahtung als Zeichnung, mit Spannungsversorgung und Masse:
 
 <img src="docs/Verdrahtungsplan.png" width="600">
 
 Die GPIO-Zuordnung steht als `#define`-Block am Kopf von `main/audio_i2s.h`
 und ist vor dem ersten Bauen an die eigene Hardware anzupassen.
+
+---
+
+
+## Lautstärkeregler
+
+Ein 10-kΩ-Potentiometer an **GPIO 10** regelt die Lautstärke des Lautsprechers,
+der an diesem Gerät hängt — und nur diesen. Server und Clients haben jeweils
+ihren eigenen Regler.
+
+```text
+3V3 ──┬── Anschluss 1
+      │
+      ├── Schleifer ────► GPIO 10
+      │
+GND ──┴── Anschluss 3
+```
+
+**Ohne angeschlossenes Poti liegt volle Lautstärke an.** Ein interner Pull-up
+hält den offenen Eingang oben, das Gerät spielt also mit 100 % und braucht
+keine Konfiguration. Geräte ohne Regler funktionieren unverändert.
+
+Der Regler greift ganz am Ende der Ausgabestufe, nach der Frequenzweiche. Der
+Opus-Stream an die Clients wird aus einer anderen Kopie gespeist und bleibt
+unberührt: Wer den Server leiser dreht, ändert nichts an dem, was die Clients
+hören. Ebenso bleibt die Lautstärke pro Client aus einer Snapcast-Control-App
+wirksam — beide multiplizieren sich, keine überschreibt die andere.
+
+Die Kennlinie ist kubisch, dieselbe wie bei der Snapcast-Lautstärke. Linear
+gedreht säße der ganze brauchbare Bereich im obersten Viertel.
+
+**Warum GPIO 10:** ADC2 ist bei laufendem WLAN nicht lesbar, es bleibt also
+ADC1 mit GPIO 1 bis 10. Davon sind 4 bis 7 das I2S, 8 die Alternativbelegung
+in `audio_i2s.h` und 3 ein Strapping-Pin. Frei wären außerdem 1, 2 und 9;
+umstellen lässt sich der Pin unter `Snapserver Mesh Project Configuration →
+Volume knob GPIO`, abschalten über `Volume knob on an ADC pin`.
 
 ---
 

@@ -107,6 +107,20 @@ esp_err_t audio_i2s_set_dsp_params(const audio_dsp_params_t *params);
 void audio_i2s_get_dsp_params(audio_dsp_params_t *out);
 
 /*
+ * Local master volume, 0.0 to 1.0 linear, applied at the very end of the
+ * output stage. Affects only this device's own speaker: the Opus encoder
+ * is fed from a separate copy that does not pass through here, so a server
+ * turned down still sends its clients a full-scale stream. It multiplies
+ * with the per-client Snapcast volume audio_sink.c applies, so the knob on
+ * the box and a listener's control app both keep working.
+ *
+ * Safe to call from any task and at any rate; the value is ramped across
+ * one frame inside the audio task instead of stepping the waveform.
+ * Defaults to 1.0, so a device without a knob plays at full volume.
+ */
+void audio_i2s_set_master_volume(float linear);
+
+/*
  * Liest Stereo vom TinySine und bildet daraus Mono.
  * Das ungefilterte Mono wird dem Snapserver im Puffer "mono" bereitgestellt.
  * Lokal wird dasselbe Mono durch eine Linkwitz-Riley-Weiche 4. Ordnung

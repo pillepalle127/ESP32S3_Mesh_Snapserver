@@ -27,6 +27,35 @@ config SNAPSERVER_STATUS_LED_GPIO
         green and blue once at startup. If it stays dark, the pin is wrong
         -- try the other values above.
 
+config SNAPSERVER_VOLUME_POT_ENABLE
+    bool "Volume knob on an ADC pin"
+    default y
+    help
+        Reads a 10 kOhm potentiometer and sets the volume of this device's
+        own speaker. It does not touch the stream a server sends to its
+        clients, so each box is turned up and down on its own.
+
+        Wire the potentiometer as a divider: one end to 3V3, the other to
+        GND, wiper to the pin below. Nothing else is needed.
+
+        Boards with no knob fitted play at full volume: an internal
+        pull-up holds the unconnected pin at the top of its range. Leaving
+        this enabled therefore costs nothing on such a board, apart from
+        the pin being claimed.
+
+config SNAPSERVER_VOLUME_POT_GPIO
+    int "Volume knob GPIO"
+    default 10
+    range 1 10
+    depends on SNAPSERVER_VOLUME_POT_ENABLE
+    help
+        Must be on ADC1, which on the ESP32-S3 means GPIO 1 to 10 -- ADC2
+        cannot be read while Wi-Fi is running, and here it always is.
+
+        The default of 10 avoids the I2S pins in audio_i2s.h (4 to 7, plus
+        8 in the commented-out alternative wiring) and the strapping pin 3.
+        If you need another one, 1, 2 and 9 are equally free.
+
 config SNAPSERVER_ENABLE_MESH_LITE
     bool "Enable ESP-Mesh-Lite"
     default n

@@ -15,6 +15,7 @@ idf_component_register(
         "status_led.c"
 		"snapcontrol.c" # <--
         "voice_announce.c"
+        "volume_pot.c"
         "webconfig.c"
     INCLUDE_DIRS "."
     EMBED_TXTFILES "webconfig_page.html"
@@ -23,6 +24,8 @@ idf_component_register(
         esp_wifi
         esp_event
         esp_netif
+        esp_adc
+        esp_driver_gpio
         esp_driver_i2s
         esp_driver_rmt
         esp_http_server
