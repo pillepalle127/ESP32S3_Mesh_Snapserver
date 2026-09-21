@@ -562,6 +562,13 @@ GPIO 5   TinySine DOUT -> ESP32-S3 DIN
 
 GPIO 7   ESP32-S3 DOUT -> PCM5102A DIN
 
+Dieselbe Verdrahtung als Zeichnung, mit Spannungsversorgung und Masse:
+
+<img src="docs/Verdrahtungsplan.png" width="600">
+
+Die GPIO-Zuordnung steht als `#define`-Block am Kopf von `main/audio_i2s.h`
+und ist vor dem ersten Bauen an die eigene Hardware anzupassen.
+
 ---
 
 
