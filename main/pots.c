@@ -30,6 +30,15 @@
  */
 #define STRAPPING_GPIO 3U
 
+/*
+ * GPIO 14 may be hard-wired to GND on some boards, as an extra ground
+ * terminal next to the knobs. It is outside ADC1 and so never offered for
+ * a knob, but nothing may ever configure it as an output: driven high
+ * against that wire it would short the pin. Leave it in its reset state
+ * (input, no pull).
+ */
+#define GPIO_MAYBE_TIED_TO_GND 14U
+
 const char *pots_pin_blocked_reason(uint8_t gpio)
 {
     if (gpio < ADC1_FIRST_GPIO || gpio > ADC1_LAST_GPIO) {
