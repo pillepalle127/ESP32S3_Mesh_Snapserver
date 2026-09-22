@@ -10,12 +10,14 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "nvs.h"
+#include "pots.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "DEVICE_CONFIG";
 
 #define DEVICE_CONFIG_NVS_NAMESPACE "devcfg"
 #define DEVICE_CONFIG_NVS_KEY       "cfg"
+#define DEVICE_POTS_NVS_KEY         "pots"
 
 /*
  * s_cfg is written from whichever task calls device_config_save()/
@@ -38,6 +40,20 @@ static bool s_first_boot;
  * known such writer; this catches any other one too.
  */
 static bool s_erased;
+
+/* Guarded by s_cfg_lock like s_cfg. */
+static device_pots_t s_pots = {
+    .volume_gpio = DEVICE_POTS_DEFAULT_VOLUME_GPIO,
+    .delay_gpio = DEVICE_POTS_DEFAULT_DELAY_GPIO,
+    .delay_range_ms = DEVICE_POTS_DEFAULT_DELAY_RANGE_MS,
+};
+
+static void seed_pot_defaults(device_pots_t *pots)
+{
+    pots->volume_gpio = DEVICE_POTS_DEFAULT_VOLUME_GPIO;
+    pots->delay_gpio = DEVICE_POTS_DEFAULT_DELAY_GPIO;
+    pots->delay_range_ms = DEVICE_POTS_DEFAULT_DELAY_RANGE_MS;
+}
 
 static void seed_defaults(device_config_t *cfg)
 {
@@ -188,7 +204,27 @@ esp_err_t device_config_load(void)
     }
 
     result = nvs_get_blob(handle, DEVICE_CONFIG_NVS_KEY, &loaded, &len);
+
+    /*
+     * Potentiometer settings are optional: a device updated from firmware
+     * without them, or one that never saved them, simply gets the defaults
+     * -- and is not treated as a first boot for that, because nothing the
+     * user configured has been lost.
+     */
+    device_pots_t pots;
+    size_t pots_len = sizeof(pots);
+    const esp_err_t pots_result = nvs_get_blob(handle, DEVICE_POTS_NVS_KEY, &pots, &pots_len);
     nvs_close(handle);
+
+    if (pots_result != ESP_OK || pots_len != sizeof(pots) || !device_config_pots_valid(&pots)) {
+        if (pots_result != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "Stored knob settings unusable, using defaults");
+        }
+        seed_pot_defaults(&pots);
+    }
+    portENTER_CRITICAL(&s_cfg_lock);
+    s_pots = pots;
+    portEXIT_CRITICAL(&s_cfg_lock);
 
     const bool found = (result == ESP_OK) && (len == sizeof(loaded)) &&
                         (loaded.version == DEVICE_CONFIG_VERSION) &&
@@ -295,6 +331,12 @@ esp_err_t device_config_factory_reset(void)
 
     result = nvs_erase_key(handle, DEVICE_CONFIG_NVS_KEY);
     if (result == ESP_OK || result == ESP_ERR_NVS_NOT_FOUND) {
+        /* The knobs go back to their defaults too -- a factory reset that
+         * left a delay pin configured would be a surprise. */
+        const esp_err_t pots_result = nvs_erase_key(handle, DEVICE_POTS_NVS_KEY);
+        if (pots_result != ESP_OK && pots_result != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "Erasing knob settings failed: %s", esp_err_to_name(pots_result));
+        }
         result = nvs_commit(handle);
     } else {
         ESP_LOGE(TAG, "Erasing config failed: %s", esp_err_to_name(result));
@@ -314,4 +356,63 @@ void device_config_get(device_config_t *out)
 bool device_config_is_first_boot(void)
 {
     return s_first_boot;
+}
+
+bool device_config_pots_valid(const device_pots_t *pots)
+{
+    if (pots == NULL) {
+        return false;
+    }
+    if (pots->volume_gpio != 0U && pots_pin_blocked_reason(pots->volume_gpio) != NULL) {
+        return false;
+    }
+    if (pots->delay_gpio != 0U && pots_pin_blocked_reason(pots->delay_gpio) != NULL) {
+        return false;
+    }
+    if (pots->volume_gpio != 0U && pots->volume_gpio == pots->delay_gpio) {
+        return false;
+    }
+    if (pots->delay_range_ms < DEVICE_POTS_DELAY_RANGE_MIN_MS ||
+        pots->delay_range_ms > DEVICE_CONFIG_DELAY_TRIM_MAX_MS) {
+        return false;
+    }
+    return true;
+}
+
+void device_config_get_pots(device_pots_t *out)
+{
+    portENTER_CRITICAL(&s_cfg_lock);
+    *out = s_pots;
+    portEXIT_CRITICAL(&s_cfg_lock);
+}
+
+esp_err_t device_config_save_pots(const device_pots_t *pots)
+{
+    if (s_erased) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!device_config_pots_valid(pots)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    nvs_handle_t handle;
+    esp_err_t result = nvs_open(DEVICE_CONFIG_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(result));
+        return result;
+    }
+    result = nvs_set_blob(handle, DEVICE_POTS_NVS_KEY, pots, sizeof(*pots));
+    if (result == ESP_OK) {
+        result = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Storing knob settings failed: %s", esp_err_to_name(result));
+        return result;
+    }
+
+    portENTER_CRITICAL(&s_cfg_lock);
+    s_pots = *pots;
+    portEXIT_CRITICAL(&s_cfg_lock);
+    return ESP_OK;
 }

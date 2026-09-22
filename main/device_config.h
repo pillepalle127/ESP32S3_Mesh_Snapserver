@@ -85,6 +85,30 @@ typedef struct {
 } device_config_t;
 
 /*
+ * Potentiometer inputs (see pots.h). Kept out of device_config_t on
+ * purpose: that struct is stored as one versioned blob, and a stored blob
+ * whose version does not match is replaced by defaults -- adding fields
+ * there would have wiped every device's configuration on update. This one
+ * lives under its own NVS key and falls back to defaults field by field.
+ *
+ * A gpio of 0 means "no knob". Pin changes need a reboot, the delay range
+ * applies live.
+ */
+typedef struct {
+    uint8_t  volume_gpio;
+    uint8_t  delay_gpio;
+    uint16_t delay_range_ms;
+} device_pots_t;
+
+/* Volume stays on the pin it had while that was a Kconfig setting, so an
+ * update changes nothing on boards already wired. Delay starts unset: an
+ * open delay input would read an end stop, not the centre. */
+#define DEVICE_POTS_DEFAULT_VOLUME_GPIO    10U
+#define DEVICE_POTS_DEFAULT_DELAY_GPIO     0U
+#define DEVICE_POTS_DEFAULT_DELAY_RANGE_MS 200U
+#define DEVICE_POTS_DELAY_RANGE_MIN_MS     10U
+
+/*
  * Loads the config from NVS into the in-RAM cache. If no config is stored
  * yet, or the stored blob's version doesn't match DEVICE_CONFIG_VERSION,
  * seeds Kconfig-derived defaults and persists them, and records that this
@@ -129,6 +153,21 @@ void device_config_get(device_config_t *out);
  * config (first-ever boot, post-factory-reset boot, or a version mismatch).
  */
 bool device_config_is_first_boot(void);
+
+/* Current potentiometer settings (defaults if none are stored). */
+void device_config_get_pots(device_pots_t *out);
+
+/*
+ * Validates and stores the potentiometer settings: each pin 0 or one that
+ * pots_pin_blocked_reason() accepts, the two pins different unless both
+ * are 0, range between DEVICE_POTS_DELAY_RANGE_MIN_MS and
+ * DEVICE_CONFIG_DELAY_TRIM_MAX_MS. Returns ESP_ERR_INVALID_ARG otherwise.
+ */
+esp_err_t device_config_save_pots(const device_pots_t *pots);
+
+/* The check device_config_save_pots() applies, for callers that want to
+ * reject a request before saving anything else. */
+bool device_config_pots_valid(const device_pots_t *pots);
 
 #ifdef __cplusplus
 }

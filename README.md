@@ -20,7 +20,7 @@ Als **Server** übernimmt der ESP32-S3 mehrere Aufgaben:
 * eigenständiger ESP-Mesh-Lite-Root
 * Verteilung des Audiosignals an Snapclients
 * lokale digitale Frequenzweiche für die angeschlossene Audiohardware
-* Lautstärkepoti am eigenen Lautsprecher, siehe [Lautstärkeregler](#lautstärkeregler)
+* Potis für Lautstärke und Delay am eigenen Lautsprecher, siehe [Potis für Lautstärke und Delay](#potis-für-lautstärke-und-delay)
 * Web-Konfigurationsoberfläche für Mesh-, DSP- und Opus-Einstellungen
 * Provisioning-AP-Fallback, falls das Gerät sonst nicht erreichbar wäre
 
@@ -195,6 +195,10 @@ Konfigurierbar:
   (`bufferMs`) löst dagegen einen Neustart aus: aus ihr werden beim Start
   mehrsekündige Puffer dimensioniert — der Ringpuffer des Clients und die
   Verzögerungsleitung der lokalen Ausgabe des Servers.
+* **Potentiometers:** Pin für das Lautstärke- und das Delay-Poti (jeweils
+  auch „none") und der Bereich des Delay-Potis. Angeboten werden nur freie
+  Pins. Ein Pinwechsel löst einen Neustart aus, der Bereich wirkt sofort.
+  Siehe [Potis für Lautstärke und Delay](#potis-für-lautstärke-und-delay).
 
 Alle Werte werden persistent im NVS gespeichert und überleben Neustarts und
 Firmware-Updates (solange sich das Konfigurationsschema nicht ändert).
@@ -561,7 +565,8 @@ Das Wrapper-Skript `gradlew` liegt nicht im Repository, nur
 | 6 | ESP32-S3 → PCM5102A LCK und TinySine LRCLK | `main/audio_i2s.h` |
 | 5 | TinySine DOUT → ESP32-S3 DIN | `main/audio_i2s.h` |
 | 7 | ESP32-S3 DOUT → PCM5102A DIN | `main/audio_i2s.h` |
-| 10 | Schleifer des Lautstärkepotis | `menuconfig` |
+| 10 | Schleifer des Lautstärkepotis (Vorgabe) | Web-Oberfläche |
+| – | Schleifer des Delay-Potis (Vorgabe: keiner) | Web-Oberfläche |
 | 48 | WS2812-Status-LED | `menuconfig` |
 
 Dieselbe Verdrahtung als Zeichnung, mit Spannungsversorgung und Masse:
@@ -570,72 +575,98 @@ Dieselbe Verdrahtung als Zeichnung, mit Spannungsversorgung und Masse:
 
 ### Wo die Pinbelegung konfiguriert wird
 
-Zwei getrennte Orte, und das ist kein Versehen:
+Drei Orte, je nachdem, wann ein Pin feststehen muss:
 
 **I2S — im Quelltext.** Die vier Pins stehen als `#define`-Block am Kopf von
 `main/audio_i2s.h` und sind **vor dem ersten Bauen** an die eigene Hardware
 anzupassen. Darunter liegt ein zweiter, auskommentierter Block für eine
-abweichende Verdrahtung (GPIO 17, 8, 5, 18); beim Umschalten ist zu beachten,
-dass GPIO 8 dann für das Poti ausfällt.
+abweichende Verdrahtung (GPIO 17, 8, 5, 18). Der I2S-Treiber übernimmt die
+Pins einmal beim Start, deshalb sind sie keine Laufzeiteinstellung.
 
-Der I2S-Treiber übernimmt die Pins einmal beim Start, weshalb sie keine
-Laufzeiteinstellung sind.
-
-**Poti und LED — im `menuconfig`.** Beide sind zur Bauzeit einstellbar, ohne
-Quelltext anzufassen:
+**Status-LED — im `menuconfig`**, zur Bauzeit:
 
 ```
 idf.py menuconfig  →  Snapserver Mesh Project Configuration
-    Volume knob on an ADC pin        (ein/aus, Vorgabe: ein)
-    Volume knob GPIO                 (1 bis 10, Vorgabe: 10)
-    Status LED (on-board WS2812)     (ein/aus, Vorgabe: ein)
-    Status LED GPIO                  (0 bis 48, Vorgabe: 48)
+    Status LED (on-board WS2812)          (ein/aus, Vorgabe: ein)
+    Status LED GPIO                       (0 bis 48, Vorgabe: 48)
+    Potentiometer inputs (volume, delay)  (ein/aus, Vorgabe: ein)
 ```
 
-Alles andere — Mesh, DSP, Opus, Puffergrößen — wird nicht hier, sondern zur
-**Laufzeit** über die Web-Oberfläche eingestellt und im NVS gehalten.
+Der letzte Schalter nimmt nur den Poti-Code ganz heraus; welche Pins die
+Potis benutzen, wird dort nicht eingestellt.
+
+**Potis — auf der Web-Oberfläche**, Abschnitt *Potentiometers*. Beide Pins
+sind dort frei wählbar, jeweils auch „none". Angeboten werden **nur Pins,
+die tatsächlich frei sind**: Die Firmware berechnet die Liste aus ihrer
+eigenen Belegung (I2S-Pins aus `audio_i2s.h`, Status-LED, Strapping-Pin) und
+blendet den vom jeweils anderen Poti belegten Pin aus. Wird die I2S-Belegung
+geändert, passt sich die Liste nach dem Neu-Flashen von selbst an. Ein
+Pinwechsel startet das Gerät neu; die Firmware prüft den Pin beim Speichern
+noch einmal selbst, ein Pin außerhalb der Liste wird auch über die API
+abgewiesen.
+
+Alles Übrige — Mesh, DSP, Opus, Puffergrößen — wird ebenfalls zur Laufzeit
+über die Web-Oberfläche eingestellt und im NVS gehalten.
 
 ---
 
 
-## Lautstärkeregler
+## Potis für Lautstärke und Delay
 
-Ein 10-kΩ-Potentiometer an **GPIO 10** regelt die Lautstärke des Lautsprechers,
-der an diesem Gerät hängt — und nur diesen. Server und Clients haben jeweils
-ihren eigenen Regler.
+Zwei 10-kΩ-Potentiometer lassen sich anschließen, beide wirken nur auf den
+Lautsprecher an **diesem** Gerät. Server und Clients haben jeweils ihre
+eigenen.
 
 ```text
 3V3 ──┬── Anschluss 1
       │
-      ├── Schleifer ────► GPIO 10
+      ├── Schleifer ────► GPIO (siehe unten)
       │
 GND ──┴── Anschluss 3
 ```
 
-**Ohne angeschlossenes Poti liegt volle Lautstärke an.** Ein interner Pull-up
-hält den offenen Eingang oben, das Gerät spielt also mit 100 % und braucht
-keine Konfiguration. Geräte ohne Regler funktionieren unverändert.
+### Lautstärke
+
+Vorgabe **GPIO 10**. **Ohne angeschlossenes Poti liegt volle Lautstärke an**:
+Ein interner Pull-up hält den offenen Eingang oben, das Gerät spielt mit
+100 % und braucht keine Konfiguration.
 
 Der Regler greift ganz am Ende der Ausgabestufe, nach der Frequenzweiche. Der
 Opus-Stream an die Clients wird aus einer anderen Kopie gespeist und bleibt
 unberührt: Wer den Server leiser dreht, ändert nichts an dem, was die Clients
-hören. Ebenso bleibt die Lautstärke pro Client aus einer Snapcast-Control-App
-wirksam — beide multiplizieren sich, keine überschreibt die andere.
+hören. Die Lautstärke pro Client aus einer Snapcast-Control-App bleibt
+wirksam — beide multiplizieren sich. Kennlinie kubisch, wie bei der
+Snapcast-Lautstärke.
 
-Die Kennlinie ist kubisch, dieselbe wie bei der Snapcast-Lautstärke. Linear
-gedreht säße der ganze brauchbare Bereich im obersten Viertel.
+### Delay
+
+Vorgabe **kein Pin**. Ist einer gewählt, **ersetzt das Poti das Feld
+„Delay trim"** — das Feld wird auf der Seite ausgegraut. Mittelstellung ist
+0 ms, die Anschläge sind ±Bereich; der Bereich ist auf der Seite einstellbar,
+Vorgabe **±200 ms**, höchstens ±2000 ms. Bei ±200 ms entspricht ein Prozent
+Drehweg etwa 4 ms. Linear, denn es ist eine Zeitverschiebung, keine
+Lautstärke.
+
+Wirkung wie beim Feld: Ein Client verschiebt seinen Wiedergabezeitplan, der
+Server die Verzögerungsleitung vor seinem eigenen Lautsprecher. Die
+Bereichsänderung gilt sofort, ohne am Knopf zu drehen.
+
+Warum kein Pin als Vorgabe: Mit internen Pulls lässt sich ein offener Eingang
+nur an ein Ende ziehen, nicht in die Mitte. Ein gewählter, aber abgezogener
+Delay-Pin liegt deshalb per Pull-down am **negativen Anschlag** (−Bereich),
+statt zufällig zu wandern.
+
+Die Seite zeigt beide Potiwerte live im Statusfeld.
 
 ### Mögliche Pins
 
 **Nur ADC1, also GPIO 1 bis 10.** ADC2 teilt sich die Hardware mit dem
 WLAN-Funkmodul und ist nicht lesbar, solange das Funkmodul läuft — was hier
 immer der Fall ist. Ein Pin auf ADC2 würde am Schreibtisch funktionieren und
-in dem Moment ausfallen, in dem das Mesh hochkommt. Deshalb doppelt
-abgesichert: `menuconfig` lässt nur 1 bis 10 zu, und die Firmware prüft beim
-Start zusätzlich, auf welcher Einheit der Pin liegt, und verweigert den
-Dienst mit einer Meldung statt still Unsinn zu messen.
+ausfallen, sobald das Mesh hochkommt. Die Web-Oberfläche bietet ihn deshalb
+gar nicht erst an.
 
-Innerhalb von ADC1:
+Innerhalb von ADC1, bei der aktiven I2S-Belegung:
 
 | GPIO | ADC1-Kanal | Status |
 |------|-----------|--------|
@@ -646,34 +677,35 @@ Innerhalb von ADC1:
 | 5 | CH4 | belegt — I2S DIN |
 | 6 | CH5 | belegt — I2S LRCLK |
 | 7 | CH6 | belegt — I2S DOUT |
-| 8 | CH7 | belegt in der auskommentierten Alternativbelegung in `audio_i2s.h` (LRCLK); bei der aktiven Belegung frei |
+| 8 | CH7 | frei; in der auskommentierten Alternativbelegung wäre es LRCLK |
 | 9 | CH8 | frei |
-| 10 | CH9 | **Vorgabe** |
+| 10 | CH9 | frei, **Vorgabe** für die Lautstärke |
 
 ### Einschränkungen
 
-- **Messfehler durch den Pull-up.** Er liegt bei rund 45 kΩ gegen die
-  Schleiferimpedanz, die bei einem 10-kΩ-Poti in Mittelstellung mit etwa
-  2,5 kΩ am höchsten ist. Das verschiebt die Anzeige dort um **rund 2,6 %**;
-  an beiden Enden ist sie exakt. Für Lautstärke ist das nicht hörbar. Wer es
-  genauer will, nimmt einen externen 100-kΩ-Widerstand vom Schleifer nach
-  3V3 und schaltet den internen Pull-up ab — dann sind es etwa 1,2 %.
-- **Der Pinwert ist nicht zur Laufzeit änderbar.** Er wird zur Bauzeit
-  gesetzt; eine Änderung erfordert `menuconfig` und einen neuen Flash-Vorgang.
-- **Der Pin ist belegt, auch ohne Poti.** Solange die Funktion eingeschaltet
-  ist, steht GPIO 10 für nichts anderes zur Verfügung. Wird er gebraucht,
-  entweder auf 1, 2 oder 9 ausweichen oder die Funktion ganz abschalten.
+- **Messfehler durch den Pull-up** (Lautstärke). Rund 45 kΩ gegen die
+  Schleiferimpedanz, die bei 10 kΩ in Mittelstellung mit etwa 2,5 kΩ am
+  höchsten ist: Die Anzeige liegt dort **rund 2,6 %** zu hoch, an beiden
+  Enden exakt. Nicht hörbar. Beim Delay-Poti gilt dasselbe mit dem
+  Pull-down, dort **rund 2,6 % zu niedrig** in Mittelstellung — bei ±200 ms
+  etwa 5 ms. Wer genau „0 ms" in der Mitte braucht, gleicht nach Gehör ab.
+- **Pinwechsel nur mit Neustart.** Kanäle und Pulls werden beim Start
+  gesetzt. Die Seite startet das Gerät nach dem Speichern selbst neu.
+- **Ein gewählter Pin bleibt belegt**, auch wenn kein Poti dran hängt. Wird er
+  anderweitig gebraucht: auf „none" stellen.
 - **Kein Totalausfall bei Fehlern.** Lässt sich der ADC nicht öffnen, bleibt
-  die Ausgabestufe bei voller Lautstärke und der Rest läuft weiter. Die
-  Meldung steht im Log.
-- **Sehr schnelles Drehen wird geglättet.** Abgefragt wird alle 50 ms, der
-  neue Wert dann über einen 20-ms-Frame eingeblendet. Ein Ruck am Knopf
-  erreicht den Lautsprecher also mit bis zu 70 ms Verzögerung — gewollt,
-  denn ein sofortiger Sprung wäre ein hörbares Knacken.
-- **Ein Totband von gut 1 %** verhindert, dass die letzten Bits des ADC die
-  Lautstärke zittern lassen. Sehr kleine Drehungen bleiben deshalb ohne
-  Wirkung. Die Endanschläge sind davon ausgenommen, damit „ganz aus" und
-  „ganz auf" in jedem Fall erreichbar bleiben.
+  die Lautstärke bei 100 % und das Delay beim Feldwert; der Rest läuft
+  weiter, die Meldung steht im Log.
+- **Glättung.** Abgefragt wird alle 50 ms, 16 Messungen gemittelt, mit einem
+  Totband von gut 1 % gegen Zittern der letzten Bits. Die Lautstärke wird
+  zusätzlich über einen 20-ms-Frame eingeblendet — ein Ruck am Knopf braucht
+  also bis zu 70 ms, dafür knackt es nicht. Die Endanschläge sind vom
+  Totband ausgenommen und bleiben immer erreichbar.
+- **Große Delay-Sprünge auf einem Client** (mehr als 100 ms auf einmal) löst
+  die Wiedergabe als harten Resync aus: ein kurzer Aussetzer oder
+  Stillstand, dann sitzt sie. Kleine Drehungen gleicht die Driftregelung
+  gleitend aus, bei 500 ppm höchstens 0,5 ms pro Sekunde — langsames Drehen
+  wirkt also verzögert.
 
 ---
 

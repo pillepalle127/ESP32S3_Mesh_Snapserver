@@ -131,7 +131,7 @@ static audio_dsp_params_t s_dsp_params;
 static float s_sub_gain_linear = 1.0f;
 static float s_wideband_gain_linear = 1.0f;
 /*
- * Local master volume, fed by the knob in volume_pot.c. The target is
+ * Local master volume, fed by the volume knob in pots.c. The target is
  * written from that task under s_dsp_lock; the current value belongs to
  * the audio task alone, which walks it towards the target across one
  * frame. Splitting the two is what lets the knob move at any moment

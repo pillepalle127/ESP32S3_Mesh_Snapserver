@@ -14,8 +14,8 @@ idf_component_register(
         "snapserver.c"
         "status_led.c"
 		"snapcontrol.c" # <--
+        "pots.c"
         "voice_announce.c"
-        "volume_pot.c"
         "webconfig.c"
     INCLUDE_DIRS "."
     EMBED_TXTFILES "webconfig_page.html"

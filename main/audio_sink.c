@@ -1200,6 +1200,25 @@ void audio_sink_set_delay_trim_ms(int16_t delay_trim_ms)
     s_delay_trim_ms = delay_trim_ms;
 }
 
+void audio_sink_apply_delay_trim(uint8_t role, uint16_t buffer_ms, int16_t trim_ms)
+{
+    if (role != DEVICE_ROLE_SERVER) {
+        audio_sink_set_delay_trim_ms(trim_ms);
+        return;
+    }
+
+    /*
+     * Server: its own speaker sits behind a delay line of buffer_ms, the
+     * same bufferMs every client schedules against, and the trim nudges
+     * that. The line was allocated at start for the full trim range, so
+     * this only moves the read position.
+     */
+    const int32_t local_delay_ms = (int32_t)buffer_ms + trim_ms;
+    audio_i2s_set_output_delay(
+        (uint32_t)(local_delay_ms > 0 ? local_delay_ms : 0),
+        (uint32_t)buffer_ms + DEVICE_CONFIG_DELAY_TRIM_MAX_MS);
+}
+
 audio_sink_source_t audio_sink_current_source(void)
 {
     return s_voice_on ? AUDIO_SINK_SOURCE_VOICE : s_active_source;

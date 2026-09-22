@@ -19,11 +19,16 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "mdns.h"
+#include "pots.h"
 #include "provisioning.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "WEBCONFIG";
 
-#define WEBCONFIG_MAX_BODY 1024
+/* The full form with a 64-character password and the knob fields comes to
+ * roughly 800 bytes; 1536 leaves room without growing the 8 KB handler
+ * stack meaningfully. */
+#define WEBCONFIG_MAX_BODY 1536
 #define WEBCONFIG_REBOOT_DELAY_US (1500LL * 1000LL)
 
 extern const uint8_t webconfig_page_html_start[] asm("_binary_webconfig_page_html_start");
@@ -197,6 +202,36 @@ static esp_err_t api_config_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "local_input_threshold_db", cfg.local_input_threshold_db);
     cJSON_AddStringToObject(root, "server_host", cfg.server_host);
 
+    device_pots_t pots;
+    device_config_get_pots(&pots);
+#if CONFIG_SNAPSERVER_POTS_ENABLE
+    cJSON_AddBoolToObject(root, "pots_supported", true);
+#else
+    cJSON_AddBoolToObject(root, "pots_supported", false);
+#endif
+    cJSON_AddNumberToObject(root, "pot_volume_gpio", pots.volume_gpio);
+    cJSON_AddNumberToObject(root, "pot_delay_gpio", pots.delay_gpio);
+    cJSON_AddNumberToObject(root, "pot_delay_range_ms", pots.delay_range_ms);
+    cJSON_AddNumberToObject(root, "pot_delay_range_max_ms", DEVICE_CONFIG_DELAY_TRIM_MAX_MS);
+
+    /*
+     * Every ADC1 pin with its verdict, not just the usable ones: the page
+     * offers only the free ones, but can say why the rest are missing.
+     * The list is computed from the firmware's own pin assignments, so it
+     * follows any rewiring in audio_i2s.h without a second copy here.
+     */
+    cJSON *pins = cJSON_AddArrayToObject(root, "adc_pins");
+    for (uint8_t gpio = 1U; gpio <= 10U; ++gpio) {
+        cJSON *pin = cJSON_CreateObject();
+        cJSON_AddNumberToObject(pin, "gpio", gpio);
+        const char *reason = pots_pin_blocked_reason(gpio);
+        cJSON_AddBoolToObject(pin, "free", reason == NULL);
+        if (reason != NULL) {
+            cJSON_AddStringToObject(pin, "reason", reason);
+        }
+        cJSON_AddItemToArray(pins, pin);
+    }
+
     /*
      * Only echo the real password back while the password-protected mesh AP
      * is the active network: anyone reaching this over the open, unprotected
@@ -267,21 +302,15 @@ static void apply_live_params(const device_config_t *cfg)
      */
     audio_sink_set_source_mode(cfg->source_mode);
     audio_sink_set_local_input_threshold_db(cfg->local_input_threshold_db);
-    audio_sink_set_delay_trim_ms(cfg->delay_trim_ms);
 
     /*
-     * Server role only: keep the local output delay in step with the trim
-     * so the server's own speaker can be nudged against the clients while
-     * listening, exactly as the trim does on a client. Role-gated because
-     * calling this on a client would allocate a delay line it never uses --
-     * its output goes through audio_i2s_write_mono(), which the delay
-     * deliberately does not touch.
+     * The field only counts while no delay knob is running; otherwise the
+     * knob owns the trim, and applying the saved number here would make
+     * the speaker jump away from where the knob stands until it is next
+     * moved.
      */
-    if (cfg->role == DEVICE_ROLE_SERVER) {
-        const int32_t local_delay_ms = (int32_t)cfg->buffer_ms + cfg->delay_trim_ms;
-        audio_i2s_set_output_delay(
-            (uint32_t)(local_delay_ms > 0 ? local_delay_ms : 0),
-            (uint32_t)cfg->buffer_ms + DEVICE_CONFIG_DELAY_TRIM_MAX_MS);
+    if (!pots_delay_active()) {
+        audio_sink_apply_delay_trim(cfg->role, cfg->buffer_ms, cfg->delay_trim_ms);
     }
 }
 
@@ -332,16 +361,44 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
      * an empty mesh_password means "open network". */
     parse_password_field(root, "server_host", next.server_host, sizeof(next.server_host));
 
+    device_pots_t old_pots;
+    device_config_get_pots(&old_pots);
+    device_pots_t next_pots = old_pots;
+    if (parse_number_field(root, "pot_volume_gpio", &num)) next_pots.volume_gpio = (uint8_t)num;
+    if (parse_number_field(root, "pot_delay_gpio", &num)) next_pots.delay_gpio = (uint8_t)num;
+    if (parse_number_field(root, "pot_delay_range_ms", &num)) {
+        next_pots.delay_range_ms = (uint16_t)num;
+    }
+
     cJSON_Delete(root);
+
+    /*
+     * Checked here, before anything is stored: a request that picks an I2S
+     * pin for a knob -- the page never offers one, but the API is open --
+     * must not get half-saved with the rest of the form.
+     */
+    if (!device_config_pots_valid(&next_pots)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "knob pins rejected (pin not free?)");
+        return ESP_OK;
+    }
 
     if (device_config_save(&next) != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "config rejected (out of range?)");
         return ESP_OK;
     }
+    if (device_config_save_pots(&next_pots) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "storing knob settings failed");
+        return ESP_OK;
+    }
 
     device_config_t saved;
     device_config_get(&saved);
+    pots_set_delay_range(next_pots.delay_range_ms);
     apply_live_params(&saved);
+
+    /* Pins are claimed and pulled once at start, so moving one needs a reboot. */
+    const bool pot_pins_changed = old_pots.volume_gpio != next_pots.volume_gpio ||
+                                  old_pots.delay_gpio != next_pots.delay_gpio;
 
     /*
      * A save while the (open, timeout-limited) provisioning AP is active
@@ -352,6 +409,7 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
      * short of a power cycle.
      */
     const bool needs_reboot = settings_changed_needing_reboot(&old_cfg, &saved) ||
+        pot_pins_changed ||
         provisioning_get_active_reason() != PROVISIONING_REASON_NONE;
 
     cJSON *resp = cJSON_CreateObject();
@@ -421,6 +479,21 @@ static esp_err_t api_status_get_handler(httpd_req_t *req)
     cJSON_AddNumberToObject(root, "boot_fail_count", cfg.boot_fail_count);
     cJSON_AddNumberToObject(root, "uptime_s", esp_timer_get_time() / 1000000);
     cJSON_AddStringToObject(root, "device_id", device_id);
+
+    /* Live knob readings; null where no knob is running. */
+    const int volume_percent = pots_volume_percent();
+    if (volume_percent >= 0) {
+        cJSON_AddNumberToObject(root, "pot_volume_percent", volume_percent);
+    } else {
+        cJSON_AddNullToObject(root, "pot_volume_percent");
+    }
+    int16_t delay_ms = 0;
+    if (pots_delay_ms(&delay_ms)) {
+        cJSON_AddNumberToObject(root, "pot_delay_ms", delay_ms);
+    } else {
+        cJSON_AddNullToObject(root, "pot_delay_ms");
+    }
+    cJSON_AddBoolToObject(root, "pot_delay_active", pots_delay_active());
 
     return send_json(req, root);
 }

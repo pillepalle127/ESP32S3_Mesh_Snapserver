@@ -17,7 +17,7 @@
 #include "mesh_root.h"
 #include "snapserver.h"
 #include "status_led.h"
-#include "volume_pot.h"
+#include "pots.h"
 #include "voice_announce.h"
 #include "webconfig.h"
 
@@ -137,14 +137,16 @@ void app_main(void)
     ESP_ERROR_CHECK(audio_i2s_set_dsp_params(&dsp_params));
 
     /*
-     * Not fatal: without the knob the output stage stays at the full
-     * volume it defaults to, which is exactly what a board with no
-     * potentiometer fitted is supposed to do.
+     * Not fatal: without a volume knob the output stage stays at the full
+     * volume it defaults to, and without a delay knob the trim from the
+     * config applies -- exactly what a board with nothing fitted should do.
      */
-    result = volume_pot_start();
+    device_pots_t pots;
+    device_config_get_pots(&pots);
+    result = pots_start(&pots);
     if (result != ESP_OK && result != ESP_ERR_NOT_SUPPORTED) {
         ESP_LOGW(TAG,
-                 "Volume knob unavailable: %s -- playing at full volume",
+                 "Knob inputs unavailable: %s -- full volume, delay trim from config",
                  esp_err_to_name(result));
     }
 
@@ -153,6 +155,8 @@ void app_main(void)
         audio_sink_set_source_mode(cfg.source_mode);
         audio_sink_set_local_input_threshold_db(cfg.local_input_threshold_db);
         audio_sink_set_delay_trim_ms(cfg.delay_trim_ms);
+        /* After the configured trim, so the knob's first reading wins. */
+        pots_enable_delay(cfg.role, cfg.buffer_ms);
 
         result = voice_receive_start();
         if (result != ESP_OK) {
@@ -184,6 +188,9 @@ void app_main(void)
     ESP_ERROR_CHECK(audio_i2s_set_output_delay(
         (uint32_t)(local_delay_ms > 0 ? local_delay_ms : 0),
         (uint32_t)cfg.buffer_ms + DEVICE_CONFIG_DELAY_TRIM_MAX_MS));
+    /* After the delay line exists and holds the configured trim, so the
+     * knob's first reading replaces it rather than racing it. */
+    pots_enable_delay(cfg.role, cfg.buffer_ms);
 
     result = audio_opus_start();
     if (result != ESP_OK) {

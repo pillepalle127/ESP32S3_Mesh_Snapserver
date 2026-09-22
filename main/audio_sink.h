@@ -133,6 +133,15 @@ void audio_sink_set_local_input_threshold_db(int8_t threshold_db);
  * call before audio_sink_start(). */
 void audio_sink_set_delay_trim_ms(int16_t delay_trim_ms);
 
+/*
+ * Applies a delay trim the way the given role needs it: a client moves its
+ * playback schedule (audio_sink_set_delay_trim_ms()), a server resizes the
+ * delay line in front of its own speaker to buffer_ms + trim. The one place
+ * both the config page and the delay knob go through, so they cannot drift
+ * apart in how a trim is interpreted.
+ */
+void audio_sink_apply_delay_trim(uint8_t role, uint16_t buffer_ms, int16_t trim_ms);
+
 /* Currently active output source (diagnostics/status API). */
 audio_sink_source_t audio_sink_current_source(void);
 
