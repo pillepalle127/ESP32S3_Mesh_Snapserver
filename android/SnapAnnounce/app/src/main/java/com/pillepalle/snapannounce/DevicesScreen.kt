@@ -141,7 +141,9 @@ fun DevicesScreen(host: String, onOpenSettings: (MeshDevice) -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                items(current.devices, key = { it.id ?: "\u0000server" }) { dev ->
+                // Keys must be unique; an old firmware can list a reconnected
+                // client twice until the stale connection times out.
+                items(current.devices.distinctBy { it.id }, key = { it.id ?: "\u0000server" }) { dev ->
                     DeviceCard(
                         dev = dev,
                         delayMaxMs = current.delayMaxMs,
@@ -237,7 +239,7 @@ private fun VolumeRow(dev: MeshDevice, onVolume: (Int) -> Unit, onMute: (Boolean
             valueRange = 0f..100f,
             modifier = Modifier.weight(1f),
         )
-        Text("${shown.roundToInt()} %", modifier = Modifier.width(52.dp))
+        Text("${shown.roundToInt()} %", maxLines = 1, modifier = Modifier.width(60.dp))
         Switch(checked = dev.muted, onCheckedChange = onMute)
         Text("stumm", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 4.dp))
     }

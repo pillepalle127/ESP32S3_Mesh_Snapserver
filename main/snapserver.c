@@ -366,6 +366,7 @@ static int32_t max_chunk_age_us(uint16_t buffer_ms)
 static volatile bool s_announcement_active;
 
 static int level1_match_rssi(const char *mac, const wifi_sta_list_t *sta_list);
+static void mark_client_failed(client_t *client);
 
 static portMUX_TYPE s_clients_lock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -1133,7 +1134,28 @@ static bool handle_hello(client_t *client,
     client->protocol_ver = proto;
     client->last_seen_sec = seen_sec;
     client->last_seen_usec = seen_usec;
+
+    /*
+     * The same client on another slot is a connection it has already given
+     * up -- it reconnected, e.g. after a parent change -- that the server
+     * would otherwise keep for up to CLIENT_SILENCE_LIMIT_US, listing the
+     * client twice and streaming into the void. End it now.
+     */
+    client_t *stale[MAX_CLIENTS];
+    size_t stale_count = 0;
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+        if (&s_clients[i] != client && s_clients[i].active &&
+            strcmp(s_clients[i].id, id) == 0) {
+            stale[stale_count++] = &s_clients[i];
+        }
+    }
     portEXIT_CRITICAL(&s_clients_lock);
+
+    for (size_t i = 0; i < stale_count; ++i) {
+        ESP_LOGW(TAG, "%s reconnected, closing its old connection from %s",
+                 id, stale[i]->peer);
+        mark_client_failed(stale[i]);
+    }
 
     ESP_LOGI(TAG,
              "Hello from %s: id=%s name=%s host=%s os=%s arch=%s version=%s "

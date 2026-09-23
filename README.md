@@ -127,6 +127,8 @@ Fremde Clients bekommen während einer Durchsage `muted:true`, weil sie den UDP-
 
 Jedes Gerät bietet die Seite auf Port 80 an. Alle Werte liegen im NVS und überleben Updates.
 
+<img src="docs/Screenshot_20260923_215233_Firefox.jpg" alt="Konfigurationsseite des Servers" width="280">
+
 | Gruppe | Felder | Übernahme |
 |---|---|---|
 | Rolle | Server/Client | Neustart |
@@ -239,7 +241,8 @@ Eigener Kanal neben dem Stream: niedrige Latenz statt Lückenlosigkeit.
   Mesh-WLAN gebunden (`bindProcessToNetwork`), sonst ginge der Traffic über mobile Daten. Cleartext-HTTP ist
   erlaubt, weil die Server-Adresse frei einstellbar ist.
 
-<img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce" width="320">
+<img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce, Durchsage" width="280">
+<img src="docs/Screenshot_20260923_215400_SnapAnnounce.jpg" alt="SnapAnnounce, Geräte" width="280">
 
 ---
 

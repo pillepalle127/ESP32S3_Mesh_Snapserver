@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ESP32-S3 Snapserver Config</title>
+<title>ESP32-S3 Snapmesh</title>
 <style>
   body { font-family: sans-serif; max-width: 32rem; margin: 1rem auto; padding: 0 1rem; color: #222; }
   h1 { font-size: 1.3rem; }
@@ -54,7 +54,7 @@
 </style>
 </head>
 <body>
-<h1 id="pageTitle">ESP32-S3 Snapserver Config</h1>
+<h1 id="pageTitle">ESP32-S3 Snapmesh</h1>
 <div id="server_nav" hidden></div>
 <div id="status">Loading...</div>
 
@@ -257,10 +257,9 @@ function selectDevice(id, name) {
  * at a glance. */
 function updatePageTitle() {
   if (currentDeviceId === null || currentRole === null) return;
-  const roleLabel = currentRole === 1 ? 'Client' : 'Server';
-  const suffix = `${roleLabel} ${currentDeviceId}`;
-  document.title = `ESP32-S3 Snapserver Config — ${suffix}`;
-  $('pageTitle').textContent = `ESP32-S3 Snapserver Config — ${suffix}`;
+  const title = `ESP32-S3 ${currentRole === 1 ? 'Snapclient' : 'Snapserver'} ${currentDeviceId}`;
+  document.title = title;
+  $('pageTitle').textContent = title;
 }
 
 async function loadConfig() {
