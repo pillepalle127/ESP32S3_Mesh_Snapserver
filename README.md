@@ -31,7 +31,8 @@ Offizielle Snapclients (PC, Android, iOS) und Snapcast-Control-Apps funktioniere
 
 ## Hardware
 
-* ESP32-S3 mit PSRAM (getestet: 16 MB Flash, 8 MB Octal-PSRAM, USB-Serial/JTAG)
+* ESP32-S3 mit PSRAM (getestet: 16 MB Flash, 8 MB Octal-PSRAM, USB-Serial/JTAG), z. B. YD-ESP32-S3 N16R8
+  von VCC-GND Studio ([Schaltplan V1.4](https://github.com/vcc-gnd/YD-ESP32-S3/blob/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf))
 * Eingang: TinySine AudioB I2S V2r0
 * Ausgang: PCM5102A
 * optional: 2 × 10-kΩ-Poti, WS2812-LED
