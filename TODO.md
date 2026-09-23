@@ -105,47 +105,24 @@ Bugs sind umgesetzt:
   Daten (Prozessbindung ans WLAN), WebView-Dialog beim Factory Reset,
   Delay-Knöpfe auf schmalen Displays.
 
-- **Unkomplizierte Verteilung (vorgemerkt 2026-09-23).** Ziel: Nutzer
-  brauchen nur einen Browser und ein USB-Kabel für den ESP32 und einen
-  Download für die App, keine eigene Toolchain.
-
-  *Firmware*
-  1. **Ein Image statt mehrerer Dateien:** `esptool.py merge_bin` fasst
-     Bootloader, Partitionstabelle und App anhand von `build/flash_args` zu
-     einem `.bin` ab 0x0 zusammen.
-  2. **Flashen im Browser mit ESP Web Tools:** kleine Seite mit
-     „Installieren“-Knopf und `manifest.json` (Chip-Familie „ESP32-S3“,
-     Pfad zum Image). Flasht per WebSerial direkt aus Chrome/Edge über USB,
-     ohne ESP-IDF, Python oder Treiber; der USB-Serial/JTAG des S3 geht
-     direkt. Hosting kostenlos auf GitHub Pages. Wichtig: Bei Updates die
-     Option „Löschen“ aus lassen, sonst sind Rolle, Pins und alle
-     Einstellungen im NVS weg; bei einer Erstinstallation ist Löschen in
-     Ordnung.
-  3. **Automatisch bauen mit GitHub Actions:** bei jedem Release-Tag baut
-     `espressif/esp-idf-ci-action` mit der festgelegten IDF-Version
-     (5.4.3), erzeugt das zusammengeführte Image, hängt es an das
-     GitHub-Release und aktualisiert optional die Flash-Seite auf Pages.
-     Dann baut niemand mehr lokal.
-  4. **Ausweichweg ohne Chromium-Browser:** das eigenständige esptool von
-     Espressif (ohne Python-Installation), ein einzeiliger Befehl mit
-     `--before usb_reset` im README.
-  5. **Später: OTA über die Web-Oberfläche:** `.bin` auf der
-     Konfigurationsseite hochladen. Braucht OTA-Partitionen, die
-     `partitions.csv` heute nicht hat (siehe nächster Punkt); der Umbau
-     erfordert einmal ein komplettes Neuflashen mit Löschen.
-
-  *Android-App*
-  - Signiertes Release-APK im GitHub-Release, einmal mit eigenem Keystore
-    signiert, der für alle Updates derselbe bleiben muss. Installation
-    braucht auf dem Handy „Unbekannte Apps installieren“.
-  - Ebenfalls per GitHub Actions baubar (JDK 21, Gradle), der Keystore
-    liegt als Secret.
-  - Später denkbar: F-Droid oder Play Store; mehr Aufwand (Richtlinien, bei
-    Play die Datenschutzangaben).
-
-  *Reihenfolge:* (1) GitHub Action für Firmware und APK, (2) Flash-Seite
-  mit ESP Web Tools auf GitHub Pages, (3) OTA später zusammen mit dem Umbau
-  der Partitionen.
+- **Unkomplizierte Verteilung (umgesetzt 2026-09-23, erster Lauf steht
+  aus).** `.github/workflows/release.yml` baut bei einem Tag `v*` Firmware
+  (`espressif/esp-idf-ci-action`, IDF 5.4.3, nur aus `sdkconfig.defaults`)
+  und das signierte APK, hängt beides an das GitHub-Release und stellt die
+  Flash-Seite (`flasher/`, ESP Web Tools) auf GitHub Pages. Ein manueller
+  Lauf baut nur, als Probe vor dem Tag.
+  - **Updates schreiben drei Teile** (Bootloader `0x0`, Partitionstabelle
+    `0x8000`, App `0x10000`). Das Gesamt-Image aus `merge_bin` füllt
+    `0x9000–0xFFFF` mit `0xFF` und löscht damit NVS und PHY-Daten; es ist
+    nur für Neuinstallationen gedacht (geprüft 2026-09-23).
+  - `sdkconfig.defaults` ergibt jetzt exakt das `sdkconfig` der Geräte
+    (frischer Klon, 0 Abweichungen). Wer eine Option per `menuconfig`
+    ändert, muss sie dort nachtragen, sonst baut CI etwas anderes.
+  - Der Keystore der App liegt beim Nutzer und als Secret in GitHub; geht
+    er verloren, lässt sich die App nur noch per Deinstallieren updaten.
+  - Offen: OTA über die Web-Oberfläche. Braucht OTA-Partitionen (siehe
+    nächster Punkt) und einmal ein komplettes Neuflashen mit Löschen.
+    Später denkbar: F-Droid oder Play Store.
 
 - `partitions.csv` hat keine OTA- oder Coredump-Partition. Kein Problem für
   den aktuellen Funktionsumfang, aber falls OTA-Updates oder

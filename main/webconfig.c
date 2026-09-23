@@ -14,6 +14,7 @@
 #include "cJSON.h"
 #include "client_store.h"
 #include "device_config.h"
+#include "esp_app_desc.h"
 #include "esp_heap_caps.h"
 #include "esp_http_server.h"
 #include "esp_log.h"
@@ -554,6 +555,8 @@ static cJSON *build_status_json(void)
     cJSON_AddNumberToObject(root, "boot_fail_count", cfg.boot_fail_count);
     cJSON_AddNumberToObject(root, "uptime_s", esp_timer_get_time() / 1000000);
     cJSON_AddStringToObject(root, "device_id", device_id);
+    /* The release tag in a CI build, `git describe` otherwise. */
+    cJSON_AddStringToObject(root, "version", esp_app_get_description()->version);
 
     /* Live knob readings; null where no knob is running. */
     const int volume_percent = pots_volume_percent();

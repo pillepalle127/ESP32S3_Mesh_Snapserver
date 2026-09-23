@@ -1,0 +1,186 @@
+# Builds the firmware and the Android app without any local toolchain.
+#
+# Tag v* : builds both, publishes a GitHub release with the firmware files
+#          and the signed APK, and updates the browser flasher on Pages.
+# Manual : builds both and keeps them as workflow artifacts only -- a dry
+#          run before tagging. The APK is unsigned if no keystore is set.
+#
+# Needs (repo settings): the secrets SNAPANNOUNCE_KEYSTORE_BASE64,
+# SNAPANNOUNCE_STORE_PASSWORD, SNAPANNOUNCE_KEY_ALIAS,
+# SNAPANNOUNCE_KEY_PASSWORD; Pages source "GitHub Actions"; and tags v*
+# allowed to deploy to the github-pages environment.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history, so `git describe` puts the tag into the app version
+      # that /api/status reports.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # No sdkconfig in the repo: sdkconfig.defaults is the whole config.
+      # The merged image fills 0x9000-0xFFFF (NVS, PHY data) with 0xFF, so
+      # it is for fresh installs only; updates write the three parts.
+      - name: Build
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.4.3
+          target: esp32s3
+          command: >-
+            git config --global --add safe.directory '*' &&
+            idf.py build &&
+            cd build &&
+            esptool.py --chip esp32s3 merge_bin -o snapmesh-full.bin @flash_args
+
+      - name: Collect
+        run: |
+          mkdir dist
+          cp build/bootloader/bootloader.bin dist/
+          cp build/partition_table/partition-table.bin dist/
+          cp build/esp32_s3_mini_snapserver.bin dist/snapmesh-app.bin
+          cp build/snapmesh-full.bin dist/
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: dist/
+
+  app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      # The repo has no Gradle wrapper, only the version it expects.
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.13'
+
+      - name: Version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "name=0.0.0-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The keystore must stay the same for every release, or phones refuse
+      # the update. A tag without it fails instead of shipping an APK that
+      # could never be updated.
+      - name: Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.SNAPANNOUNCE_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              echo "::error::Secret SNAPANNOUNCE_KEYSTORE_BASE64 is missing; a release APK must be signed."
+              exit 1
+            fi
+            echo "No keystore: building an unsigned test APK."
+            exit 0
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/snapannounce.jks"
+          echo "SNAPANNOUNCE_KEYSTORE_FILE=$RUNNER_TEMP/snapannounce.jks" >> "$GITHUB_ENV"
+
+      - name: Build
+        working-directory: android/SnapAnnounce
+        env:
+          SNAPANNOUNCE_STORE_PASSWORD: ${{ secrets.SNAPANNOUNCE_STORE_PASSWORD }}
+          SNAPANNOUNCE_KEY_ALIAS: ${{ secrets.SNAPANNOUNCE_KEY_ALIAS }}
+          SNAPANNOUNCE_KEY_PASSWORD: ${{ secrets.SNAPANNOUNCE_KEY_PASSWORD }}
+        run: >-
+          gradle --no-daemon assembleRelease
+          -PappVersionName=${{ steps.version.outputs.name }}
+          -PappVersionCode=${{ github.run_number }}
+
+      - name: Collect
+        run: |
+          mkdir dist
+          cp android/SnapAnnounce/app/build/outputs/apk/release/app-release*.apk \
+             "dist/SnapAnnounce-${{ steps.version.outputs.name }}.apk"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: app
+          path: dist/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [firmware, app]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          body: |
+            **Firmware im Browser installieren:** https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/ (Chrome oder Edge am PC; bei einem Update „Erase device“ nicht anhaken, dann bleiben die Einstellungen erhalten).
+
+            **Mit esptool:**
+            ```
+            esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin
+            ```
+            `snapmesh-full.bin` ist ein Gesamt-Image ab `0x0` nur für eine Neuinstallation – es überschreibt die gespeicherten Einstellungen.
+
+            **App:** `SnapAnnounce-*.apk` herunterladen und installieren („Unbekannte Apps installieren“ erlauben).
+
+  pages:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: firmware
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: firmware
+          path: dist
+
+      - name: Assemble site
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir site
+          sed "s/__VERSION__/$VERSION/g" flasher/index.html > site/index.html
+          sed "s/__VERSION__/$VERSION/g" flasher/manifest.template.json > site/manifest.json
+          cp dist/bootloader.bin dist/partition-table.bin dist/snapmesh-app.bin site/
+          ls -l site
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

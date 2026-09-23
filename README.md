@@ -14,6 +14,27 @@ Offizielle Snapclients (PC, Android, iOS) und Snapcast-Control-Apps funktioniere
 
 ---
 
+## Installation
+
+Ohne eigene Toolchain; gebaut wird bei jedem Release in GitHub Actions (`.github/workflows/release.yml`).
+
+* **Firmware im Browser:** [Flash-Seite](https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/) in Chrome
+  oder Edge am PC öffnen, Board per USB anschließen, *Installieren*. Bei einem Update **„Erase device“ nicht
+  anhaken**, dann bleiben Rolle, Mesh und Pins erhalten. Ein neues Board startet danach im
+  [Provisioning-AP](#provisioning-ap).
+* **Firmware mit esptool** (eigenständiges Programm, kein Python nötig), Dateien aus dem
+  [Release](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases):
+  ```bash
+  esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin
+  ```
+  `snapmesh-full.bin` ist das Gesamt-Image ab `0x0`. Es füllt NVS und PHY-Daten (`0x9000–0xFFFF`) mit `0xFF`,
+  also nur für eine Neuinstallation.
+* **App:** `SnapAnnounce-<version>.apk` aus dem Release; auf dem Handy „Unbekannte Apps installieren“ erlauben.
+  Eine selbst gebaute Debug-Version vorher deinstallieren (andere Signatur).
+* Voraussetzung: ESP32-S3 mit 16 MB Flash und 8 MB Octal-PSRAM (N16R8).
+
+---
+
 ## Funktionen
 
 | Bereich | Umsetzung |

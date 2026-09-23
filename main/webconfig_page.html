@@ -515,6 +515,7 @@ async function loadStatus() {
     }
     $('status').textContent =
       (REASON_LABEL[s.reason] || s.reason) + pins + clients +
+      (s.version ? '\nfirmware: ' + s.version : '') +
       '\nboot-fail streak: ' + s.boot_fail_count +
       '\nuptime: ' + s.uptime_s + ' s' + knobs;
   } catch (e) {

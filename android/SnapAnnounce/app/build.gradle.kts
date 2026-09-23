@@ -3,6 +3,14 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+/*
+ * Release signing comes from the environment (the CI workflow decodes the
+ * keystore from a secret), so no key or password ever sits in the repo.
+ * Without it, assembleRelease still builds, just unsigned; debug builds
+ * are not affected either way.
+ */
+val releaseKeystore: String? = System.getenv("SNAPANNOUNCE_KEYSTORE_FILE")
+
 android {
     namespace = "com.pillepalle.snapannounce"
     compileSdk = 34
@@ -13,13 +21,28 @@ android {
         // before this; 26 also buys NotificationChannel for free.
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1"
+        // Set from the release tag by CI: -PappVersionName=0.2.0 -PappVersionCode=<run>.
+        versionCode = (project.findProperty("appVersionCode") as String?)?.toInt() ?: 1
+        versionName = project.findProperty("appVersionName") as String? ?: "0.1"
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("SNAPANNOUNCE_STORE_PASSWORD")
+                keyAlias = System.getenv("SNAPANNOUNCE_KEY_ALIAS")
+                keyPassword = System.getenv("SNAPANNOUNCE_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 

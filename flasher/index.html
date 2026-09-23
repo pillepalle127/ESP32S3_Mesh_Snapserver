@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Snapmesh installieren</title>
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  :root { --fg: #1f2328; --muted: #59636e; --bg: #ffffff; --box: #f6f8fa; --line: #d1d9e0;
+          --accent: #2b6cb0; --warn-bg: #fff8c5; --warn-line: #d4a72c; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fg: #e6edf3; --muted: #9198a1; --bg: #0d1117; --box: #151b23; --line: #3d444d;
+            --accent: #4493f8; --warn-bg: #2e2a1a; --warn-line: #9e6a03; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 40rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+  h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+  h2 { font-size: 1.1rem; margin: 2rem 0 0.5rem; }
+  .version { color: var(--muted); margin: 0 0 1.5rem; }
+  .install { background: var(--box); border: 1px solid var(--line); border-radius: 8px;
+             padding: 1.25rem; text-align: center; }
+  .btn { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 0.7rem 1.6rem;
+         font: inherit; font-weight: 600; cursor: pointer; }
+  .warn { background: var(--warn-bg); border: 1px solid var(--warn-line); border-radius: 8px;
+          padding: 0.75rem 1rem; margin: 1rem 0; }
+  ol, ul { padding-left: 1.3rem; }
+  li { margin: 0.3rem 0; }
+  code { background: var(--box); border: 1px solid var(--line); border-radius: 4px;
+         padding: 0 0.25rem; font-size: 0.9em; overflow-wrap: anywhere; }
+  a { color: var(--accent); }
+  .muted { color: var(--muted); font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ESP32-S3 Mesh Snapserver</h1>
+  <p class="version">Firmware __VERSION__ &middot; für Server und Clients</p>
+
+  <div class="install">
+    <esp-web-install-button manifest="manifest.json">
+      <button slot="activate" class="btn">Installieren</button>
+      <span slot="unsupported">Dieser Browser kann nicht flashen. Bitte Chrome oder Edge am PC verwenden
+        (nicht auf dem Handy, nicht Firefox oder Safari).</span>
+      <span slot="not-allowed">Flashen geht nur über https.</span>
+    </esp-web-install-button>
+  </div>
+
+  <div class="warn">
+    <strong>Update:</strong> im Dialog das Häkchen <em>„Erase device“</em> (Gerät löschen) <strong>nicht</strong> setzen.
+    Dann bleiben Rolle, Mesh-Zugangsdaten, Pins und alle Einstellungen erhalten.
+  </div>
+
+  <h2>So geht es</h2>
+  <ol>
+    <li>Das Board per USB an den PC anschließen, an die Buchse des ESP32-S3 selbst
+      (im Auswahldialog heißt der Port „USB JTAG/serial debug unit“).</li>
+    <li><strong>Installieren</strong> klicken, den Port wählen und bestätigen.</li>
+    <li>Nach dem Flashen startet das Board neu. Ein Update ist damit fertig.</li>
+  </ol>
+
+  <h2>Neues Board</h2>
+  <p>Bei der ersten Installation darf „Erase device“ gesetzt werden. Danach öffnet das Board ein offenes
+    WLAN <code>ESP32_provisioning_…</code>. Mit dem Handy verbinden, <code>http://192.168.5.1/</code> öffnen,
+    Rolle (Server oder Client), Mesh-Name und -Passwort eintragen, bei Bedarf die Pins, dann
+    <em>Save</em>.</p>
+  <p class="muted">Vorausgesetzt ist ein ESP32-S3 mit 16&nbsp;MB Flash und 8&nbsp;MB Octal-PSRAM
+    (z.&nbsp;B. YD-ESP32-S3 N16R8). Auf Boards mit Quad-PSRAM oder weniger Flash startet die Firmware nicht.</p>
+
+  <h2>Ohne Chrome oder Edge</h2>
+  <p>Mit dem eigenständigen <a href="https://github.com/espressif/esptool/releases">esptool</a> und den
+    drei Dateien aus dem <a href="https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases">Release</a>:</p>
+  <p><code>esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin</code></p>
+  <p class="muted"><code>snapmesh-full.bin</code> ist ein Gesamt-Image ab <code>0x0</code> für eine Neuinstallation.
+    Es überschreibt auch die gespeicherten Einstellungen, für Updates also nicht verwenden.</p>
+
+  <h2>App</h2>
+  <p>Die Android-App <em>SnapAnnounce</em> (Durchsagen, Geräteliste, Einstellungen) liegt als APK im
+    <a href="https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases">Release</a>.
+    Zum Installieren muss auf dem Handy „Unbekannte Apps installieren“ für den Browser erlaubt sein.</p>
+
+  <p class="muted"><a href="https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver">Quellcode und
+    Dokumentation</a> &middot; MIT License</p>
+</main>
+</body>
+</html>
