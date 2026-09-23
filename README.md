@@ -359,6 +359,75 @@ idf.py -p PORT flash monitor
 Ein Update ohne `erase_flash` behält Rolle, Pins und alle Einstellungen im NVS. Hängt der Reset über
 USB-Serial/JTAG mit Schreib-Timeout, hilft `esptool.py --before usb_reset … write_flash @flash_args` aus `build/`.
 
+### ESP-IDF-Konfiguration
+
+**`sdkconfig.defaults` ist die vollständige Konfiguration.** `sdkconfig` liegt nicht im Repository; ein frischer
+Build erzeugt es aus `sdkconfig.defaults` und kommt dabei exakt auf den Stand der Geräte (geprüft mit einem
+leeren Klon). Die Release-Pipeline baut nur daraus. Wer eine Option per `idf.py menuconfig` ändert, muss sie
+in `sdkconfig.defaults` nachtragen, sonst baut CI etwas anderes; `idf.py save-defconfig` zeigt die
+Abweichungen.
+
+**Versionen:** ESP-IDF **5.4.3** (in CI fest), Komponenten laut `main/idf_component.yml`, aufgelöst in
+`dependencies.lock`:
+
+| Komponente | Version | Zweck |
+|---|---|---|
+| `espressif/mesh_lite` | 1.0.2 | Mesh-Netz (zieht `iot_bridge` 1.0.1, `esp_modem`, `tinyusb` u. a. nach) |
+| `esphome/micro-opus` | 0.4.1 | Opus-Encoder und -Decoder |
+| `espressif/mdns` | 1.13.1 | `snapserver-<MAC>.local` / `snapclient-<MAC>.local` |
+
+**Einstellungen in `sdkconfig.defaults`** (Begründungen als Kommentar in der Datei):
+
+| Bereich | Option | Wert | Grund |
+|---|---|---|---|
+| Flash | `ESPTOOLPY_FLASHSIZE_16MB` | y | Board N16R8 |
+| | `PARTITION_TABLE_CUSTOM` | `partitions.csv` | 4-MB-App-Partition, siehe unten |
+| CPU | `ESP32S3_DEFAULT_CPU_FREQ_240` | y | Opus-Encoder und DSP |
+| PSRAM | `SPIRAM`, `SPIRAM_MODE_OCT`, `SPIRAM_SPEED_80M` | y | 8 MB Octal-PSRAM des N16R8 |
+| | `SPIRAM_USE_CAPS_ALLOC` | y | PSRAM nur gezielt (Puffer, Task-Stacks), `malloc()` bleibt intern |
+| | `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` | y | WLAN-/lwIP-Puffer ins PSRAM; ein Sendestau fraß sonst den internen RAM |
+| WLAN | `ESP_WIFI_STATIC_RX_BUFFER_NUM` | 10 | getestete Werte; ohne sie setzt IDF mit der Option oben 16 |
+| | `ESP_WIFI_RX_BA_WIN` | 6 | dito, IDF-Vorgabe wäre 16 |
+| lwIP | `LWIP_TCP_SND_BUF_DEFAULT`, `LWIP_TCP_WND_DEFAULT` | 2880 | 2 × MSS; größere Fenster puffern nur Audio, das keiner braucht, im knappen internen RAM |
+| | `LWIP_TCP_OOSEQ_MAX_PBUFS` | 4 | getesteter Wert, IDF-Vorgabe mit PSRAM wäre unbegrenzt |
+| | `LWIP_MAX_SOCKETS` | 24 | 10 Snapcast-Clients, JSON-RPC, Webserver, Mesh, Durchsagen |
+| | `LWIP_TCPIP_TASK_AFFINITY_CPU0` | y | lwIP-Task (Prio 18) verdrängte sonst den Audio-Task auf Kern 1 |
+| HTTP | `HTTPD_MAX_REQ_HDR_LEN` | 1024 | Header einer Android-WebView passten nicht in 512 (Fehler 431) |
+| System | `ESP_SYSTEM_EVENT_TASK_STACK_SIZE` | 4096 | `sys_evt` lief auf Clients nach dem Mesh-IP-Ereignis über (Boot-Schleife) |
+| | `FREERTOS_TIMER_TASK_STACK_DEPTH` | 4096 | Stack des FreeRTOS-Timer-Tasks (IDF: 2048); seit dem ersten Commit, Grund nicht dokumentiert |
+| | `FREERTOS_HZ` | 1000 | 1-ms-Tick (IDF: 100); seit dem ersten Commit, Grund nicht dokumentiert |
+| Diagnose | `FREERTOS_USE_TRACE_FACILITY`, `…_RUN_TIME_STATS` u. a. | y | CPU-Last je Task im Log (`cpu_stats.c`) |
+| | `LOG_DEFAULT_LEVEL_INFO` | y | |
+| Mesh | `SNAPSERVER_ENABLE_MESH_LITE`, `MESH_LITE_ENABLE` | y | Mesh einschalten (im Projekt-Kconfig standardmäßig aus) |
+
+**Projektoptionen** (`idf.py menuconfig` → *Snapserver Mesh Project Configuration*, `main/Kconfig.projbuild`).
+Die Schalter wirken beim Bauen; alle übrigen Werte sind nur Vorgaben für den ersten Start und den Factory
+Reset, danach gilt, was auf der Web-Seite eingestellt und im NVS gespeichert ist.
+
+| Option | Vorgabe | Bedeutung |
+|---|---|---|
+| `SNAPSERVER_STATUS_LED_ENABLE` | y | WS2812-Status-LED; `n` nimmt den LED-Code ganz heraus |
+| `SNAPSERVER_STATUS_LED_GPIO` | 48 | LED-Pin (0 = keine LED) |
+| `SNAPSERVER_POTS_ENABLE` | y | Potis für Lautstärke und Delay; `n` nimmt den Code heraus |
+| `MESH_SOFTAP_SSID_PREFIX` | `SnapMesh` | Mesh-SSID |
+| `MESH_SOFTAP_PASSWORD` | `criticalmass` | Mesh-Passwort |
+| `MESH_CHANNEL` | 6 | WLAN-Kanal (1–13) |
+| `SNAPSERVER_OPUS_BITRATE` | 96000 | Opus-Bitrate (16000–192000) |
+| `SNAPSERVER_OPUS_COMPLEXITY` | 5 | Opus-Complexity (0–10) |
+| `SNAPSERVER_CROSSOVER_HZ` | 120 | Trennfrequenz der Weiche (40–500 Hz) |
+
+**Partitionstabelle** (`partitions.csv`, 16 MB Flash):
+
+| Name | Typ | Offset | Größe | Inhalt |
+|---|---|---|---|---|
+| `nvs` | data/nvs | `0x9000` | 24 KB | Konfiguration, Pins, Potis, Client-Werte, DHCP-Bereich |
+| `phy_init` | data/phy | `0xF000` | 4 KB | WLAN-Kalibrierung |
+| `factory` | app | `0x10000` | 4 MB | Firmware (belegt ~1,4 MB) |
+
+Keine OTA- und keine Coredump-Partition; OTA-Updates brauchen einen Umbau (siehe TODO.md).
+
+### Android-App bauen
+
 Android-App: `android/SnapAnnounce` in Android Studio öffnen, oder mit Gradle 8.13 und JDK 21:
 
 ```bash
