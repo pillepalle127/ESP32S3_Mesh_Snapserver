@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "dhcpserver/dhcpserver.h"
 #include "esp_bridge.h"
 #include "esp_event.h"
 #include "esp_log.h"
@@ -16,6 +17,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
+#include "nvs.h"
 
 static const char *TAG = "PROVISIONING";
 
@@ -66,6 +68,45 @@ void provisioning_build_ssid(char *out, size_t out_len)
              mac[3], mac[4], mac[5]);
 }
 
+/*
+ * The DHCP server keeps its leases in RAM only, so after a restart it hands
+ * out .2, .3, ... again from scratch. A station that rode out the restart
+ * without asking again -- a phone reassociating quickly keeps its old
+ * address -- can then share an address with a newcomer, and one of the two
+ * stops getting its packets. So every boot takes the other half of the
+ * subnet: an address left over from the previous boot can never be handed
+ * out again. The one it keeps is NAKed at its next renewal. Only a device
+ * that rides out two restarts in a row without DHCP could still collide.
+ *
+ * Chosen once per boot and stored right away; a missing key means the
+ * previous firmware, which always used the lower half (IDF default).
+ */
+#define DHCP_HALF_NVS_NAMESPACE "dhcps"
+#define DHCP_HALF_NVS_KEY       "half"
+#define DHCP_HALF_SIZE          100U  /* DHCPS_MAX_LEASE */
+
+static int s_dhcp_half = -1;
+
+static int dhcp_half_for_this_boot(void)
+{
+    if (s_dhcp_half >= 0) {
+        return s_dhcp_half;
+    }
+    uint8_t previous = 0U;
+    nvs_handle_t handle;
+    if (nvs_open(DHCP_HALF_NVS_NAMESPACE, NVS_READWRITE, &handle) == ESP_OK) {
+        (void)nvs_get_u8(handle, DHCP_HALF_NVS_KEY, &previous);
+        s_dhcp_half = (previous == 0U) ? 1 : 0;
+        if (nvs_set_u8(handle, DHCP_HALF_NVS_KEY, (uint8_t)s_dhcp_half) == ESP_OK) {
+            (void)nvs_commit(handle);
+        }
+        nvs_close(handle);
+    } else {
+        s_dhcp_half = 1;
+    }
+    return s_dhcp_half;
+}
+
 esp_err_t provisioning_pin_ap_ip(esp_netif_t *ap_netif)
 {
     if (ap_netif == NULL) {
@@ -88,13 +129,26 @@ esp_err_t provisioning_pin_ap_ip(esp_netif_t *ap_netif)
         return result;
     }
 
+    /* .2-.101 or .102-.201; set after the IP, which the range is checked against. */
+    const uint32_t net = ntohl(ip_info.ip.addr) & 0xFFFFFF00U;
+    const uint32_t first = net + 2U + (uint32_t)dhcp_half_for_this_boot() * DHCP_HALF_SIZE;
+    dhcps_lease_t pool = { .enable = true };
+    pool.start_ip.addr = htonl(first);
+    pool.end_ip.addr = htonl(first + DHCP_HALF_SIZE - 1U);
+    result = esp_netif_dhcps_option(ap_netif, ESP_NETIF_OP_SET, ESP_NETIF_REQUESTED_IP_ADDRESS,
+                                    &pool, sizeof(pool));
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "DHCP range not set, using the default: %s", esp_err_to_name(result));
+    }
+
     result = esp_netif_dhcps_start(ap_netif);
     if (result != ESP_OK && result != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STARTED) {
         ESP_LOGW(TAG, "dhcps_start failed: %s", esp_err_to_name(result));
         return result;
     }
 
-    ESP_LOGI(TAG, "AP IP pinned to %s", PROVISIONING_AP_IP_ADDR);
+    ESP_LOGI(TAG, "AP IP pinned to %s, DHCP range .%u-.%u", PROVISIONING_AP_IP_ADDR,
+             (unsigned)(first & 0xFFU), (unsigned)((first + DHCP_HALF_SIZE - 1U) & 0xFFU));
     return ESP_OK;
 }
 

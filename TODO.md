@@ -245,6 +245,17 @@ Bugs sind umgesetzt:
   Klingt nach ca. einer Minute Laufzeit spürbar ab. Ursache nicht
   identifiziert, auf Nutzerwunsch zurückgestellt statt weiter untersucht.
 
+  **Wieder aufgetreten 2026-09-23:** nach einem Flash des Servers (19:43)
+  knackten Server-Lautsprecher und alle Clients, auch der Android-Snapclient,
+  über Minuten, ohne abzuklingen. Quelle war ein iPhone per A2DP am TinySine,
+  beides lief unverändert weiter; ein Neustart aller ESPs (19:48) hat es
+  beseitigt. Die Server-Statistik war in beiden Zuständen unauffällig
+  (~52 Chunks/s je Client, `skipped=0`, Frame-Abstand 20 ms ± 6 ms,
+  I2S-Takt < 150 ppm, 84 kB interner Heap frei). Es hängt also an einem
+  Zustand, den der Server beim Start einnimmt, nicht an Quelle, Funk oder
+  Last. Nächster Schritt, wenn es wieder auftritt: Uhrzeit notieren und den
+  Server-Log um diesen Start herum mit einem sauberen Start vergleichen.
+
 - Stufe 7 (Stufe 2 des Server/Client-Plans: Zeit-Sync und Drift, 2026-09-17):
   der Client richtet seine Wiedergabe jetzt auf die Serveruhr aus statt nur
   dem Ringpuffer zu folgen. `snapclient.c` macht den vollständigen
@@ -361,7 +372,16 @@ Bugs sind umgesetzt:
   Standard. Dasselbe gilt für das schon weiter oben vermerkte
   `esp_mesh_lite_set_wifi_reconnect_interval(2, 3, 5)`.
 
-  **Doppelte IP nach Server-Neustart — nur die Folge behoben.** Die
+  **Doppelte IP nach Server-Neustart — erledigt 2026-09-23.** Der Server
+  vergibt bei jedem Start aus der jeweils anderen Hälfte des Netzes
+  (`.2–.101` / `.102–.201`, gemerkt im NVS unter `dhcps/half`, siehe
+  `provisioning_pin_ap_ip()`). Eine Adresse aus dem vorigen Lauf wird so nie
+  neu vergeben; ein Gerät, das sie weiterbenutzt, bekommt bei der nächsten
+  Verlängerung ein NAK. Nur wer zwei Neustarts ohne DHCP übersteht, könnte
+  noch kollidieren. Achtung beim Lesen der Client-Liste: dieselbe IP bei zwei
+  Clients ist meist keine Doppelvergabe, sondern ein Gerät (z. B. ein Handy)
+  am AP eines ESP-Clients, das per NAPT mit dessen Adresse ankommt.
+  Ursprüngliche Beschreibung: Die
   DHCP-Lease-Tabelle des Servers liegt im RAM und ist nach einem Neustart
   leer. Clients, die durchgelaufen sind, behalten ihre Adresse, während der
   frische DHCP-Server dieselbe an den nächsten Anfragenden vergibt. Zwei
