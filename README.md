@@ -416,6 +416,25 @@ Offen (Details und Messwerte in [TODO.md](TODO.md)):
 
 ---
 
+## Haftungsausschluss
+
+Dies ist ein privates Bastelprojekt. Firmware, App und Anleitungen werden kostenlos und **ohne jede Gewähr**
+bereitgestellt; es gilt die [MIT-Lizenz](LICENSE). Die Nutzung erfolgt **auf eigene Verantwortung**. Soweit
+gesetzlich zulässig, übernehme ich keine Haftung für Schäden, die durch Nachbau, Installation oder Betrieb
+entstehen, etwa an Boards, Lautsprechern, Verstärkern oder anderen Geräten, für Datenverlust oder für
+Folgeschäden.
+
+Besonders zu beachten:
+
+* **Stromversorgung und Verstärker:** Netzteile, Verstärker und Verkabelung fachgerecht aufbauen. Arbeiten an
+  Netzspannung (230 V) nur von Fachleuten.
+* **Lautstärke:** Die Durchsage- und Musiklautstärke kann hoch sein. Pegel vorsichtig einstellen, um Gehör und
+  Lautsprecher zu schützen.
+* **Flashen:** Beim Aufspielen der Firmware kann ein Board unbrauchbar werden, etwa bei einer Unterbrechung.
+  Mit „Erase device“ gehen gespeicherte Einstellungen verloren.
+* **Funk:** Das System betreibt ein eigenes WLAN. Es ist für den privaten Einsatz gedacht und ersetzt keine
+  Alarm-, Notruf- oder Sicherheitsanlage.
+
 ## Abhängigkeiten und Lizenz
 
 ESP-IDF, ESP-Mesh-Lite, ESP-IoT-Bridge, ESP-Modem, ESP-mDNS, CMake Utilities (Apache 2.0); esp-opus (MIT).
