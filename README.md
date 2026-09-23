@@ -90,6 +90,17 @@ jeder Client. Welche Version ein Gerät hat, steht in seinem Statusfeld (`firmwa
    * **Geräte:** alle Lautsprecher mit Lautstärke, Stummschaltung und Verzögerung; **Einstellungen** öffnet die
      Konfiguration eines Geräts.
 
+**Berechtigungen:** Beim ersten Druck auf den Durchsage-Knopf fragt Android nach zwei Rechten:
+
+| Recht | Wozu | Was wählen |
+|---|---|---|
+| **Mikrofon** | Die Durchsage aufnehmen. Ohne dieses Recht gehen keine Durchsagen, die Geräteliste funktioniert trotzdem. | „Während der Nutzung der App“ genügt |
+| **Benachrichtigungen** (ab Android 13) | Solange eine Durchsage läuft, zeigt eine Benachrichtigung, dass das Mikrofon offen ist, auch bei gesperrtem Bildschirm. Dort lässt sich die Durchsage auch beenden. | **Zulassen** |
+
+Alle weiteren Rechte (WLAN- und Netzwerkzugriff, WLAN wach halten während einer Durchsage, Vordergrunddienst)
+erteilt Android bei der Installation ohne Nachfrage. Standort, Kontakte, Speicher oder Kamera braucht die App
+nicht. Wurde ein Recht versehentlich abgelehnt: Android-Einstellungen → Apps → SnapAnnounce → Berechtigungen.
+
 Eine selbst gebaute Version der App vorher deinstallieren, sonst verweigert Android das Update (andere Signatur).
 Neue Versionen der App lassen sich danach einfach darüber installieren.
 
