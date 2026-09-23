@@ -15,6 +15,7 @@
 #include "provisioning.h"
 #include "snapclient.h"
 #include "snapserver.h"
+#include "webconfig.h"
 
 #if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
 #include "esp_bridge.h"
@@ -109,6 +110,7 @@ static void ip_event_handler(void *arg, esp_event_base_t base, int32_t id, void 
     snapclient_set_server_host(host);
     snapclient_set_host_resolver(resolve_server_host);
     snapclient_set_unreachable_cb(force_mesh_rejoin);
+    snapclient_set_config_handler(webconfig_handle_remote_request);
     snapclient_set_network_available(true);
 
     if (!s_snapclient_started) {

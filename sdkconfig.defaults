@@ -35,3 +35,8 @@ CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_FREERTOS_USE_STATS_FORMATTING_FUNCTIONS=y
 CONFIG_FREERTOS_VTASKLIST_INCLUDE_COREID=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+# The default event loop runs Mesh-Lite's own IP_EVENT_STA_GOT_IP handlers
+# and then mesh_client.c's one (device_config_t on the stack, logging,
+# snapclient_start()). At the IDF default of 2304 B every client overflowed
+# sys_evt right after getting its mesh IP and rebooted in a loop.
+CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096

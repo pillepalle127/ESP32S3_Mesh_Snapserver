@@ -33,12 +33,13 @@ typedef enum {
 } status_led_state_t;
 
 /*
- * Brings up the RMT channel and runs a red/green/blue self-test, which is
- * also how to tell whether CONFIG_SNAPSERVER_STATUS_LED_GPIO is right for a
- * given board: the three flashes appear, or the pin is wrong.
+ * Brings up the RMT channel on the LED pin from the pin assignment
+ * (device_pins_t.status_led) and runs a red/green/blue self-test, which is
+ * also how to tell whether that pin is right for a given board: the three
+ * flashes appear, or the pin is wrong.
  *
- * Returns ESP_OK when the LED is disabled in Kconfig, so callers do not need
- * to care whether it is compiled in.
+ * Returns ESP_OK when the LED is disabled in Kconfig or no pin is
+ * assigned, so callers do not need to care whether there is one.
  */
 esp_err_t status_led_start(void);
 

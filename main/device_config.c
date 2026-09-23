@@ -10,6 +10,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "nvs.h"
+#include "pinmap.h"
 #include "pots.h"
 #include "sdkconfig.h"
 
@@ -18,6 +19,7 @@ static const char *TAG = "DEVICE_CONFIG";
 #define DEVICE_CONFIG_NVS_NAMESPACE "devcfg"
 #define DEVICE_CONFIG_NVS_KEY       "cfg"
 #define DEVICE_POTS_NVS_KEY         "pots"
+#define DEVICE_PINS_NVS_KEY         "pins"
 
 /*
  * s_cfg is written from whichever task calls device_config_save()/
@@ -53,6 +55,93 @@ static void seed_pot_defaults(device_pots_t *pots)
     pots->volume_gpio = DEVICE_POTS_DEFAULT_VOLUME_GPIO;
     pots->delay_gpio = DEVICE_POTS_DEFAULT_DELAY_GPIO;
     pots->delay_range_ms = DEVICE_POTS_DEFAULT_DELAY_RANGE_MS;
+}
+
+/* Guarded by s_cfg_lock like s_cfg. What the hardware was started with is
+ * s_boot_pins; s_pins moves on with every save, ahead of the next reboot. */
+static device_pins_t s_pins;
+static device_pins_t s_boot_pins;
+static bool s_pins_reverted;
+
+static bool pins_valid(const device_pins_t *pins);
+
+static void seed_pin_defaults(device_pins_t *pins)
+{
+    memset(pins, 0, sizeof(*pins));
+    pins->i2s_bclk = AUDIO_I2S_DEFAULT_GPIO_BCLK;
+    pins->i2s_lrclk = AUDIO_I2S_DEFAULT_GPIO_LRCLK;
+    pins->i2s_din = AUDIO_I2S_DEFAULT_GPIO_DIN;
+    pins->i2s_dout = AUDIO_I2S_DEFAULT_GPIO_DOUT;
+#if CONFIG_SNAPSERVER_STATUS_LED_ENABLE
+    pins->status_led = CONFIG_SNAPSERVER_STATUS_LED_GPIO;
+#endif
+    /* The Kconfig range for the LED allows pins the rules reject (or one
+     * of the I2S pins); a default that fails its own check would leave no
+     * valid pin set at all, so drop the LED instead. */
+    if (!pins_valid(pins)) {
+        pins->status_led = 0U;
+    }
+}
+
+/* True if gpio is one of the pins *pins assigns. 0 is never taken. */
+static bool pin_taken(const device_pins_t *pins, uint8_t gpio)
+{
+    if (gpio == 0U) {
+        return false;
+    }
+    return gpio == pins->i2s_bclk || gpio == pins->i2s_lrclk ||
+           gpio == pins->i2s_din || gpio == pins->i2s_dout ||
+           gpio == pins->status_led;
+}
+
+static bool pins_valid(const device_pins_t *pins)
+{
+    const uint8_t used[] = {
+        pins->i2s_bclk, pins->i2s_lrclk, pins->i2s_din, pins->i2s_dout, pins->status_led,
+    };
+    const size_t count = sizeof(used) / sizeof(used[0]);
+    for (size_t i = 0; i < count; ++i) {
+        /* Only the LED (the last entry) may be left unassigned. */
+        if (used[i] == 0U && i == count - 1U) {
+            continue;
+        }
+        if (pinmap_blocked_reason(used[i]) != NULL) {
+            return false;
+        }
+        for (size_t j = 0; j < i; ++j) {
+            if (used[i] == used[j]) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/* Whether two pin sets assign different pins; trial_boots does not count. */
+static bool pins_differ(const device_pins_t *a, const device_pins_t *b)
+{
+    return a->i2s_bclk != b->i2s_bclk || a->i2s_lrclk != b->i2s_lrclk ||
+           a->i2s_din != b->i2s_din || a->i2s_dout != b->i2s_dout ||
+           a->status_led != b->status_led;
+}
+
+static esp_err_t write_pins_blob(const device_pins_t *pins)
+{
+    nvs_handle_t handle;
+    esp_err_t result = nvs_open(DEVICE_CONFIG_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(result));
+        return result;
+    }
+    result = nvs_set_blob(handle, DEVICE_PINS_NVS_KEY, pins, sizeof(*pins));
+    if (result == ESP_OK) {
+        result = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Storing pin assignment failed: %s", esp_err_to_name(result));
+    }
+    return result;
 }
 
 static void seed_defaults(device_config_t *cfg)
@@ -214,7 +303,40 @@ esp_err_t device_config_load(void)
     device_pots_t pots;
     size_t pots_len = sizeof(pots);
     const esp_err_t pots_result = nvs_get_blob(handle, DEVICE_POTS_NVS_KEY, &pots, &pots_len);
+
+    /* Optional in the same way: missing means "the pins this firmware
+     * always had". */
+    device_pins_t pins;
+    size_t pins_len = sizeof(pins);
+    const esp_err_t pins_result = nvs_get_blob(handle, DEVICE_PINS_NVS_KEY, &pins, &pins_len);
     nvs_close(handle);
+
+    if (pins_result != ESP_OK || pins_len != sizeof(pins) || !pins_valid(&pins)) {
+        if (pins_result != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "Stored pin assignment unusable, using defaults");
+        }
+        seed_pin_defaults(&pins);
+    } else if (pins.trial_boots > DEVICE_PINS_TRIAL_BOOTS_MAX) {
+        /*
+         * This set has been booted DEVICE_PINS_TRIAL_BOOTS_MAX times and
+         * never confirmed -- whatever stopped it (a crash in the I2S or
+         * LED driver, most likely) will stop it again. Stored, so the page
+         * shows the pins actually in use rather than the dropped ones.
+         */
+        ESP_LOGE(TAG,
+                 "Pin assignment did not come up in %u boots, back to defaults",
+                 (unsigned)DEVICE_PINS_TRIAL_BOOTS_MAX);
+        seed_pin_defaults(&pins);
+        s_pins_reverted = true;
+        (void)write_pins_blob(&pins);
+    } else if (pins.trial_boots != 0U) {
+        /* Counted before anything touches the pins, so a crash on the way
+         * up still leaves this boot on the record. */
+        ESP_LOGW(TAG, "Pin assignment on trial, boot %u of %u",
+                 (unsigned)pins.trial_boots, (unsigned)DEVICE_PINS_TRIAL_BOOTS_MAX);
+        ++pins.trial_boots;
+        (void)write_pins_blob(&pins);
+    }
 
     if (pots_result != ESP_OK || pots_len != sizeof(pots) || !device_config_pots_valid(&pots)) {
         if (pots_result != ESP_ERR_NVS_NOT_FOUND) {
@@ -222,8 +344,23 @@ esp_err_t device_config_load(void)
         }
         seed_pot_defaults(&pots);
     }
+    /*
+     * Saves check knobs and pins as a pair, so a clash here means one of
+     * the two fell back to defaults above. The knob gives way: a missing
+     * knob plays at full volume, a knob reading an I2S line does not.
+     */
+    if (pin_taken(&pins, pots.volume_gpio)) {
+        ESP_LOGW(TAG, "Volume knob pin %u is in use, knob disabled", (unsigned)pots.volume_gpio);
+        pots.volume_gpio = 0U;
+    }
+    if (pin_taken(&pins, pots.delay_gpio)) {
+        ESP_LOGW(TAG, "Delay knob pin %u is in use, knob disabled", (unsigned)pots.delay_gpio);
+        pots.delay_gpio = 0U;
+    }
     portENTER_CRITICAL(&s_cfg_lock);
     s_pots = pots;
+    s_pins = pins;
+    s_boot_pins = pins;
     portEXIT_CRITICAL(&s_cfg_lock);
 
     const bool found = (result == ESP_OK) && (len == sizeof(loaded)) &&
@@ -331,11 +468,15 @@ esp_err_t device_config_factory_reset(void)
 
     result = nvs_erase_key(handle, DEVICE_CONFIG_NVS_KEY);
     if (result == ESP_OK || result == ESP_ERR_NVS_NOT_FOUND) {
-        /* The knobs go back to their defaults too -- a factory reset that
-         * left a delay pin configured would be a surprise. */
+        /* Knobs and pins go back to their defaults too -- a factory reset
+         * that left a delay pin configured would be a surprise. */
         const esp_err_t pots_result = nvs_erase_key(handle, DEVICE_POTS_NVS_KEY);
         if (pots_result != ESP_OK && pots_result != ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "Erasing knob settings failed: %s", esp_err_to_name(pots_result));
+        }
+        const esp_err_t pins_result = nvs_erase_key(handle, DEVICE_PINS_NVS_KEY);
+        if (pins_result != ESP_OK && pins_result != ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "Erasing pin assignment failed: %s", esp_err_to_name(pins_result));
         }
         result = nvs_commit(handle);
     } else {
@@ -386,14 +527,44 @@ void device_config_get_pots(device_pots_t *out)
     portEXIT_CRITICAL(&s_cfg_lock);
 }
 
-esp_err_t device_config_save_pots(const device_pots_t *pots)
+bool device_config_pin_set_valid(const device_pins_t *pins, const device_pots_t *pots)
+{
+    if (pins == NULL || !pins_valid(pins) || !device_config_pots_valid(pots)) {
+        return false;
+    }
+    return !pin_taken(pins, pots->volume_gpio) && !pin_taken(pins, pots->delay_gpio);
+}
+
+void device_config_get_pins(device_pins_t *out)
+{
+    portENTER_CRITICAL(&s_cfg_lock);
+    *out = s_pins;
+    portEXIT_CRITICAL(&s_cfg_lock);
+}
+
+bool device_config_pins_reverted(void)
+{
+    return s_pins_reverted;
+}
+
+esp_err_t device_config_save_pin_set(const device_pins_t *pins, const device_pots_t *pots)
 {
     if (s_erased) {
         return ESP_ERR_INVALID_STATE;
     }
-    if (!device_config_pots_valid(pots)) {
+    if (!device_config_pin_set_valid(pins, pots)) {
         return ESP_ERR_INVALID_ARG;
     }
+
+    device_pins_t stored;
+    portENTER_CRITICAL(&s_cfg_lock);
+    stored = s_pins;
+    portEXIT_CRITICAL(&s_cfg_lock);
+
+    device_pins_t to_store = *pins;
+    memset(to_store.reserved, 0, sizeof(to_store.reserved));
+    /* Unchanged pins keep whatever trial state they are in. */
+    to_store.trial_boots = pins_differ(&stored, pins) ? 1U : stored.trial_boots;
 
     nvs_handle_t handle;
     esp_err_t result = nvs_open(DEVICE_CONFIG_NVS_NAMESPACE, NVS_READWRITE, &handle);
@@ -401,18 +572,51 @@ esp_err_t device_config_save_pots(const device_pots_t *pots)
         ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(result));
         return result;
     }
+    /* One commit for both, so knobs and pins never land half-updated. */
     result = nvs_set_blob(handle, DEVICE_POTS_NVS_KEY, pots, sizeof(*pots));
+    if (result == ESP_OK) {
+        result = nvs_set_blob(handle, DEVICE_PINS_NVS_KEY, &to_store, sizeof(to_store));
+    }
     if (result == ESP_OK) {
         result = nvs_commit(handle);
     }
     nvs_close(handle);
     if (result != ESP_OK) {
-        ESP_LOGE(TAG, "Storing knob settings failed: %s", esp_err_to_name(result));
+        ESP_LOGE(TAG, "Storing pins and knobs failed: %s", esp_err_to_name(result));
         return result;
     }
 
     portENTER_CRITICAL(&s_cfg_lock);
     s_pots = *pots;
+    s_pins = to_store;
     portEXIT_CRITICAL(&s_cfg_lock);
     return ESP_OK;
+}
+
+void device_config_confirm_pins(void)
+{
+    device_pins_t current;
+    portENTER_CRITICAL(&s_cfg_lock);
+    current = s_pins;
+    portEXIT_CRITICAL(&s_cfg_lock);
+
+    /*
+     * Only the set this boot actually started with can be vouched for. A
+     * save that landed before startup finished is still untested and has
+     * to keep its trial for the next boot.
+     */
+    if (s_erased || current.trial_boots == 0U || pins_differ(&current, &s_boot_pins)) {
+        return;
+    }
+
+    current.trial_boots = 0U;
+    if (write_pins_blob(&current) != ESP_OK) {
+        return;
+    }
+    portENTER_CRITICAL(&s_cfg_lock);
+    if (!pins_differ(&s_pins, &current)) {
+        s_pins.trial_boots = 0U;
+    }
+    portEXIT_CRITICAL(&s_cfg_lock);
+    ESP_LOGI(TAG, "Pin assignment confirmed");
 }

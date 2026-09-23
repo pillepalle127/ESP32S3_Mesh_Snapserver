@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "pinmap.h"
 #include "sdkconfig.h"
 
 /*
@@ -20,47 +21,17 @@
  * Wi-Fi radio and cannot be read while the radio is up -- which in this
  * project is always -- so a knob there would work on the bench and fail
  * as soon as the mesh comes up.
+ *
+ * Which of those the I2S bus or the LED already has is not decided here:
+ * that depends on the whole pin assignment, which can change in the same
+ * save as the knob pins (see device_config_pin_set_valid()).
  */
-#define ADC1_FIRST_GPIO 1U
-#define ADC1_LAST_GPIO  10U
-
-/*
- * GPIO 3 selects the JTAG source at reset. A potentiometer would hold it
- * at whatever level the knob happens to be at while booting.
- */
-#define STRAPPING_GPIO 3U
-
 const char *pots_pin_blocked_reason(uint8_t gpio)
 {
-    if (gpio < ADC1_FIRST_GPIO || gpio > ADC1_LAST_GPIO) {
+    if (!pinmap_is_adc1(gpio)) {
         return "not on ADC1 (only GPIO 1-10 work while Wi-Fi runs)";
     }
-    if (gpio == STRAPPING_GPIO) {
-        return "strapping pin";
-    }
-    /*
-     * The I2S pins come from the active #define block in audio_i2s.h and
-     * are read, not duplicated, so rewiring the bus there updates this
-     * list with it.
-     */
-    if (gpio == AUDIO_I2S_GPIO_BCLK) {
-        return "I2S BCLK";
-    }
-    if (gpio == AUDIO_I2S_GPIO_LRCLK) {
-        return "I2S LRCLK";
-    }
-    if (gpio == AUDIO_I2S_GPIO_DIN) {
-        return "I2S DIN";
-    }
-    if (gpio == AUDIO_I2S_GPIO_DOUT) {
-        return "I2S DOUT";
-    }
-#if CONFIG_SNAPSERVER_STATUS_LED_ENABLE
-    if (gpio == CONFIG_SNAPSERVER_STATUS_LED_GPIO) {
-        return "status LED";
-    }
-#endif
-    return NULL;
+    return pinmap_blocked_reason(gpio);
 }
 
 #if CONFIG_SNAPSERVER_POTS_ENABLE

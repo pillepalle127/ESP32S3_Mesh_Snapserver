@@ -55,6 +55,10 @@ oder PC im laufenden Betrieb.
   Opus-Bitrate/Complexity, persistent in NVS gespeichert
 * mDNS-Erreichbarkeit unter einem pro Gerät eindeutigen Namen
   (`snapserver-<MAC>.local` bzw. `snapclient-<MAC>.local`)
+* Geräteliste auf der Server-Seite: jeder Lautsprecher mit Lautstärke,
+  Delay und Anzahl der Mesh-Hops, siehe [Geräteliste](#geräteliste)
+* Pinbelegung (I2S, Status-LED, Potis) zur Laufzeit auf der Web-Oberfläche
+  einstellbar, siehe [Pinning](#pinning)
 * Factory-Reset über die Web-Oberfläche
 * Offener Provisioning-Access-Point (`ESP32_provisioning_<MAC>`) als Fallback bei
   Erstinbetriebnahme, nach Factory-Reset, bei deaktiviertem Mesh oder nach
@@ -195,16 +199,78 @@ Konfigurierbar:
   (`bufferMs`) löst dagegen einen Neustart aus: aus ihr werden beim Start
   mehrsekündige Puffer dimensioniert — der Ringpuffer des Clients und die
   Verzögerungsleitung der lokalen Ausgabe des Servers.
-* **Potentiometers:** Pin für das Lautstärke- und das Delay-Poti (jeweils
-  auch „none") und der Bereich des Delay-Potis. Angeboten werden nur freie
-  Pins. Ein Pinwechsel löst einen Neustart aus, der Bereich wirkt sofort.
-  Siehe [Potis für Lautstärke und Delay](#potis-für-lautstärke-und-delay).
+* **Pins:** I2S-Bus, Status-LED und die beiden Potis, dazu der Bereich des
+  Delay-Potis. Angeboten werden nur nutzbare, freie Pins. Ein Pinwechsel
+  löst einen Neustart aus, der Bereich wirkt sofort. Siehe
+  [Pinning](#pinning) und
+  [Potis für Lautstärke und Delay](#potis-für-lautstärke-und-delay).
 
 Alle Werte werden persistent im NVS gespeichert und überleben Neustarts und
 Firmware-Updates (solange sich das Konfigurationsschema nicht ändert).
 
 Ein **Factory-Reset**-Button setzt die Konfiguration auf die Kconfig-Standardwerte
-zurück und startet das Gerät neu.
+zurück und startet das Gerät neu. Die Pinbelegung und die in der Geräteliste
+gesetzten Werte gehen dabei mit.
+
+### Geräteliste
+
+Auf dem Server steht ganz oben eine Liste aller Lautsprecher, die er gerade
+beliefert: zuerst er selbst, darunter die Clients nach Entfernung sortiert.
+Pro Gerät:
+
+* **Name**, direkt in der Liste umbenennbar
+* **Hops** — Anzahl der Mesh-Verbindungen zwischen Server und Gerät: 1 für ein
+  Gerät direkt am Root, eins mehr pro Relay dazwischen. Unsere Clients melden
+  ihre Mesh-Ebene im Hello (`"MeshLevel"`). Ein fremder Snapclient meldet
+  nichts; er bekommt 1, wenn er direkt am AP des Servers hängt, sonst
+  „unbekannt".
+* **Lautstärke und Stummschaltung** — die Snapcast-Lautstärke, dieselbe, die
+  eine Control-App setzt. Ein Lautstärke-Poti am Client multipliziert sich
+  damit.
+* **Delay** in ms, positiv = später. Technisch die Snapcast-`latency` mit
+  umgedrehtem Vorzeichen (latency lässt einen Client früher spielen). Sie
+  kommt zum Delay-Trim bzw. Delay-Poti des Geräts hinzu, Bereich ±2000 ms.
+  Wie beim Poti gilt: Ein Sprung über 100 ms löst auf dem Client einen
+  kurzen harten Resync aus.
+
+Änderungen wirken sofort. Der Server speichert sie pro Client (Schlüssel:
+Snapcast-ID, bei allen echten Clients die MAC) im NVS und spielt sie bei jeder
+neuen Verbindung wieder ein — vorher fing ein Client nach jedem Reconnect
+wieder bei 100 %, Delay 0 an, und im Mesh passiert ein Reconnect bei jedem
+Elternwechsel. Das gilt auch für Werte aus einer Control-App über Port 1705.
+Gemerkt werden bis zu 24 Clients; darüber hinaus fällt der am längsten nicht
+geänderte heraus.
+
+**Settings** bei einem Gerät zeigt dessen Einstellungen im Formular darunter,
+überschrieben mit seinem Namen; Speichern geht an dieses Gerät. So lässt sich
+jeder eigene Client von der Server-Seite aus einstellen, auch einer, der
+mehrere Hops tief hinter dem NAPT eines anderen Knotens liegt und von außen
+nicht erreichbar ist. Der Server reicht die Anfrage dafür über die
+Snapcast-Verbindung weiter, die der Client selbst zu ihm aufgebaut hat
+(eigener Nachrichtentyp 100, nur an Clients, die sich im Hello als
+`"SnapMesh"` ausweisen). Löst das Speichern einen Neustart des Clients aus,
+steht er so lange als „not connected" in der Überschrift; sobald er wieder
+verbunden ist, lädt die Seite seine Werte neu. Factory Reset gibt es nur für
+das Gerät selbst — ein zurückgesetzter Client verlöre das Mesh, über das er
+wieder erreichbar wäre. Fremde Snapcast-Clients tragen das Badge „Snapcast"
+und haben nur Lautstärke, Stummschaltung und Delay.
+
+Die eigene Zeile des Servers ist nur Anzeige (Poti-Stellung, Delay-Trim);
+eingestellt wird beides weiter unten auf der Seite. Auf einem Client gibt es
+keine Liste.
+
+Die Liste kommt aus `GET /api/devices`; `POST /api/devices` mit
+`{"id": …, "volume_percent"|"muted"|"delay_ms"|"name": …}` ändert ein Gerät.
+Die Einstellungen eines Clients laufen über `GET`/`POST
+/api/devices/config?id=…` und `GET /api/devices/status?id=…` — dieselben
+Daten wie `/api/config` und `/api/status` auf dem Client selbst. Antwortet
+der Client nicht innerhalb von 3 s (Status: 2 s), kommt 504; ist er nicht
+verbunden, 404.
+Für Control-Apps steht dasselbe in `Server.GetStatus` auf Port 1705: Jeder
+Client trägt dort zusätzlich `"snapmesh": {"hops": n, "own": true|false}`
+(`hops` ist `null`, wenn unbekannt). Ändert sich Lautstärke, Delay, Name oder
+Hop-Zahl eines Clients, gleich von wem, bekommen verbundene Control-Apps ein
+`Server.OnUpdate`.
 
 ### Provisioning-Access-Point
 
@@ -312,10 +378,10 @@ Zwei Dinge sind ihnen gegenüber anders:
   im Mesh sie hängen. Danach kehrt der vorherige Zustand zurück; die im
   Control-App gesetzte Stummschaltung bleibt davon unberührt.
 * **Eigene Protokollfelder ignorieren sie.** Unsere Clients kennzeichnen sich
-  im Hello mit `"SnapMesh":1` und werten in den ServerSettings zusätzlich
-  `"announcement"` aus. Beide Felder sind Erweiterungen; ein fremder Client
-  überliest sie, und ein fremder Snapserver würde `"SnapMesh":1` ebenso
-  überlesen.
+  im Hello mit `"SnapMesh":1`, melden dort ihre Mesh-Ebene (`"MeshLevel"`) und
+  werten in den ServerSettings zusätzlich `"announcement"` aus. Alle drei
+  Felder sind Erweiterungen; ein fremder Client überliest sie, und ein
+  fremder Snapserver würde die Hello-Felder ebenso überlesen.
 
 ---
 
@@ -476,7 +542,9 @@ main/
 ├── mesh_root.c           Mesh als Root (Server)
 ├── mesh_client.c         Mesh-Beitritt als Relay (Client)
 ├── webconfig.c           Konfigurationsseite, Port 80
-├── device_config.c       Einstellungen im NVS
+├── device_config.c       Einstellungen und Pinbelegung im NVS
+├── pinmap.c              welche GPIOs überhaupt nutzbar sind
+├── client_store.c        gespeicherte Lautstärke/Delay/Name je Client
 ├── provisioning.c        Provisioning-AP
 ├── status_led.c          Status-LED
 └── cpu_stats.c           Diagnose: CPU-Last je Task
@@ -559,31 +627,61 @@ Das Wrapper-Skript `gradlew` liegt nicht im Repository, nur
 
 ## Pinning
 
-| GPIO | Funktion | konfiguriert in |
-|------|----------|-----------------|
-| 4 | ESP32-S3 → PCM5102A BCK und TinySine BCLK | `main/audio_i2s.h` |
-| 6 | ESP32-S3 → PCM5102A LCK und TinySine LRCLK | `main/audio_i2s.h` |
-| 5 | TinySine DOUT → ESP32-S3 DIN | `main/audio_i2s.h` |
-| 7 | ESP32-S3 DOUT → PCM5102A DIN | `main/audio_i2s.h` |
-| 10 | Schleifer des Lautstärkepotis (Vorgabe) | Web-Oberfläche |
-| – | Schleifer des Delay-Potis (Vorgabe: keiner) | Web-Oberfläche |
-| 48 | WS2812-Status-LED | `menuconfig` |
+Standardbelegung:
+
+| GPIO | Funktion |
+|------|----------|
+| 4 | ESP32-S3 → PCM5102A BCK und TinySine BCLK |
+| 6 | ESP32-S3 → PCM5102A LCK und TinySine LRCLK |
+| 5 | TinySine DOUT → ESP32-S3 DIN |
+| 7 | ESP32-S3 DOUT → PCM5102A DIN |
+| 10 | Schleifer des Lautstärkepotis |
+| – | Schleifer des Delay-Potis (Vorgabe: keiner) |
+| 48 | WS2812-Status-LED (Vorgabe aus `menuconfig`) |
 
 Dieselbe Verdrahtung als Zeichnung, mit Spannungsversorgung und Masse:
 
 <img src="docs/Verdrahtungsplan.png" width="600">
 
-### Wo die Pinbelegung konfiguriert wird
+### Pinbelegung einstellen
 
-Drei Orte, je nachdem, wann ein Pin feststehen muss:
+Alle Pins werden **zur Laufzeit auf der Web-Oberfläche** eingestellt,
+Abschnitt *Pins*, ähnlich wie bei Tasmota: pro Funktion ein Auswahlfeld mit
+den Pins, die dafür in Frage kommen. Neu flashen muss man dafür nicht.
 
-**I2S — im Quelltext.** Die vier Pins stehen als `#define`-Block am Kopf von
-`main/audio_i2s.h` und sind **vor dem ersten Bauen** an die eigene Hardware
-anzupassen. Darunter liegt ein zweiter, auskommentierter Block für eine
-abweichende Verdrahtung (GPIO 17, 8, 5, 18). Der I2S-Treiber übernimmt die
-Pins einmal beim Start, deshalb sind sie keine Laufzeiteinstellung.
+* **Funktionen:** I2S BCLK, LRCLK, DIN, DOUT (immer belegt), Status-LED,
+  Lautstärke-Poti, Delay-Poti (diese drei auch „none").
+* **Vorlagen:** *Standard* (4/6/5/7) und *Alternative* (17/8/5/18) setzen die
+  vier I2S-Pins auf einmal. Liegt die LED oder ein Poti auf einem der neuen
+  Pins, wird es auf „none" gestellt statt doppelt belegt.
+* **Angeboten wird nur, was geht.** Die Firmware liefert die Liste der
+  nicht nutzbaren Pins mit Grund, die Seite nennt sie unter dem Abschnitt:
 
-**Status-LED — im `menuconfig`**, zur Bauzeit:
+  | GPIO | Grund |
+  |------|-------|
+  | 0, 3, 45, 46 | Strapping-Pins, ihr Pegel beim Reset entscheidet über den Boot |
+  | 19, 20 | USB |
+  | 22–25 | gibt es beim ESP32-S3 nicht |
+  | 26–32 | SPI-Flash und PSRAM-Chipselect |
+  | 33–37 | Octal-PSRAM (nur bei `CONFIG_SPIRAM_MODE_OCT`) |
+  | 43, 44 | UART0-Konsole |
+
+  Potis brauchen zusätzlich ADC1, siehe [Mögliche Pins](#mögliche-pins).
+  Jeder Pin trägt genau eine Funktion; ein belegter Pin fehlt in den
+  anderen Listen.
+* **Die Firmware prüft selbst.** Beim Speichern wird die ganze Belegung noch
+  einmal als Einheit geprüft, eine unzulässige oder doppelte Belegung wird
+  auch über die API abgewiesen.
+* **Neustart.** Jeder Pinwechsel startet das Gerät neu, die Treiber
+  übernehmen die Pins nur beim Start.
+* **Probestart.** Eine geänderte Belegung gilt zunächst als Versuch. Kommt
+  das Gerät damit dreimal hintereinander nicht vollständig hoch, fällt es
+  von selbst auf die Standardbelegung zurück, und die Seite sagt das im
+  Statusfeld. Mit einer falsch verdrahteten, aber zulässigen Belegung startet
+  das Gerät normal, bleibt dann aber stumm — das erkennt die Firmware nicht.
+
+`menuconfig` liefert nur noch die Vorgaben für den ersten Start und nach
+einem Factory-Reset:
 
 ```
 idf.py menuconfig  →  Snapserver Mesh Project Configuration
@@ -592,18 +690,9 @@ idf.py menuconfig  →  Snapserver Mesh Project Configuration
     Potentiometer inputs (volume, delay)  (ein/aus, Vorgabe: ein)
 ```
 
-Der letzte Schalter nimmt nur den Poti-Code ganz heraus; welche Pins die
-Potis benutzen, wird dort nicht eingestellt.
-
-**Potis — auf der Web-Oberfläche**, Abschnitt *Potentiometers*. Beide Pins
-sind dort frei wählbar, jeweils auch „none". Angeboten werden **nur Pins,
-die tatsächlich frei sind**: Die Firmware berechnet die Liste aus ihrer
-eigenen Belegung (I2S-Pins aus `audio_i2s.h`, Status-LED, Strapping-Pin) und
-blendet den vom jeweils anderen Poti belegten Pin aus. Wird die I2S-Belegung
-geändert, passt sich die Liste nach dem Neu-Flashen von selbst an. Ein
-Pinwechsel startet das Gerät neu; die Firmware prüft den Pin beim Speichern
-noch einmal selbst, ein Pin außerhalb der Liste wird auch über die API
-abgewiesen.
+Die beiden Schalter nehmen den LED- bzw. Poti-Code ganz heraus; die Felder
+verschwinden dann von der Seite. Die I2S-Vorgaben stehen in
+`main/audio_i2s.h`.
 
 Alles Übrige — Mesh, DSP, Opus, Puffergrößen — wird ebenfalls zur Laufzeit
 über die Web-Oberfläche eingestellt und im NVS gehalten.
@@ -666,7 +755,7 @@ immer der Fall ist. Ein Pin auf ADC2 würde am Schreibtisch funktionieren und
 ausfallen, sobald das Mesh hochkommt. Die Web-Oberfläche bietet ihn deshalb
 gar nicht erst an.
 
-Innerhalb von ADC1, bei der aktiven I2S-Belegung:
+Innerhalb von ADC1, bei der Standardbelegung:
 
 | GPIO | ADC1-Kanal | Status |
 |------|-----------|--------|
@@ -677,7 +766,7 @@ Innerhalb von ADC1, bei der aktiven I2S-Belegung:
 | 5 | CH4 | belegt — I2S DIN |
 | 6 | CH5 | belegt — I2S LRCLK |
 | 7 | CH6 | belegt — I2S DOUT |
-| 8 | CH7 | frei; in der auskommentierten Alternativbelegung wäre es LRCLK |
+| 8 | CH7 | frei; bei der Vorlage *Alternative* ist es LRCLK |
 | 9 | CH8 | frei |
 | 10 | CH9 | frei, **Vorgabe** für die Lautstärke |
 

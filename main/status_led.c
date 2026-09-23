@@ -8,6 +8,7 @@
 #include <string.h>
 
 #include "audio_i2s.h"
+#include "device_config.h"
 #include "driver/rmt_encoder.h"
 #include "driver/rmt_tx.h"
 #include "esp_log.h"
@@ -275,8 +276,15 @@ static void led_task(void *arg)
 
 esp_err_t status_led_start(void)
 {
+    device_pins_t pins;
+    device_config_get_pins(&pins);
+    if (pins.status_led == 0U) {
+        ESP_LOGI(TAG, "No status LED pin assigned");
+        return ESP_OK;
+    }
+
     const rmt_tx_channel_config_t channel_config = {
-        .gpio_num = CONFIG_SNAPSERVER_STATUS_LED_GPIO,
+        .gpio_num = pins.status_led,
         .clk_src = RMT_CLK_SRC_DEFAULT,
         .resolution_hz = LED_RESOLUTION_HZ,
         .mem_block_symbols = 64,
@@ -285,8 +293,8 @@ esp_err_t status_led_start(void)
 
     esp_err_t err = rmt_new_tx_channel(&channel_config, &s_channel);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "RMT channel on GPIO %d failed: %s",
-                 CONFIG_SNAPSERVER_STATUS_LED_GPIO, esp_err_to_name(err));
+        ESP_LOGE(TAG, "RMT channel on GPIO %u failed: %s",
+                 (unsigned)pins.status_led, esp_err_to_name(err));
         return err;
     }
 
@@ -330,8 +338,8 @@ esp_err_t status_led_start(void)
         return ESP_ERR_NO_MEM;
     }
 
-    ESP_LOGI(TAG, "Status LED ready on GPIO %d (colour = state, brightness = level)",
-             CONFIG_SNAPSERVER_STATUS_LED_GPIO);
+    ESP_LOGI(TAG, "Status LED ready on GPIO %u (colour = state, brightness = level)",
+             (unsigned)pins.status_led);
     return ESP_OK;
 }
 

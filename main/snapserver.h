@@ -43,6 +43,15 @@ typedef struct {
     bool muted;
     int32_t latency_ms;
 
+    bool is_snapmesh;     /* one of our own clients (Hello "SnapMesh") */
+    /*
+     * Mesh hops between this server and the client: 1 for a direct child
+     * of the root AP, one more per relay below it. From the level our own
+     * clients report in their Hello; a foreign client only gets 1 when it
+     * sits on the root AP itself, -1 (unknown) otherwise.
+     */
+    int32_t hops;
+
     int32_t last_seen_sec;  /* wall clock of the last received message */
     int32_t last_seen_usec;
 } snapserver_client_info_t;
@@ -51,15 +60,16 @@ typedef struct {
 esp_err_t snapserver_start(void);
 
 /*
- * Copies up to max_clients entries of currently connected clients into out.
- * Returns the number of entries written. Safe to call from other tasks.
- */
-/*
  * Hash over the connected client set, for cheap change detection. Changes
- * whenever a client joins, leaves or reports a different id.
+ * whenever a client joins, leaves or reports a different id, and whenever
+ * a client's name, volume, mute, latency or mesh level changes.
  */
 uint32_t snapserver_client_set_hash(void);
 
+/*
+ * Copies up to max_clients entries of currently connected clients into out.
+ * Returns the number of entries written. Safe to call from other tasks.
+ */
 size_t snapserver_get_clients(snapserver_client_info_t *out,
                               size_t max_clients);
 
@@ -98,6 +108,13 @@ void snapserver_set_announcement(bool active);
 void snapserver_refresh_announcement(void);
 
 /*
+ * The three setters below apply a change requested via the control
+ * protocol or the web device list, and store the result so the client gets
+ * it again when it reconnects (client_store.h). That store writes flash:
+ * call them only from a task whose stack is in internal RAM.
+ */
+
+/*
  * Applies a volume change requested via the control protocol.
  * Returns true if a client with this id exists.
  */
@@ -116,6 +133,23 @@ bool snapserver_set_client_latency(const char *id, int32_t latency_ms);
  * Returns true if a client with this id exists.
  */
 bool snapserver_set_client_name(const char *id, const char *name);
+
+/*
+ * Sends a JSON request to one of our own clients over its Snapcast
+ * connection and waits for its JSON answer -- the only way to reach a
+ * client that sits behind another node's NAPT. The client answers from
+ * webconfig_handle_remote_request(). On success *reply holds the answer,
+ * NUL-terminated, for the caller to free().
+ *
+ * ESP_ERR_NOT_FOUND: no connected SnapMesh client with this id.
+ * ESP_ERR_TIMEOUT: no answer within timeout_ms.
+ * ESP_ERR_INVALID_STATE: the connection closed before the answer came.
+ * One request at a time; a second caller waits for the first.
+ */
+esp_err_t snapserver_remote_request(const char *id,
+                                    const char *json,
+                                    char **reply,
+                                    uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }

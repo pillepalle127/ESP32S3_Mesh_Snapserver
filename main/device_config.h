@@ -109,6 +109,34 @@ typedef struct {
 #define DEVICE_POTS_DELAY_RANGE_MIN_MS     10U
 
 /*
+ * Pin assignment for the I2S bus and the status LED. Stored under its own
+ * NVS key for the same reason as device_pots_t, and falls back to the
+ * defaults as a whole: a half-applied pin set is worse than none. The
+ * defaults are the pins that used to be hard-coded (audio_i2s.h, Kconfig),
+ * so an update changes nothing on boards already wired.
+ *
+ * status_led 0 means "no LED" (GPIO 0 is a strapping pin and never
+ * assignable). The I2S pins are always set. Every change needs a reboot.
+ *
+ * trial_boots is bookkeeping, not configuration: a save that changes any
+ * pin sets it to 1, every boot that loads it counts it up, and
+ * device_config_confirm_pins() clears it once the device came up. A pin
+ * set that keeps the device from getting that far is dropped for the
+ * defaults after DEVICE_PINS_TRIAL_BOOTS_MAX attempts.
+ */
+typedef struct {
+    uint8_t i2s_bclk;
+    uint8_t i2s_lrclk;
+    uint8_t i2s_din;
+    uint8_t i2s_dout;
+    uint8_t status_led;
+    uint8_t trial_boots;
+    uint8_t reserved[2];
+} device_pins_t;
+
+#define DEVICE_PINS_TRIAL_BOOTS_MAX 3U
+
+/*
  * Loads the config from NVS into the in-RAM cache. If no config is stored
  * yet, or the stored blob's version doesn't match DEVICE_CONFIG_VERSION,
  * seeds Kconfig-derived defaults and persists them, and records that this
@@ -158,16 +186,47 @@ bool device_config_is_first_boot(void);
 void device_config_get_pots(device_pots_t *out);
 
 /*
- * Validates and stores the potentiometer settings: each pin 0 or one that
- * pots_pin_blocked_reason() accepts, the two pins different unless both
- * are 0, range between DEVICE_POTS_DELAY_RANGE_MIN_MS and
- * DEVICE_CONFIG_DELAY_TRIM_MAX_MS. Returns ESP_ERR_INVALID_ARG otherwise.
+ * Knob settings on their own: each pin 0 or one pots_pin_blocked_reason()
+ * accepts, the two pins different unless both are 0, range between
+ * DEVICE_POTS_DELAY_RANGE_MIN_MS and DEVICE_CONFIG_DELAY_TRIM_MAX_MS. Not
+ * checked against the rest of the pin assignment, see
+ * device_config_pin_set_valid() for that.
  */
-esp_err_t device_config_save_pots(const device_pots_t *pots);
-
-/* The check device_config_save_pots() applies, for callers that want to
- * reject a request before saving anything else. */
 bool device_config_pots_valid(const device_pots_t *pots);
+
+/* Current pin assignment (defaults if none is stored or it was dropped). */
+void device_config_get_pins(device_pins_t *out);
+
+/*
+ * Checks a complete pin assignment: every I2S pin and the LED pin (unless
+ * 0) passes pinmap_blocked_reason(), the knobs pass
+ * device_config_pots_valid(), and no two functions share a GPIO.
+ */
+bool device_config_pin_set_valid(const device_pins_t *pins, const device_pots_t *pots);
+
+/*
+ * Stores pin assignment and knob settings together, after checking them
+ * as a pair with device_config_pin_set_valid() -- one request may move an
+ * I2S pin and a knob onto each other's old pins, which neither half would
+ * accept against the other's stored value. Returns ESP_ERR_INVALID_ARG if
+ * the pair is rejected. If any pin in *pins differs from the stored one,
+ * the new set starts on trial (see device_pins_t.trial_boots).
+ */
+esp_err_t device_config_save_pin_set(const device_pins_t *pins, const device_pots_t *pots);
+
+/*
+ * Marks the pin assignment this boot started with as working. Called by
+ * app_main once every role's startup has returned. No-op (and no NVS
+ * write) when nothing is on trial.
+ */
+void device_config_confirm_pins(void);
+
+/*
+ * True if this boot's device_config_load() dropped a pin assignment that
+ * had not come up in DEVICE_PINS_TRIAL_BOOTS_MAX boots, so the config page
+ * can say why its pins are back to the defaults.
+ */
+bool device_config_pins_reverted(void);
 
 #ifdef __cplusplus
 }

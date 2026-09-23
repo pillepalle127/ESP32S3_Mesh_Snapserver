@@ -17,6 +17,10 @@
   .password-row { display: flex; gap: 0.4rem; align-items: stretch; }
   .password-row input { flex: 1; margin-top: 0.15rem; }
   .password-row button { margin-top: 0.15rem; padding: 0 0.6rem; font-size: 0.8rem; }
+  .signed { display: flex; gap: 0.3rem; align-items: stretch; }
+  .signed input { flex: 1 1 auto; min-width: 0; }
+  .signed .sign { margin-top: 0.15rem; padding: 0 0.6rem; font-size: 1rem; }
+  .signed input:disabled + .sign { opacity: 0.45; pointer-events: none; }
   .checkbox-row { display: flex; align-items: center; gap: 0.4rem; margin-top: 0.6rem; }
   .checkbox-row label { margin-top: 0; }
   button { margin-top: 1rem; padding: 0.5rem 1rem; font-size: 0.95rem; cursor: pointer; }
@@ -24,14 +28,45 @@
   #factoryReset { background: #b03030; color: #fff; border: none; border-radius: 0.25rem; }
   #status { margin-top: 1rem; padding: 0.5rem; border-radius: 0.25rem; background: #eee; font-size: 0.85rem; white-space: pre-line; }
   .hint { font-size: 0.78rem; color: #666; margin-top: 0.1rem; }
-  input:disabled, select:disabled { opacity: 0.45; }
+  input:disabled, select:disabled, button:disabled { opacity: 0.45; }
+  button:disabled { cursor: default; }
   label.disabled { opacity: 0.45; }
+  .dev { border: 1px solid #ddd; border-radius: 0.3rem; padding: 0.5rem; margin-top: 0.5rem; }
+  .dev-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .dev-head .dev-name { flex: 1 1 10rem; min-width: 0; font-weight: bold; }
+  .dev-head input.dev-name { width: auto; margin-top: 0; padding: 0.2rem; }
+  .badge { font-size: 0.75rem; background: #e2e8f0; border-radius: 0.8rem; padding: 0.05rem 0.5rem; white-space: nowrap; }
+  .dev.selected { border-color: #2b6cb0; box-shadow: 0 0 0 1px #2b6cb0; }
+  .dev-head .dev-sel { margin-top: 0; padding: 0.2rem 0.6rem; font-size: 0.8rem; }
+  .dev.selected .dev-sel { background: #2b6cb0; color: #fff; border: 1px solid #2b6cb0; border-radius: 0.2rem; }
+  #settings_title { font-size: 1.15rem; border-bottom: 2px solid #2b6cb0; margin-top: 2rem; }
+  .dev-ctrl { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; margin-top: 0.4rem; font-size: 0.85rem; }
+  .dev-ctrl input[type=range] { flex: 1 1 8rem; min-width: 6rem; }
+  .dev-ctrl input[type=number] { width: 5rem; margin-top: 0; }
+  .dev-ctrl label { margin-top: 0; display: flex; align-items: center; gap: 0.25rem; }
+  .dev-ctrl .sign { margin-top: 0; }
+  .dev-volval { width: 2.8rem; text-align: right; }
+  .dev-err { color: #b03030; font-size: 0.78rem; }
+  #server_nav { font-size: 0.9rem; margin-top: -0.4rem; }
+  #server_nav a { font-weight: bold; }
+  #server_nav .off { color: #b03030; }
   footer { margin-top: 2rem; padding-top: 0.6rem; border-top: 1px solid #ccc; font-size: 0.75rem; color: #888; text-align: center; }
 </style>
 </head>
 <body>
 <h1 id="pageTitle">ESP32-S3 Snapserver Config</h1>
+<div id="server_nav" hidden></div>
 <div id="status">Loading...</div>
+
+<div id="devices_section" hidden>
+<h2>Devices</h2>
+<div id="device_list"></div>
+<div class="hint">Volume and delay apply at once and stay with the device when it reconnects.
+Delay is added on top of the device's own delay trim or knob; hops count the mesh links
+between the server and the device. <b>Settings</b> shows a device's settings below.</div>
+</div>
+
+<h2 id="settings_title" hidden></h2>
 
 <h2>Role</h2>
 <label for="role">Device role</label>
@@ -86,19 +121,37 @@
 <select id="sub_channel"><option value="0">Left</option><option value="1">Right</option></select>
 <div class="hint">Wideband automatically uses the other channel.</div>
 
-<div id="pots_section">
-<h2>Potentiometers</h2>
+<h2>Pins</h2>
+<label for="pin_preset">Load wiring preset</label>
+<select id="pin_preset">
+  <option value="">&mdash;</option>
+  <option value="standard">Standard: BCLK 4, LRCLK 6, DIN 5, DOUT 7</option>
+  <option value="alt">Alternative: BCLK 17, LRCLK 8, DIN 5, DOUT 18</option>
+</select>
 <div class="row">
-  <div><label for="pot_volume_gpio">Volume knob pin</label><select id="pot_volume_gpio"></select></div>
-  <div><label for="pot_delay_gpio">Delay knob pin</label><select id="pot_delay_gpio"></select></div>
+  <div><label for="pin_i2s_bclk">I2S BCLK</label><select id="pin_i2s_bclk"></select></div>
+  <div><label for="pin_i2s_lrclk">I2S LRCLK</label><select id="pin_i2s_lrclk"></select></div>
+</div>
+<div class="row">
+  <div><label for="pin_i2s_din">I2S DIN (from ADC)</label><select id="pin_i2s_din"></select></div>
+  <div><label for="pin_i2s_dout">I2S DOUT (to DAC)</label><select id="pin_i2s_dout"></select></div>
+</div>
+<div id="status_led_row"><label for="pin_status_led">Status LED (WS2812 data)</label><select id="pin_status_led"></select></div>
+<div id="pots_section">
+<div class="row">
+  <div><label for="pot_volume_gpio">Volume knob</label><select id="pot_volume_gpio"></select></div>
+  <div><label for="pot_delay_gpio">Delay knob</label><select id="pot_delay_gpio"></select></div>
 </div>
 <label for="pot_delay_range_ms" id="pot_delay_range_ms_label">Delay knob range (&plusmn; ms)</label>
 <input type="number" id="pot_delay_range_ms" min="10" max="2000" step="10">
 <div class="hint">10 k&Omega; potentiometer: one end to 3V3, the other to GND, wiper to the pin.
-Only free pins are listed: <span id="pot_blocked"></span>.
-Volume with no knob attached reads full scale (100&nbsp;%); the delay knob replaces the
-delay trim above, centre = 0&nbsp;ms. Changing a pin reboots the device.</div>
+Knobs need an ADC1 pin (GPIO 1&ndash;10). Volume with no knob attached reads full scale
+(100&nbsp;%); the delay knob replaces the delay trim above, centre = 0&nbsp;ms.</div>
 </div>
+<div class="hint">Every pin carries one function, so a pin in use is left out of the other lists.
+Never offered: <span id="pin_blocked"></span>.
+Changing a pin reboots the device. If it then fails to start three times in a row, it goes back
+to the standard pins.</div>
 
 <h2>Opus</h2>
 <div class="row">
@@ -122,8 +175,75 @@ const REASON_LABEL = {
 
 function otherChannel(v) { return v === '0' ? '1' : '0'; }
 
+/* Many Android number keyboards (Samsung, some Gboard layouts) have no
+ * minus key, so every field that takes negative values gets a sign button.
+ * It fires 'change' like a typed edit would. */
+function addSignToggle(input) {
+  const wrap = document.createElement('span');
+  wrap.className = 'signed';
+  input.replaceWith(wrap);
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'sign';
+  btn.textContent = '\u00b1';
+  btn.setAttribute('aria-label', 'Toggle sign');
+  wrap.append(input, btn);
+  btn.addEventListener('click', () => {
+    if (input.disabled || input.value === '') return;
+    input.value = -Number(input.value);
+    input.dispatchEvent(new Event('change'));
+  });
+}
+
 let currentRole = null;
 let currentDeviceId = null;
+
+/* Whose settings the form shows. null is the device serving this page;
+ * otherwise one of the server's own clients, reached through the server
+ * (/api/devices/config), since a client past the first hop cannot be
+ * reached directly. Every switch bumps selectionToken, and an answer that
+ * arrives for an older selection is dropped. */
+let selectedId = null;
+let selectedName = '';
+let selectedConnected = true;
+let selectionToken = 0;
+let configLoaded = false;
+let configBusy = false;
+let statusBusy = false;
+let serverName = '';
+
+const deviceQuery = () => '?id=' + encodeURIComponent(selectedId);
+const configUrl = () => selectedId === null ? '/api/config' : '/api/devices/config' + deviceQuery();
+const statusUrl = () => selectedId === null ? '/api/status' : '/api/devices/status' + deviceQuery();
+
+function updateSettingsHead() {
+  const title = $('settings_title');
+  title.hidden = $('devices_section').hidden;
+  const name = selectedId === null ? serverName : selectedName;
+  title.textContent = 'Settings: ' + name +
+    (selectedId !== null && !selectedConnected ? ' (not connected)' : '');
+  $('save').disabled = !configLoaded || (selectedId !== null && !selectedConnected);
+  // A client reset to defaults loses the mesh it would need to come back.
+  $('factoryReset').hidden = selectedId !== null;
+  if (selectedId !== null) $('server_nav').hidden = true;
+}
+
+function selectDevice(id, name) {
+  if (id === selectedId) return;
+  selectedId = id;
+  selectedName = name;
+  selectedConnected = true;
+  selectionToken++;
+  configLoaded = false;
+  for (const [key, row] of deviceRows) {
+    row.el.classList.toggle('selected', (key === '\u0000server' ? null : key) === id);
+  }
+  updateSettingsHead();
+  $('status').textContent = 'Loading...';
+  statusBusy = false;
+  loadConfig();
+  loadStatus();
+}
 
 /* Both fields come from separate endpoints (loadConfig/loadStatus, fetched
  * in parallel), so the title is only updated once both have arrived at
@@ -138,10 +258,30 @@ function updatePageTitle() {
 }
 
 async function loadConfig() {
-  const res = await fetch('/api/config');
-  const cfg = await res.json();
-  currentRole = cfg.role;
-  updatePageTitle();
+  const token = selectionToken;
+  let cfg;
+  configBusy = true;
+  try {
+    const res = await fetch(configUrl());
+    if (token !== selectionToken) return;
+    if (!res.ok) {
+      $('status').textContent = 'Settings unavailable: ' + (await res.text());
+      return;
+    }
+    cfg = await res.json();
+  } catch (e) {
+    if (token === selectionToken) $('status').textContent = 'Settings unavailable';
+    return;
+  } finally {
+    if (token === selectionToken) configBusy = false;
+  }
+  if (token !== selectionToken) return;
+  configLoaded = true;
+  updateSettingsHead();
+  if (selectedId === null) {
+    currentRole = cfg.role;
+    updatePageTitle();
+  }
   $('role').value = String(cfg.role);
   $('source_mode').value = String(cfg.source_mode);
   $('local_input_threshold_db').value = cfg.local_input_threshold_db;
@@ -175,35 +315,91 @@ async function loadConfig() {
   updateCrossoverFieldsEnabled();
 
   $('pots_section').hidden = !cfg.pots_supported;
-  freePins = cfg.adc_pins.filter((p) => p.free).map((p) => p.gpio);
-  $('pot_blocked').textContent = cfg.adc_pins
-    .filter((p) => !p.free)
-    .map((p) => `GPIO ${p.gpio} ${p.reason}`)
-    .join(', ');
+  $('status_led_row').hidden = !cfg.status_led_supported;
+  pinRules = { max: cfg.gpio_max, blocked: cfg.gpio_blocked, adc: cfg.adc1_pins };
+  $('pin_blocked').textContent = describeBlocked();
   $('pot_delay_range_ms').max = cfg.pot_delay_range_max_ms;
   $('pot_delay_range_ms').value = cfg.pot_delay_range_ms;
   savedDelayPin = cfg.pot_delay_gpio;
-  fillPinSelects(cfg.pot_volume_gpio, cfg.pot_delay_gpio);
+  fillPinSelects({
+    pin_i2s_bclk: cfg.pins.i2s_bclk,
+    pin_i2s_lrclk: cfg.pins.i2s_lrclk,
+    pin_i2s_din: cfg.pins.i2s_din,
+    pin_i2s_dout: cfg.pins.i2s_dout,
+    pin_status_led: cfg.pins.status_led,
+    pot_volume_gpio: cfg.pot_volume_gpio,
+    pot_delay_gpio: cfg.pot_delay_gpio,
+  });
 }
 
-let freePins = [];
+let pinRules = { max: 48, blocked: {}, adc: [] };
 let savedDelayPin = 0;
 
-/* Each list shows "none" plus the free pins, minus whatever the other knob
- * has taken -- two knobs on one pin would read the same wiper twice. */
-function fillPinSelects(volumePin, delayPin) {
-  const fill = (id, selected, taken) => {
-    const sel = $(id);
+/* Every pin function on the page. Knobs are limited to ADC1; the LED and
+ * the knobs may be left unassigned, the I2S bus may not. */
+const PIN_FIELDS = [
+  { id: 'pin_i2s_bclk' },
+  { id: 'pin_i2s_lrclk' },
+  { id: 'pin_i2s_din' },
+  { id: 'pin_i2s_dout' },
+  { id: 'pin_status_led', optional: true },
+  { id: 'pot_volume_gpio', optional: true, adc: true },
+  { id: 'pot_delay_gpio', optional: true, adc: true },
+];
+
+const PIN_PRESETS = {
+  standard: { pin_i2s_bclk: 4, pin_i2s_lrclk: 6, pin_i2s_din: 5, pin_i2s_dout: 7 },
+  alt: { pin_i2s_bclk: 17, pin_i2s_lrclk: 8, pin_i2s_din: 5, pin_i2s_dout: 18 },
+};
+
+function usablePins(adcOnly) {
+  const all = adcOnly ? pinRules.adc : [...Array(pinRules.max + 1).keys()];
+  return all.filter((g) => !(String(g) in pinRules.blocked));
+}
+
+function currentPins() {
+  const values = {};
+  for (const f of PIN_FIELDS) values[f.id] = Number($(f.id).value || 0);
+  return values;
+}
+
+/* "0, 3, 45, 46 strapping pin; 19-20 USB; ..." from the firmware's list. */
+function describeBlocked() {
+  const byReason = {};
+  for (const [gpio, reason] of Object.entries(pinRules.blocked)) {
+    (byReason[reason] = byReason[reason] || []).push(Number(gpio));
+  }
+  return Object.entries(byReason).map(([reason, pins]) => {
+    pins.sort((a, b) => a - b);
+    const parts = [];
+    for (let i = 0; i < pins.length; ) {
+      let j = i;
+      while (j + 1 < pins.length && pins[j + 1] === pins[j] + 1) j++;
+      parts.push(j > i + 1 ? `${pins[i]}\u2013${pins[j]}` : pins.slice(i, j + 1).join(', '));
+      i = j + 1;
+    }
+    return `GPIO ${parts.join(', ')} (${reason})`;
+  }).join('; ');
+}
+
+/* Each list offers the usable pins minus those another function holds. A
+ * stored pin the rules no longer allow is still shown, marked, so saving
+ * the form unchanged does not silently move it. */
+function fillPinSelects(values) {
+  for (const f of PIN_FIELDS) {
+    const sel = $(f.id);
+    const selected = values[f.id] || 0;
+    const taken = new Set(PIN_FIELDS.filter((o) => o !== f).map((o) => values[o.id]).filter((g) => g));
     sel.innerHTML = '';
-    sel.add(new Option('none', '0'));
-    for (const gpio of freePins) {
-      if (gpio === taken && gpio !== 0) continue;
-      sel.add(new Option(`GPIO ${gpio}`, String(gpio)));
+    if (f.optional) sel.add(new Option('none', '0'));
+    for (const gpio of usablePins(f.adc)) {
+      if (!taken.has(gpio)) sel.add(new Option(`GPIO ${gpio}`, String(gpio)));
+    }
+    if (selected && ![...sel.options].some((o) => Number(o.value) === selected)) {
+      sel.add(new Option(`GPIO ${selected} (not usable)`, String(selected)));
     }
     sel.value = String(selected);
-  };
-  fill('pot_volume_gpio', volumePin, delayPin);
-  fill('pot_delay_gpio', delayPin, volumePin);
+  }
   updatePotFieldsEnabled();
 }
 
@@ -241,12 +437,56 @@ function updateRoleFieldsEnabled() {
   updatePotFieldsEnabled();
 }
 
+/* Client only: the way back to the server this client plays from. The
+ * server's device list links down to its clients; without this a client
+ * page is a dead end unless you know the server's address. */
+function updateServerNav(s) {
+  const nav = $('server_nav');
+  nav.hidden = !('server_host' in s);
+  if (nav.hidden) return;
+  nav.textContent = '';
+  if (!s.server_host) {
+    nav.append('Server not known yet');
+    return;
+  }
+  const link = document.createElement('a');
+  link.href = `http://${s.server_host}/`;
+  link.textContent = `\u2190 Server ${s.server_host}`;
+  nav.append(link, ' \u00b7 ');
+  const state = document.createElement('span');
+  state.textContent = s.server_connected ? 'connected' : 'not connected';
+  if (!s.server_connected) state.className = 'off';
+  nav.append(state);
+  if (s.server_hops !== null && s.server_hops !== undefined) {
+    nav.append(' \u00b7 ' + (s.server_hops === 1 ? '1 hop' : `${s.server_hops} hops`));
+  }
+  if (s.children !== null && s.children !== undefined) {
+    const children = document.createElement('span');
+    children.textContent = s.children === 1 ? '1 child' : `${s.children} children`;
+    children.title = 'Stations on this device\'s access point: mesh nodes relaying through it, and any phone joined to it directly';
+    nav.append(' \u00b7 ', children);
+  }
+}
+
 async function loadStatus() {
+  // A remote device that does not answer holds the request for seconds;
+  // polls must not pile up behind it.
+  if (statusBusy) return;
+  const token = selectionToken;
+  statusBusy = true;
   try {
-    const res = await fetch('/api/status');
+    const res = await fetch(statusUrl());
+    if (token !== selectionToken) return;
+    if (!res.ok) {
+      $('status').textContent = res.status === 404 ? 'Device not connected' : 'Device not responding';
+      return;
+    }
     const s = await res.json();
-    currentDeviceId = s.device_id;
-    updatePageTitle();
+    if (token !== selectionToken) return;
+    if (selectedId === null) {
+      currentDeviceId = s.device_id;
+      updatePageTitle();
+    }
     let knobs = '';
     if (s.pot_volume_percent !== null && s.pot_volume_percent !== undefined) {
       knobs += '\nvolume knob: ' + s.pot_volume_percent + ' %';
@@ -254,12 +494,21 @@ async function loadStatus() {
     if (s.pot_delay_ms !== null && s.pot_delay_ms !== undefined) {
       knobs += '\ndelay knob: ' + (s.pot_delay_ms > 0 ? '+' : '') + s.pot_delay_ms + ' ms';
     }
+    let pins = '';
+    if (s.pins_reverted) {
+      pins = '\nThe saved pin assignment did not start three times; back to the standard pins.';
+    } else if (s.pins_on_trial) {
+      pins = '\nNew pin assignment on trial until this start completes.';
+    }
+    if (selectedId === null) updateServerNav(s);
     $('status').textContent =
-      (REASON_LABEL[s.reason] || s.reason) +
+      (REASON_LABEL[s.reason] || s.reason) + pins +
       '\nboot-fail streak: ' + s.boot_fail_count +
       '\nuptime: ' + s.uptime_s + ' s' + knobs;
   } catch (e) {
-    $('status').textContent = 'Status unavailable';
+    if (token === selectionToken) $('status').textContent = 'Status unavailable';
+  } finally {
+    if (token === selectionToken) statusBusy = false;
   }
 }
 
@@ -269,10 +518,23 @@ $('crossover_enabled').addEventListener('change', updateCrossoverFieldsEnabled);
 
 $('role').addEventListener('change', updateRoleFieldsEnabled);
 
-$('pot_volume_gpio').addEventListener('change', () =>
-  fillPinSelects(Number($('pot_volume_gpio').value), Number($('pot_delay_gpio').value)));
-$('pot_delay_gpio').addEventListener('change', () =>
-  fillPinSelects(Number($('pot_volume_gpio').value), Number($('pot_delay_gpio').value)));
+for (const f of PIN_FIELDS) {
+  $(f.id).addEventListener('change', () => fillPinSelects(currentPins()));
+}
+
+/* A preset only sets the I2S bus; the LED or a knob sitting on one of the
+ * preset's pins is cleared rather than left clashing. */
+$('pin_preset').addEventListener('change', () => {
+  const preset = PIN_PRESETS[$('pin_preset').value];
+  $('pin_preset').value = '';
+  if (!preset) return;
+  const values = Object.assign(currentPins(), preset);
+  const presetPins = Object.values(preset);
+  for (const id of ['pin_status_led', 'pot_volume_gpio', 'pot_delay_gpio']) {
+    if (presetPins.includes(values[id])) values[id] = 0;
+  }
+  fillPinSelects(values);
+});
 
 $('togglePassword').addEventListener('click', () => {
   const field = $('mesh_password');
@@ -308,27 +570,42 @@ $('save').addEventListener('click', async () => {
     wideband_channel: Number(otherChannel($('sub_channel').value)),
     opus_bitrate: Number($('opus_bitrate').value),
     opus_complexity: Number($('opus_complexity').value),
+    pins: {
+      i2s_bclk: Number($('pin_i2s_bclk').value),
+      i2s_lrclk: Number($('pin_i2s_lrclk').value),
+      i2s_din: Number($('pin_i2s_din').value),
+      i2s_dout: Number($('pin_i2s_dout').value),
+      status_led: Number($('pin_status_led').value),
+    },
     pot_volume_gpio: Number($('pot_volume_gpio').value),
     pot_delay_gpio: Number($('pot_delay_gpio').value),
     pot_delay_range_ms: Number($('pot_delay_range_ms').value),
   };
 
+  const token = selectionToken;
+  const who = selectedId === null ? 'device' : selectedName;
   $('status').textContent = 'Saving...';
-  const res = await fetch('/api/config', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  let res;
+  try {
+    res = await fetch(configUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    $('status').textContent = 'Save failed: server unreachable';
+    return;
+  }
 
   if (!res.ok) {
-    $('status').textContent = 'Save failed: ' + res.status;
+    $('status').textContent = 'Save failed: ' + res.status + ' ' + (await res.text());
     return;
   }
   const result = await res.json();
   $('status').textContent = result.reboot
-    ? 'Saved. A setting that needs a restart changed, device is rebooting...'
+    ? `Saved. A setting that needs a restart changed, ${who} is rebooting...`
     : 'Saved.';
-  if (!result.reboot) {
+  if (!result.reboot && token === selectionToken) {
     loadConfig();
     loadStatus();
   }
@@ -343,10 +620,186 @@ $('factoryReset').addEventListener('click', async () => {
   $('status').textContent = 'Factory reset done, device is rebooting...';
 });
 
+/* ---- Device list (server only) ---- */
+
+let delayMax = 2000;
+const deviceRows = new Map();
+
+function hopsLabel(hops) {
+  if (hops === null || hops === undefined) return 'hops unknown';
+  if (hops === 0) return 'server';
+  return hops === 1 ? '1 hop' : `${hops} hops`;
+}
+
+async function postDevice(id, change, row) {
+  row.err.textContent = '';
+  try {
+    const res = await fetch('/api/devices', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ id }, change)),
+    });
+    if (!res.ok) row.err.textContent = 'Not applied: ' + (await res.text());
+  } catch (e) {
+    row.err.textContent = 'Not applied: server unreachable';
+  }
+}
+
+function makeDeviceRow(dev) {
+  const el = document.createElement('div');
+  el.className = 'dev';
+  el.innerHTML = `
+    <div class="dev-head">
+      <input type="text" class="dev-name" maxlength="63">
+      <span class="badge dev-hops"></span>
+      <span class="badge dev-kind" title="Not one of ours: only volume, mute and delay can be set">Snapcast</span>
+      <button type="button" class="dev-sel">Settings</button>
+    </div>
+    <div class="dev-ctrl">
+      <input type="range" class="dev-vol" min="0" max="100" aria-label="Volume">
+      <span class="dev-volval"></span>
+      <label><input type="checkbox" class="dev-mute">mute</label>
+      <label>delay <input type="number" class="dev-delay" step="10"> ms</label>
+    </div>
+    <div class="dev-err"></div>`;
+  const row = {
+    el,
+    name: el.querySelector('.dev-name'),
+    hops: el.querySelector('.dev-hops'),
+    kind: el.querySelector('.dev-kind'),
+    sel: el.querySelector('.dev-sel'),
+    vol: el.querySelector('.dev-vol'),
+    volval: el.querySelector('.dev-volval'),
+    mute: el.querySelector('.dev-mute'),
+    delay: el.querySelector('.dev-delay'),
+    err: el.querySelector('.dev-err'),
+  };
+  row.delay.min = -delayMax;
+  row.delay.max = delayMax;
+  addSignToggle(row.delay);
+  row.sel.addEventListener('click', () =>
+    selectDevice(dev.server ? null : dev.id, row.name.value));
+
+  if (dev.server) {
+    // The server's own knob and trim are set in the sections below.
+    row.name.readOnly = true;
+    row.vol.disabled = true;
+    row.delay.disabled = true;
+    row.mute.parentElement.hidden = true;
+    return row;
+  }
+  row.vol.addEventListener('input', () => { row.volval.textContent = row.vol.value + ' %'; });
+  row.vol.addEventListener('change', () =>
+    postDevice(dev.id, { volume_percent: Number(row.vol.value) }, row));
+  row.mute.addEventListener('change', () => postDevice(dev.id, { muted: row.mute.checked }, row));
+  row.delay.addEventListener('change', () => {
+    const v = Math.max(-delayMax, Math.min(delayMax, Math.round(Number(row.delay.value) || 0)));
+    row.delay.value = v;
+    postDevice(dev.id, { delay_ms: v }, row);
+  });
+  row.name.addEventListener('change', () => postDevice(dev.id, { name: row.name.value }, row));
+  return row;
+}
+
+/* Refreshes values in place. A field the user is working in is left
+ * alone, so the periodic reload never snatches a value mid-edit. */
+function updateDeviceRow(row, dev) {
+  const busy = (input) => document.activeElement === input;
+  if (!busy(row.name)) row.name.value = dev.name;
+  row.hops.textContent = hopsLabel(dev.hops);
+  // Only our own clients answer settings requests; a foreign Snapcast
+  // client has nothing to show beyond volume, mute and delay.
+  const foreign = !dev.server && !dev.own;
+  row.kind.hidden = !foreign;
+  row.sel.hidden = foreign;
+  row.el.classList.toggle('selected', (dev.server ? null : dev.id) === selectedId);
+  if (dev.volume_percent === null) {
+    row.vol.hidden = true;
+    row.volval.textContent = 'no volume knob';
+  } else {
+    row.vol.hidden = false;
+    if (!busy(row.vol)) {
+      row.vol.value = dev.volume_percent;
+      row.volval.textContent = dev.volume_percent + ' %';
+    }
+  }
+  if (!busy(row.mute)) row.mute.checked = !!dev.muted;
+  if (!busy(row.delay)) row.delay.value = dev.delay_ms;
+}
+
+let devicesBusy = false;
+
+async function loadDevices() {
+  if (devicesBusy) return;
+  devicesBusy = true;
+  let d;
+  try {
+    d = await (await fetch('/api/devices')).json();
+  } catch (e) {
+    return;
+  } finally {
+    devicesBusy = false;
+  }
+  $('devices_section').hidden = !d.clients;
+  if (!d.clients) return;
+  delayMax = d.delay_max_ms;
+  serverName = `This server (${d.server.id})`;
+
+  const clients = d.clients.slice().sort((a, b) => {
+    const ha = a.hops === null ? 99 : a.hops;
+    const hb = b.hops === null ? 99 : b.hops;
+    return (ha - hb) || a.name.localeCompare(b.name);
+  });
+  const devices = [Object.assign({ server: true, name: serverName }, d.server), ...clients];
+
+  const list = $('device_list');
+  const seen = new Set();
+  let previous = null;
+  for (const dev of devices) {
+    const key = dev.server ? '\u0000server' : dev.id;
+    seen.add(key);
+    let row = deviceRows.get(key);
+    if (!row) {
+      row = makeDeviceRow(dev);
+      deviceRows.set(key, row);
+    }
+    updateDeviceRow(row, dev);
+    // Only move a row that is out of place: moving one takes the focus
+    // out of whatever field in it is being edited.
+    const expected = previous ? previous.nextSibling : list.firstChild;
+    if (expected !== row.el) list.insertBefore(row.el, expected);
+    previous = row.el;
+  }
+  for (const [key, row] of deviceRows) {
+    if (!seen.has(key)) {
+      row.el.remove();
+      deviceRows.delete(key);
+    }
+  }
+
+  // The selected client goes away while it restarts after a save. The form
+  // keeps its values but cannot be saved; once the client is back, its
+  // settings are read again.
+  if (selectedId !== null) {
+    const dev = clients.find((c) => c.id === selectedId);
+    selectedConnected = !!dev;
+    if (dev) selectedName = dev.name;
+    else configLoaded = false;
+    if (dev && !configLoaded && !configBusy) loadConfig();
+  }
+  updateSettingsHead();
+}
+
+for (const id of ['local_input_threshold_db', 'delay_trim_ms', 'sub_gain_db', 'wideband_gain_db']) {
+  addSignToggle($(id));
+}
 loadConfig();
 loadStatus();
-// Refresh the status box so the knob readings follow while turning.
+loadDevices();
+// Refresh the status box so the knob readings follow while turning, and
+// the device list so joins, leaves and changes from other controllers show.
 setInterval(loadStatus, 2000);
+setInterval(loadDevices, 3000);
 </script>
 </body>
 </html>

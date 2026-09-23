@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "device_config.h"
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -365,6 +366,9 @@ esp_err_t audio_i2s_start(void)
         return result;
     }
 
+    device_pins_t pins;
+    device_config_get_pins(&pins);
+
     i2s_chan_config_t channel_config = I2S_CHANNEL_DEFAULT_CONFIG(
         I2S_NUM_0,
         I2S_ROLE_MASTER);
@@ -390,10 +394,10 @@ esp_err_t audio_i2s_start(void)
 
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
-            .bclk = AUDIO_I2S_GPIO_BCLK,
-            .ws = AUDIO_I2S_GPIO_LRCLK,
-            .dout = AUDIO_I2S_GPIO_DOUT,
-            .din = AUDIO_I2S_GPIO_DIN,
+            .bclk = pins.i2s_bclk,
+            .ws = pins.i2s_lrclk,
+            .dout = pins.i2s_dout,
+            .din = pins.i2s_din,
             .invert_flags = {
                 .mclk_inv = false,
                 .bclk_inv = false,
@@ -440,10 +444,10 @@ esp_err_t audio_i2s_start(void)
     ESP_LOGI(TAG,
              "I2S full duplex ready: master, 48 kHz, 16-bit data in 32-bit slots, stereo, "
              "BCLK=%d LRCLK=%d DIN=%d DOUT=%d, no MCLK",
-             AUDIO_I2S_GPIO_BCLK,
-             AUDIO_I2S_GPIO_LRCLK,
-             AUDIO_I2S_GPIO_DIN,
-             AUDIO_I2S_GPIO_DOUT);
+             pins.i2s_bclk,
+             pins.i2s_lrclk,
+             pins.i2s_din,
+             pins.i2s_dout);
     ESP_LOGI(TAG,
              "Local LR4 crossover ready: %.1f Hz, sub=%s, wideband=%s",
              (double)AUDIO_CROSSOVER_FREQUENCY_HZ,

@@ -170,6 +170,19 @@ static cJSON *build_client_object(const snapserver_client_info_t *info)
     cJSON_AddNumberToObject(last_seen, "sec", info->last_seen_sec);
     cJSON_AddNumberToObject(last_seen, "usec", info->last_seen_usec);
 
+    /*
+     * Not part of the Snapcast schema; control apps ignore what they do
+     * not know. hops: mesh hops from the server, null when unknown (see
+     * snapserver_client_info_t), so a control app can show the mesh layout.
+     */
+    cJSON *snapmesh = cJSON_AddObjectToObject(client, "snapmesh");
+    if (info->hops >= 0) {
+        cJSON_AddNumberToObject(snapmesh, "hops", info->hops);
+    } else {
+        cJSON_AddNullToObject(snapmesh, "hops");
+    }
+    cJSON_AddBoolToObject(snapmesh, "own", info->is_snapmesh);
+
     cJSON *snapclient = cJSON_AddObjectToObject(client, "snapclient");
     cJSON_AddStringToObject(snapclient, "name", "Snapclient");
     cJSON_AddNumberToObject(snapclient, "protocolVersion",

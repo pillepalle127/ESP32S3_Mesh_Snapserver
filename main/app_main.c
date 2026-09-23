@@ -168,6 +168,9 @@ void app_main(void)
                 esp_err_to_name(result));
         }
 
+        /* Everything that touches a configured pin is up. */
+        device_config_confirm_pins();
+
         ESP_LOGI(
             TAG,
             "ESP32-S3 Snapclient started: mesh relay, local I2S input as "
@@ -228,6 +231,8 @@ void app_main(void)
             "available",
             esp_err_to_name(result));
     }
+
+    device_config_confirm_pins();
 
     ESP_LOGI(
         TAG,

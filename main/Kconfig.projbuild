@@ -27,6 +27,9 @@ config SNAPSERVER_STATUS_LED_GPIO
         green and blue once at startup. If it stays dark, the pin is wrong
         -- try the other values above.
 
+        First-boot / factory-reset default only: the pin is part of the pin
+        assignment on the web config page from then on. 0 means no LED.
+
 config SNAPSERVER_POTS_ENABLE
     bool "Potentiometer inputs (volume, delay)"
     default y

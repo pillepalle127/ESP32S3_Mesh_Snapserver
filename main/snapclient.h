@@ -12,6 +12,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -66,7 +67,22 @@ void snapclient_set_host_resolver(void (*resolver)(char *out, size_t out_len));
  */
 void snapclient_set_unreachable_cb(void (*cb)(void));
 
+/*
+ * Answers config requests from our own server (see
+ * snapserver_remote_request()): gets the request JSON, returns the answer
+ * as a malloc'd JSON string, which is sent back and freed. Without a
+ * handler such requests go unanswered.
+ */
+void snapclient_set_config_handler(char *(*handler)(const char *json, size_t len));
+
 void snapclient_set_network_available(bool available);
+
+/*
+ * Copies the Snapserver address the client currently dials (empty before
+ * snapclient_start()) and returns whether a connection to it is open right
+ * now. For the config page, which links a client back to its server.
+ */
+bool snapclient_get_server(char *host, size_t host_len);
 
 #ifdef __cplusplus
 }

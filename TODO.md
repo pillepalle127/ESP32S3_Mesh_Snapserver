@@ -75,6 +75,47 @@ Bugs sind umgesetzt:
 
 ## Nicht als Bug, aber vorgemerkt
 
+- **Pinbelegung und Geräteliste (2026-09-23), auf dem Gerät noch nicht
+  getestet.** Gebaut mit IDF 5.4.3, die Webseite gegen eine nachgebaute API
+  geprüft (jsdom). Auf Hardware zu prüfen: Update eines bestehenden Geräts
+  ändert keine Pins; Pinwechsel samt Neustart; Probestart-Rückfall nach drei
+  missglückten Starts (z. B. absichtlich mit `abort()` nach
+  `audio_i2s_start()`); Hops bei einem Client auf Ebene 3; Lautstärke/Delay
+  überleben einen Reconnect und einen Server-Neustart. Die Screenshots in
+  `docs/` zeigen noch die alte Seite.
+
+- **Nächste Schritte dazu:** (1) Geräteliste in der Android-App — die Daten
+  stehen schon in `Server.GetStatus` (`snapmesh.hops`), Änderungen kommen
+  als `Server.OnUpdate`. (2) **Erledigt 2026-09-23, auf dem Gerät noch
+  nicht getestet:** Pinbelegung und übrige Einstellungen eines Clients vom
+  Server aus ändern. Kein eigener Steuerkanal nötig: Der Server schickt die
+  Anfrage als eigenen Nachrichtentyp (100) über die Snapcast-Verbindung, die
+  der Client ohnehin zum Root aufbaut und die deshalb durchs NAT geht
+  (`snapserver_remote_request()`, beantwortet von
+  `webconfig_handle_remote_request()`). Die Seite gegen eine nachgebaute API
+  geprüft (jsdom). Auf Hardware zu prüfen: Werte eines Clients laden und
+  speichern, Neustart nach Pinwechsel samt Neuladen, Client auf Ebene 3.
+
+- **Client-Konfiguration auch in der App (vorgemerkt 2026-09-23).** Was die
+  Server-Seite jetzt kann (Gerät wählen, seine Einstellungen laden und
+  speichern), auch in der Android-App `android/SnapAnnounce` anbieten. Die
+  API steht: `GET /api/devices` für die Liste, `GET`/`POST
+  /api/devices/config?id=…` und `GET /api/devices/status?id=…` für ein
+  Gerät, alles über den Server, also auch für Clients hinter NAT.
+
+- **Unkomplizierte Verteilung (vorgemerkt 2026-09-23).** Flashen soll ohne
+  installiertes ESP-IDF/SDK gehen. Naheliegend: ein zusammengeführtes Image
+  (`esptool.py merge_bin` aus `build/flash_args`, ein einziges `.bin` ab
+  0x0) als Release-Artefakt, dazu eine Flash-Seite mit ESP Web Tools
+  (WebSerial, flasht direkt aus Chrome/Edge per USB, ohne Installation; auf
+  GitHub Pages hostbar). Zu klären: ob die Boards dabei `usb_reset`
+  brauchen wie hier im Container (ESP Web Tools nutzt den USB-Serial/JTAG
+  des S3 direkt, sollte also gehen); dass ein Update NVS nicht löscht
+  (Erase-Option aus lassen, sonst sind Rolle und Pins weg); Rückfall für
+  Leute ohne Chromium-Browser (esptool als pip-Paket oder das
+  Standalone-Binary von Espressif). Später denkbar: OTA über die
+  Web-Seite, braucht aber erst OTA-Partitionen (siehe nächster Punkt).
+
 - `partitions.csv` hat keine OTA- oder Coredump-Partition. Kein Problem für
   den aktuellen Funktionsumfang, aber falls OTA-Updates oder
   Crash-Diagnose per Coredump später gewünscht sind, fehlt dafür die
@@ -103,15 +144,12 @@ Bugs sind umgesetzt:
      konstantem Pegel bleiben (A2DP-Lautstärke voll aufdrehen und nicht
      mehr anfassen), sonst multipliziert sich beides. Den Pegel der Quelle
      zurückzurechnen geht ohne Rückkanal vom A2DP-Empfänger nicht sauber.
-  3. **Bleibt offen:** Die eigene Web-Config kennt kein Lautstärkefeld. Für
-     den Alltag reicht die Control-App, aber wer nur den Browser hat,
-     kommt an die Einstellung nicht heran.
-  4. **Bleibt offen:** Der Server hält die Lautstärke nur im RAM
-     (`s_clients[i].volume_percent`, beim Start und beim Belegen eines Slots
-     auf 100 gesetzt) — nach einem Server-Neustart stehen alle Clients
-     wieder auf voll. Für eine dauerhafte Einstellung müsste sie pro
-     Client-ID ins NVS, was einen Speicherplatz pro bekanntem Client
-     bedeutet und deshalb eine eigene kleine Entscheidung ist.
+  3. **Erledigt 2026-09-23:** Die Geräteliste oben auf der Server-Seite
+     stellt Lautstärke, Stummschaltung und Delay pro Client ein.
+  4. **Erledigt 2026-09-23:** Lautstärke, Stummschaltung, Latenz und ein
+     vergebener Name werden pro Client-ID im NVS gehalten
+     (`client_store.c`, bis 24 Clients, danach fällt der am längsten nicht
+     geänderte heraus) und bei jedem Hello wieder eingespielt.
 
 - **Clients im laufenden Mesh konfigurieren (gemeldet 2026-09-17):** Aktuell
   ist unklar dokumentiert, wie man an die Config-Seite eines Clients kommt,
@@ -135,6 +173,10 @@ Bugs sind umgesetzt:
     einen ausgewählten Knoten über die Mesh-Lite-interne Verbindung) — das
     ist deutlich aufwendiger und sollte erst geplant werden, wenn die
     Topologie wirklich mehr als zwei Ebenen hat.
+  - **Stand 2026-09-23:** Erledigt ohne Proxy über Mesh-Lite: „Settings"
+    in der Geräteliste zeigt die Einstellungen eines Clients auf der
+    Server-Seite, der Weg läuft über dessen Snapcast-Verbindung (siehe
+    „Nächste Schritte dazu" oben). Die IP-Links sind entfallen.
 
 - **Root-Failover-Risiko im Client-Modus (aus Analysegespräch 2026-09-17,
   zurückgestellt):** `esp_mesh_lite_set_disallowed_level(1)` in

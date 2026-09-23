@@ -41,6 +41,10 @@
 #include "esp_timer.h"
 #include "status_led.h"
 #include "opus.h"
+#include "sdkconfig.h"
+#if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
+#include "esp_mesh_lite.h"
+#endif
 
 static const char *TAG = "SNAPCLIENT";
 
@@ -51,6 +55,9 @@ typedef enum {
     SNAP_MSG_SERVER_SETTINGS = 3,
     SNAP_MSG_TIME            = 4,
     SNAP_MSG_HELLO           = 5,
+    /* Ours: a config request from our own server, answered with the same
+     * type -- see snapserver_remote_request() on the server side. */
+    SNAP_MSG_SNAPMESH_CONFIG = 100,
 } snap_msg_type_t;
 
 typedef struct __attribute__((packed)) {
@@ -78,6 +85,8 @@ typedef struct __attribute__((packed)) {
 
 #define SNAP_MESSAGE_BUFFER_SIZE 8192
 #define SNAP_DISCARD_BUFFER_SIZE 2048
+/* Largest config answer our server accepts (its RX_MAX). */
+#define SNAP_CONFIG_ANSWER_MAX 4096
 
 #define SNAP_TASK_STACK_SIZE 12288
 #define SNAP_TASK_PRIORITY   6
@@ -145,7 +154,8 @@ typedef struct __attribute__((packed)) {
  * window at all. */
 #define SNAP_TIME_MAX_RTT_US (2LL * 1000000LL)
 
-static int s_sock = -1;
+/* Also read by snapclient_get_server() from the HTTP task. */
+static volatile int s_sock = -1;
 static volatile bool s_run = true;
 static volatile bool s_network_available;
 static bool s_task_started;
@@ -156,6 +166,7 @@ static char s_host[64];
 static portMUX_TYPE s_host_lock = portMUX_INITIALIZER_UNLOCKED;
 static void (*s_host_resolver)(char *out, size_t out_len);
 static void (*s_unreachable_cb)(void);
+static char *(*s_config_handler)(const char *json, size_t len);
 static uint16_t s_port = 1704;
 
 static char s_codec[16];
@@ -380,6 +391,16 @@ static int tcp_connect(void)
     return socket_fd;
 }
 
+/* 0 when unknown: not attached yet, or a build without Mesh-Lite. */
+static uint8_t own_mesh_level(void)
+{
+#if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
+    return esp_mesh_lite_get_level();
+#else
+    return 0U;
+#endif
+}
+
 static int send_hello(int socket_fd)
 {
     uint8_t mac[6] = {0};
@@ -410,9 +431,12 @@ static int send_hello(int socket_fd)
          * "announcement" flag in ServerSettings and silences its music by
          * itself, so it must not be muted outright for an announcement it
          * may well receive. A stock Snapserver ignores the field. */
-        "\"SnapMesh\":1"
+        "\"SnapMesh\":1,"
+        /* Our mesh level (root = 1), for the server's device list.
+         * Also ignored by a stock Snapserver. */
+        "\"MeshLevel\":%u"
         "}",
-        mac_text, client_name, client_name);
+        mac_text, client_name, client_name, (unsigned)own_mesh_level());
 
     if (hello_length <= 0 || hello_length >= (int)sizeof(hello_json)) {
         ESP_LOGE(TAG, "Hello JSON invalid or too long");
@@ -782,7 +806,57 @@ static void handle_wire_chunk(const uint8_t *payload, uint32_t size)
     audio_sink_feed_network(s_mono_pcm, (size_t)samples_per_channel, chunk_ts_us);
 }
 
-static void process_message(const snap_base_t *header, const uint8_t *payload)
+/*
+ * Runs the request through the config handler and sends its answer back,
+ * refersTo = the request's id. On this task, which also sends the Time
+ * requests, so nothing else writes to the socket meanwhile. A save stalls
+ * the receive side for its flash write, which bufferMs easily covers.
+ * Only a failed send is an error; a request that cannot be answered is
+ * left for the server to time out.
+ */
+static int handle_config_request(int socket_fd, const snap_base_t *header,
+                                 const uint8_t *payload)
+{
+    uint32_t json_len = 0;
+    if (s_config_handler == NULL || header->size < sizeof(json_len)) {
+        return 0;
+    }
+    memcpy(&json_len, payload, sizeof(json_len));
+    if (json_len > header->size - sizeof(json_len)) {
+        return 0;
+    }
+
+    char *answer = s_config_handler((const char *)payload + sizeof(json_len), json_len);
+    if (answer == NULL) {
+        return 0;
+    }
+    /* The server drops the whole connection over a message larger than its
+     * RX_MAX (4096), so an oversized answer is replaced by an error. */
+    if (strlen(answer) + sizeof(json_len) > SNAP_CONFIG_ANSWER_MAX) {
+        free(answer);
+        answer = strdup("{\"error\":\"answer too large\"}");
+        if (answer == NULL) {
+            return 0;
+        }
+    }
+    const uint32_t answer_len = (uint32_t)strlen(answer);
+
+    const int64_t now_us = esp_timer_get_time();
+    snap_base_t reply = {0};
+    reply.type = SNAP_MSG_SNAPMESH_CONFIG;
+    reply.refers_to = header->id;
+    reply.sent_sec = (int32_t)(now_us / 1000000LL);
+    reply.sent_usec = (int32_t)(now_us % 1000000LL);
+    reply.size = (uint32_t)sizeof(answer_len) + answer_len;
+
+    const int rc = (send_full(socket_fd, &reply, sizeof(reply)) != 0 ||
+                    send_full(socket_fd, &answer_len, sizeof(answer_len)) != 0 ||
+                    send_full(socket_fd, answer, answer_len) != 0) ? -1 : 0;
+    free(answer);
+    return rc;
+}
+
+static int process_message(int socket_fd, const snap_base_t *header, const uint8_t *payload)
 {
     switch (header->type) {
         case SNAP_MSG_CODEC_HEADER:
@@ -797,11 +871,14 @@ static void process_message(const snap_base_t *header, const uint8_t *payload)
         case SNAP_MSG_TIME:
             handle_time_reply(header);
             break;
+        case SNAP_MSG_SNAPMESH_CONFIG:
+            return handle_config_request(socket_fd, header, payload);
         case SNAP_MSG_BASE:
         case SNAP_MSG_HELLO:
         default:
             break;
     }
+    return 0;
 }
 
 static void connection_loop(int socket_fd)
@@ -874,7 +951,9 @@ static void connection_loop(int socket_fd)
             break;
         }
 
-        process_message(&header, message_buffer);
+        if (process_message(socket_fd, &header, message_buffer) != 0) {
+            break;
+        }
 
         /* One tick of slack per message so a burst of 20 ms Opus packets
          * (~50/s) can't starve the idle task under TCP backpressure. */
@@ -965,6 +1044,11 @@ void snapclient_set_unreachable_cb(void (*cb)(void))
     s_unreachable_cb = cb;
 }
 
+void snapclient_set_config_handler(char *(*handler)(const char *json, size_t len))
+{
+    s_config_handler = handler;
+}
+
 void snapclient_set_server_host(const char *host)
 {
     if (host == NULL || host[0] == '\0') {
@@ -982,6 +1066,14 @@ void snapclient_set_server_host(const char *host)
     if (changed) {
         ESP_LOGI(TAG, "Snapserver address is now %s", host);
     }
+}
+
+bool snapclient_get_server(char *host, size_t host_len)
+{
+    portENTER_CRITICAL(&s_host_lock);
+    strlcpy(host, s_host, host_len);
+    portEXIT_CRITICAL(&s_host_lock);
+    return s_sock >= 0;
 }
 
 void snapclient_set_network_available(bool available)

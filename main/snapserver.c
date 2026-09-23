@@ -26,6 +26,7 @@
 #include <arpa/inet.h>
 
 #include "cJSON.h"
+#include "client_store.h"
 #include "cpu_stats.h"
 #include "device_config.h"
 #include "esp_heap_caps.h"
@@ -212,7 +213,11 @@ enum {
     SNAP_TYPE_TIME = 4,
     SNAP_TYPE_HELLO = 5,
     SNAP_TYPE_CLIENT_INFO = 7,
-    SNAP_TYPE_ERROR = 8
+    SNAP_TYPE_ERROR = 8,
+    /* Ours, not Snapcast's: config requests to our own clients and their
+     * answers, see snapserver_remote_request(). Only ever sent to a client
+     * that said "SnapMesh" in its Hello. */
+    SNAP_TYPE_SNAPMESH_CONFIG = 100
 };
 
 typedef struct __attribute__((packed)) {
@@ -281,6 +286,10 @@ typedef struct {
      * such flag and is muted outright instead.
      */
     bool is_snapmesh;
+
+    /* Mesh-Lite level our own clients report in their Hello (root = 1),
+     * 0 when unknown -- a foreign client, or a build without Mesh-Lite. */
+    uint8_t mesh_level;
 
     int32_t last_seen_sec;
     int32_t last_seen_usec;
@@ -359,6 +368,22 @@ static volatile bool s_announcement_active;
 static int level1_match_rssi(const char *mac, const wifi_sta_list_t *sta_list);
 
 static portMUX_TYPE s_clients_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/*
+ * The one config request in flight, see snapserver_remote_request(). The
+ * fields are guarded by s_clients_lock; s_remote_mutex keeps a second
+ * request out until the first has its answer or gave up.
+ */
+static struct {
+    int slot;          /* client slot asked, -1 when nothing is pending */
+    uint16_t id;       /* the request's message id, echoed in refers_to */
+    uint8_t *payload;  /* the answer, handed over by client_session()   */
+    uint32_t size;
+    bool failed;       /* the connection closed before an answer came   */
+} s_remote = { .slot = -1 };
+static uint16_t s_remote_next_id;
+static SemaphoreHandle_t s_remote_mutex;
+static SemaphoreHandle_t s_remote_done;
 static TaskHandle_t s_server_task;
 static TaskHandle_t s_audio_task;
 static bool s_started;
@@ -1063,8 +1088,27 @@ static bool handle_hello(client_t *client,
     const int32_t instance = json_int_or(root, "Instance", 1);
     /* Our own clients say so here, see send_hello() in snapclient.c. */
     const bool is_snapmesh = json_int_or(root, "SnapMesh", 0) != 0;
+    /*
+     * Reported once, at connect. Enough, because a node's level cannot
+     * change under a live connection: moving to another parent gives it a
+     * new address, and an ancestor moving takes the NAPT table this
+     * connection runs through with it -- either way the client reconnects
+     * and says Hello again.
+     */
+    int32_t mesh_level = json_int_or(root, "MeshLevel", 0);
+    if (mesh_level < 0 || mesh_level > 15) {
+        mesh_level = 0;
+    }
 
     cJSON_Delete(root);
+
+    /* What this client was last set to, if it has been here before. RAM
+     * only -- this task's stack is in PSRAM, see client_store.h. */
+    client_store_entry_t stored;
+    const bool have_stored = client_store_get(id, &stored);
+    if (have_stored && stored.name[0] != '\0') {
+        strlcpy(name, stored.name, sizeof(name));
+    }
 
     int32_t seen_sec = 0;
     int32_t seen_usec = 0;
@@ -1080,6 +1124,12 @@ static bool handle_hello(client_t *client,
     strlcpy(client->version, version, sizeof(client->version));
     client->instance = instance;
     client->is_snapmesh = is_snapmesh;
+    client->mesh_level = (uint8_t)mesh_level;
+    if (have_stored) {
+        client->volume_percent = stored.volume_percent;
+        client->muted = stored.muted;
+        client->latency_ms = stored.latency_ms;
+    }
     client->protocol_ver = proto;
     client->last_seen_sec = seen_sec;
     client->last_seen_usec = seen_usec;
@@ -1158,7 +1208,17 @@ static void close_client(client_t *client)
     client->fd = -1;
     /* `task` is the slot's permanent connection task and outlives the
      * session -- clearing it here would strand the slot for good. */
+    const bool wake_remote = s_remote.slot == (int)(client - s_clients) &&
+                             s_remote.payload == NULL && !s_remote.failed;
+    if (wake_remote) {
+        s_remote.failed = true;
+    }
     portEXIT_CRITICAL(&s_clients_lock);
+
+    /* A config request waiting on this client need not sit out its timeout. */
+    if (wake_remote && s_remote_done != NULL) {
+        xSemaphoreGive(s_remote_done);
+    }
 
     if (fd >= 0) {
         shutdown(fd, SHUT_RDWR);
@@ -1271,6 +1331,24 @@ static void client_session(client_t *client)
             break;
         case SNAP_TYPE_CLIENT_INFO:
             break;
+        case SNAP_TYPE_SNAPMESH_CONFIG: {
+            /* An answer nobody waits for any more (timed out) is dropped. */
+            bool taken = false;
+            portENTER_CRITICAL(&s_clients_lock);
+            if (s_remote.slot == (int)(client - s_clients) &&
+                s_remote.id == base.refers_to &&
+                s_remote.payload == NULL && !s_remote.failed) {
+                s_remote.payload = payload;
+                s_remote.size = base.size;
+                taken = true;
+            }
+            portEXIT_CRITICAL(&s_clients_lock);
+            if (taken) {
+                payload = NULL;
+                xSemaphoreGive(s_remote_done);
+            }
+            break;
+        }
         default:
             ESP_LOGD(TAG, "Ignoring client message type=%u", base.type);
             break;
@@ -1853,6 +1931,7 @@ static void server_task(void *arg)
                 s_clients[i].voice_muted_sent = false;
                 s_clients[i].announcement_sent = false;
                 s_clients[i].is_snapmesh = false;
+                s_clients[i].mesh_level = 0;
                 s_clients[i].latency_ms = 0;
                 s_clients[i].id[0] = '\0';
                 s_clients[i].name[0] = '\0';
@@ -1924,6 +2003,26 @@ uint32_t snapserver_client_set_hash(void)
                 hash ^= *p;
                 hash *= 16777619U;
             }
+            /*
+             * Settings too, so a change made on one controller -- the web
+             * device list, another app -- reaches the others as
+             * Server.OnUpdate instead of only on their next GetStatus.
+             */
+            for (const unsigned char *p = (const unsigned char *)s_clients[i].name;
+                 *p != '\0'; ++p) {
+                hash ^= *p;
+                hash *= 16777619U;
+            }
+            const uint32_t settings[] = {
+                (uint32_t)s_clients[i].volume_percent,
+                s_clients[i].muted ? 1U : 0U,
+                (uint32_t)s_clients[i].latency_ms,
+                s_clients[i].mesh_level,
+            };
+            for (size_t k = 0; k < sizeof(settings) / sizeof(settings[0]); ++k) {
+                hash ^= settings[k];
+                hash *= 16777619U;
+            }
         }
         portEXIT_CRITICAL(&s_clients_lock);
 
@@ -1942,6 +2041,12 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
     }
 
     size_t count = 0;
+
+    /* For the hop count of clients that do not report their level. */
+    wifi_sta_list_t sta_list;
+    if (esp_wifi_ap_get_sta_list(&sta_list) != ESP_OK) {
+        sta_list.num = 0;
+    }
 
     /*
      * Locked per client, not once around the loop.
@@ -1979,6 +2084,8 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
         dst->volume_percent = s_clients[i].volume_percent;
         dst->muted = s_clients[i].muted;
         dst->latency_ms = s_clients[i].latency_ms;
+        dst->is_snapmesh = s_clients[i].is_snapmesh;
+        dst->hops = (s_clients[i].mesh_level >= 2U) ? (int32_t)s_clients[i].mesh_level - 1 : -1;
         dst->last_seen_sec = s_clients[i].last_seen_sec;
         dst->last_seen_usec = s_clients[i].last_seen_usec;
         portEXIT_CRITICAL(&s_clients_lock);
@@ -1988,6 +2095,11 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
 
     /* An id is mandatory for the controller; fall back to the peer address. */
     for (size_t i = 0; i < count; ++i) {
+        /* A foreign client (a phone, a PC) says nothing about its level,
+         * but one on this node's own AP is one hop away all the same. */
+        if (out[i].hops < 0 && level1_match_rssi(out[i].mac, &sta_list) != 127) {
+            out[i].hops = 1;
+        }
         if (out[i].id[0] == '\0') {
             strlcpy(out[i].id, out[i].ip, sizeof(out[i].id));
         }
@@ -2080,6 +2192,41 @@ static client_t *find_client_by_id_unsafe(const char *id)
     return NULL;
 }
 
+/*
+ * Writes a client's current volume, mute and latency to client_store, so a
+ * reconnect picks them up again. name is the new name when this follows a
+ * rename, NULL to keep whatever name is stored -- the name the client
+ * reports itself is not worth storing, only one somebody chose. Called
+ * from the JSON-RPC and HTTP tasks, which have the internal-RAM stack a
+ * flash write needs.
+ */
+static void remember_settings(const char *id, const char *name)
+{
+    client_store_entry_t entry;
+    if (!client_store_get(id, &entry)) {
+        entry.name[0] = '\0';
+    }
+
+    bool found = false;
+    portENTER_CRITICAL(&s_clients_lock);
+    const client_t *client = find_client_by_id_unsafe(id);
+    if (client != NULL) {
+        entry.volume_percent = client->volume_percent;
+        entry.muted = client->muted;
+        entry.latency_ms = client->latency_ms;
+        found = true;
+    }
+    portEXIT_CRITICAL(&s_clients_lock);
+
+    if (!found) {
+        return;
+    }
+    if (name != NULL) {
+        strlcpy(entry.name, name, sizeof(entry.name));
+    }
+    client_store_put(id, &entry);
+}
+
 bool snapserver_set_client_volume(const char *id,
                                   int32_t percent,
                                   bool muted)
@@ -2107,6 +2254,7 @@ bool snapserver_set_client_volume(const char *id,
     portEXIT_CRITICAL(&s_clients_lock);
 
     if (found) {
+        remember_settings(id, NULL);
         ESP_LOGI(TAG,
                  "Volume for %s set to %ld%% (muted=%s)",
                  id,
@@ -2137,6 +2285,7 @@ bool snapserver_set_client_latency(const char *id, int32_t latency_ms)
     portEXIT_CRITICAL(&s_clients_lock);
 
     if (found) {
+        remember_settings(id, NULL);
         ESP_LOGI(TAG, "Latency for %s set to %ld ms", id, (long)latency_ms);
         (void)send_server_settings(client, 0);
     }
@@ -2161,6 +2310,7 @@ bool snapserver_set_client_name(const char *id, const char *name)
     portEXIT_CRITICAL(&s_clients_lock);
 
     if (found) {
+        remember_settings(id, name);
         ESP_LOGI(TAG, "Name for %s set to '%s'", id, name);
     }
 
@@ -2200,6 +2350,10 @@ esp_err_t snapserver_start(void)
         return ESP_OK;
     }
 
+    /* Before the first Hello can arrive; see client_store.h for why the
+     * entries have to be in RAM by then. */
+    (void)client_store_init();
+
     {
         device_config_t cfg;
         device_config_get(&cfg);
@@ -2231,6 +2385,13 @@ esp_err_t snapserver_start(void)
     memset(s_chunk_pool, 0, sizeof(chunk_slot_t) * CHUNK_POOL_SIZE);
     s_chunk_write = 0;
     s_chunk_sequence = 0;
+
+    s_remote_mutex = xSemaphoreCreateMutex();
+    s_remote_done = xSemaphoreCreateBinary();
+    if (s_remote_mutex == NULL || s_remote_done == NULL) {
+        ESP_LOGE(TAG, "No memory for the config request semaphores");
+        return ESP_ERR_NO_MEM;
+    }
 
     memset(s_clients, 0, sizeof(s_clients));
     for (int i = 0; i < MAX_CLIENTS; ++i) {
@@ -2360,4 +2521,111 @@ fail:
         }
     }
     return ESP_ERR_NO_MEM;
+}
+
+esp_err_t snapserver_remote_request(const char *id,
+                                    const char *json,
+                                    char **reply,
+                                    uint32_t timeout_ms)
+{
+    *reply = NULL;
+    if (!s_started || id == NULL || json == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    const size_t json_len = strlen(json);
+    if (json_len == 0U || json_len > RX_MAX - sizeof(uint32_t)) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+
+    if (xSemaphoreTake(s_remote_mutex, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    /* Same framing as ServerSettings: length, then the JSON. */
+    const uint32_t len = (uint32_t)json_len;
+    uint8_t *payload = malloc(sizeof(len) + json_len);
+    if (payload == NULL) {
+        xSemaphoreGive(s_remote_mutex);
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(payload, &len, sizeof(len));
+    memcpy(payload + sizeof(len), json, json_len);
+
+    /* A give from an answer that came just after the previous request had
+     * already given up would otherwise end this wait at once. */
+    (void)xSemaphoreTake(s_remote_done, 0);
+
+    client_t *client = NULL;
+    uint16_t request_id = 0;
+    portENTER_CRITICAL(&s_clients_lock);
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+        if (s_clients[i].active && s_clients[i].ready && s_clients[i].is_snapmesh &&
+            strcmp(s_clients[i].id, id) == 0) {
+            client = &s_clients[i];
+            if (++s_remote_next_id == 0U) {
+                s_remote_next_id = 1U;
+            }
+            request_id = s_remote_next_id;
+            s_remote.slot = i;
+            s_remote.id = request_id;
+            s_remote.payload = NULL;
+            s_remote.size = 0;
+            s_remote.failed = false;
+            break;
+        }
+    }
+    portEXIT_CRITICAL(&s_clients_lock);
+
+    if (client == NULL) {
+        free(payload);
+        xSemaphoreGive(s_remote_mutex);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    esp_err_t result = ESP_OK;
+    if (client_send_msg(client, SNAP_TYPE_SNAPMESH_CONFIG, request_id, 0,
+                        payload, (uint32_t)(sizeof(len) + json_len), 0, 0, true) != 0) {
+        result = ESP_FAIL;
+    } else if (xSemaphoreTake(s_remote_done, pdMS_TO_TICKS(timeout_ms)) != pdTRUE) {
+        result = ESP_ERR_TIMEOUT;
+    }
+    free(payload);
+
+    portENTER_CRITICAL(&s_clients_lock);
+    uint8_t *answer = s_remote.payload;
+    const uint32_t answer_size = s_remote.size;
+    const bool failed = s_remote.failed;
+    s_remote.slot = -1;
+    s_remote.payload = NULL;
+    s_remote.size = 0;
+    s_remote.failed = false;
+    portEXIT_CRITICAL(&s_clients_lock);
+
+    if (result == ESP_OK && (failed || answer == NULL)) {
+        result = ESP_ERR_INVALID_STATE;
+    }
+    if (result == ESP_OK) {
+        uint32_t answer_len = 0;
+        if (answer_size < sizeof(answer_len)) {
+            result = ESP_ERR_INVALID_RESPONSE;
+        } else {
+            memcpy(&answer_len, answer, sizeof(answer_len));
+            if (answer_len > answer_size - sizeof(answer_len)) {
+                result = ESP_ERR_INVALID_RESPONSE;
+            }
+        }
+        if (result == ESP_OK) {
+            *reply = malloc((size_t)answer_len + 1U);
+            if (*reply == NULL) {
+                result = ESP_ERR_NO_MEM;
+            } else {
+                memcpy(*reply, answer + sizeof(answer_len), answer_len);
+                (*reply)[answer_len] = '\0';
+            }
+        }
+    }
+    free(answer);
+
+    xSemaphoreGive(s_remote_mutex);
+    return result;
 }
