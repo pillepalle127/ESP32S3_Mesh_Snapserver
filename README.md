@@ -16,22 +16,92 @@ Offizielle Snapclients (PC, Android, iOS) und Snapcast-Control-Apps funktioniere
 
 ## Installation
 
-Ohne eigene Toolchain; gebaut wird bei jedem Release in GitHub Actions (`.github/workflows/release.yml`).
+Firmware und App lassen sich **ohne Programmierkenntnisse** installieren. Es muss **keine Entwicklungsumgebung
+und keine Toolchain** eingerichtet werden: Die Firmware wird direkt aus dem Browser auf das Board geschrieben,
+die App ist eine normale Android-Installationsdatei. Beides wird automatisch aus diesem Repository gebaut und
+bei jeder neuen Version unter [Releases](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases)
+bereitgestellt.
 
-* **Firmware im Browser:** [Flash-Seite](https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/) in Chrome
-  oder Edge am PC öffnen, Board per USB anschließen, *Installieren*. Bei einem Update **„Erase device“ nicht
-  anhaken**, dann bleiben Rolle, Mesh und Pins erhalten. Ein neues Board startet danach im
-  [Provisioning-AP](#provisioning-ap).
-* **Firmware mit esptool** (eigenständiges Programm, kein Python nötig), Dateien aus dem
-  [Release](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases):
-  ```bash
-  esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin
-  ```
-  `snapmesh-full.bin` ist das Gesamt-Image ab `0x0`. Es füllt NVS und PHY-Daten (`0x9000–0xFFFF`) mit `0xFF`,
-  also nur für eine Neuinstallation.
-* **App:** `SnapAnnounce-<version>.apk` aus dem Release; auf dem Handy „Unbekannte Apps installieren“ erlauben.
-  Eine selbst gebaute Debug-Version vorher deinstallieren (andere Signatur).
-* Voraussetzung: ESP32-S3 mit 16 MB Flash und 8 MB Octal-PSRAM (N16R8).
+### Was du brauchst
+
+* **Ein ESP32-S3-Board je Lautsprecher** mit 16 MB Flash und 8 MB PSRAM (Bezeichnung „N16R8“), z. B. das
+  YD-ESP32-S3 N16R8. Andere Varianten (weniger Speicher, „Quad-PSRAM“) werden nicht unterstützt.
+* **Ein USB-Kabel, das Daten überträgt.** Viele Kabel, die bei Geräten liegen, können nur laden; dann taucht
+  das Board am PC nicht auf.
+* **Einen PC oder Laptop mit Chrome oder Edge** (Windows, macOS oder Linux). Firefox, Safari und Handys können
+  nicht flashen.
+* Für die App: ein **Android-Handy** (ab Android 8). Für iPhones gibt es keine App; die Einstellungen gehen dort
+  im Browser.
+
+### 1. Firmware aufspielen
+
+1. Die **[Flash-Seite](https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/)** in Chrome oder Edge öffnen.
+2. Das Board per USB an den PC anschließen. Hat es zwei USB-Buchsen, die nehmen, die direkt zum ESP32-S3 führt
+   (oft mit „USB“ beschriftet, nicht „COM“ oder „UART“).
+3. Auf **Installieren** klicken. Im Fenster, das der Browser öffnet, den Eintrag **„USB JTAG/serial debug
+   unit“** wählen und **Verbinden**.
+4. Im nächsten Dialog die Installation bestätigen:
+   * **Neues Board:** Das Häkchen **„Erase device“** darf gesetzt werden, es löscht alte Inhalte.
+   * **Update eines Boards, das schon läuft:** **„Erase device“ nicht anhaken.** Dann bleiben alle
+     Einstellungen erhalten.
+5. Etwa eine Minute warten und das Kabel währenddessen nicht abziehen. Wenn die Seite „Installation complete“
+   meldet, ist das Board fertig und startet neu.
+
+**Wenn das Board nicht in der Liste erscheint:** anderes Kabel oder andere Buchse probieren. Hilft das nicht,
+den Knopf **BOOT** gedrückt halten, kurz **RESET** (RST) drücken, BOOT loslassen und es erneut versuchen. Unter
+Linux muss dein Benutzer in der Gruppe `dialout` sein.
+
+### 2. Neues Gerät einrichten
+
+Nach der ersten Installation weiß das Board noch nicht, welche Aufgabe es hat. Es öffnet deshalb ein eigenes,
+offenes WLAN namens **`ESP32_provisioning_…`**.
+
+1. Handy oder Laptop mit diesem WLAN verbinden. Meldet das Handy „kein Internet“: trotzdem verbunden bleiben.
+2. Im Browser **http://192.168.5.1/** öffnen.
+3. Einstellen:
+   * **Rolle:** **Server** für genau ein Gerät, nämlich das, an dem die Musikquelle hängt (TinySine-Eingang).
+     **Client** für alle weiteren Lautsprecher.
+   * **Mesh:** Name (SSID) und Passwort des Lautsprecher-Netzes. **Auf allen Geräten dieselben Werte** eintragen;
+     der Server baut das Netz damit auf, die Clients verbinden sich damit.
+   * **Pins:** nur ändern, wenn die Verdrahtung von der [Standardbelegung](#hardware) abweicht. Die Vorlage
+     „Alternative“ setzt die zweite übliche Belegung.
+4. **Save** drücken. Das Gerät startet neu und verbindet sich mit dem Mesh.
+
+Am besten zuerst den Server einrichten, danach die Clients nacheinander. Jeder Client erscheint anschließend in
+der Geräteliste des Servers.
+
+**Danach:** Mit dem Mesh-WLAN verbinden (der Name und das Passwort von eben) und **http://192.168.5.1/**
+öffnen. Dort ist die Seite des Servers mit allen Lautsprechern: Lautstärke, Stummschaltung und Verzögerung je
+Gerät, und über **Settings** die Einstellungen jedes Clients.
+
+### 3. Updates
+
+Ein Update geht genauso wie die Installation (Schritt 1), nur **ohne „Erase device“**. Rolle, Mesh, Pins und
+alle anderen Einstellungen bleiben erhalten. Jedes Gerät wird einzeln per USB aktualisiert, der Server und
+jeder Client. Welche Version ein Gerät hat, steht in seinem Statusfeld (`firmware: v…`).
+
+### 4. App installieren (Android)
+
+1. Auf dem Handy die [Release-Seite](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases) öffnen
+   und die Datei **`SnapAnnounce-….apk`** herunterladen.
+2. Die Datei öffnen. Android fragt, ob der Browser Apps installieren darf: **erlauben**, dann **Installieren**.
+3. Das Handy mit dem Mesh-WLAN verbinden und die App öffnen. Die Server-Adresse `192.168.5.1` ist voreingestellt.
+   * **Durchsage:** Knopf drücken und sprechen, noch einmal drücken zum Beenden.
+   * **Geräte:** alle Lautsprecher mit Lautstärke, Stummschaltung und Verzögerung; **Einstellungen** öffnet die
+     Konfiguration eines Geräts.
+
+Eine selbst gebaute Version der App vorher deinstallieren, sonst verweigert Android das Update (andere Signatur).
+Neue Versionen der App lassen sich danach einfach darüber installieren.
+
+### Für Fortgeschrittene: Flashen mit esptool
+
+Ohne Chrome oder Edge geht es mit dem eigenständigen [esptool](https://github.com/espressif/esptool/releases)
+(kein Python nötig) und den drei Dateien aus dem Release:
+```bash
+esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin
+```
+`snapmesh-full.bin` ist ein Gesamt-Image ab `0x0` für eine Neuinstallation. Es füllt NVS und PHY-Daten
+(`0x9000–0xFFFF`) mit `0xFF` und löscht damit alle Einstellungen, für Updates also nicht verwenden.
 
 ---
 
