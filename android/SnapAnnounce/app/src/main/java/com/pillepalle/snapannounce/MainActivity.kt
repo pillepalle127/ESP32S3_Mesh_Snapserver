@@ -14,6 +14,15 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import android.media.MediaRecorder
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material3.Icon
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
@@ -55,8 +64,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 /**
- * One screen: server address, a latching button, and what the announcement
- * is doing right now.
+ * Two tabs: the announcement (server address, a latching button, and what
+ * the announcement is doing right now) and the server's device list, from
+ * which a device's full settings open (DevicesScreen.kt).
  *
  * The button is a toggle, not push-to-talk: press once to go on air, press
  * again to stop. Going on air is not optimistic -- the UI only shows
@@ -99,24 +109,65 @@ class MainActivity : ComponentActivity() {
         setContent {
             MaterialTheme {
                 val uiState by state.collectAsStateWithLifecycle()
-                AnnounceScreen(
-                    uiState = uiState,
-                    initialHost = settings.serverHost,
-                    onHostChange = { settings.serverHost = it },
-                    initialMicSource = settings.micSource,
-                    onMicSourceChange = { settings.micSource = it },
-                    initialMaxGainDb = settings.maxGainDb,
-                    onMaxGainChange = { settings.maxGainDb = it },
-                    initialTargetRmsDbfs = settings.targetRmsDbfs,
-                    onTargetRmsChange = { settings.targetRmsDbfs = it },
-                    onToggle = { armed ->
-                        when {
-                            armed -> stopAnnouncement()
-                            hasMicPermission() -> startAnnouncement()
-                            else -> permissionRequest.launch(requiredPermissions())
+                var tab by rememberSaveable { mutableIntStateOf(TAB_ANNOUNCE) }
+                // Non-null while one device's settings are open over everything else.
+                var settingsFor by remember { mutableStateOf<MeshDevice?>(null) }
+
+                val open = settingsFor
+                if (open != null) {
+                    DeviceSettingsScreen(
+                        url = MeshApi(settings.serverHost, null).settingsUrl(open.id),
+                        title = open.name,
+                        onBack = { settingsFor = null },
+                    )
+                } else {
+                    Scaffold(
+                        bottomBar = {
+                            NavigationBar {
+                                NavigationBarItem(
+                                    selected = tab == TAB_ANNOUNCE,
+                                    onClick = { tab = TAB_ANNOUNCE },
+                                    icon = { Icon(Icons.Filled.Phone, contentDescription = null) },
+                                    label = { Text("Durchsage") },
+                                )
+                                NavigationBarItem(
+                                    selected = tab == TAB_DEVICES,
+                                    onClick = { tab = TAB_DEVICES },
+                                    icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
+                                    label = { Text("Geräte") },
+                                )
+                            }
+                        },
+                    ) { padding ->
+                        Box(modifier = Modifier.padding(padding)) {
+                            if (tab == TAB_DEVICES) {
+                                DevicesScreen(
+                                    host = settings.serverHost,
+                                    onOpenSettings = { settingsFor = it },
+                                )
+                            } else {
+                                AnnounceScreen(
+                                    uiState = uiState,
+                                    initialHost = settings.serverHost,
+                                    onHostChange = { settings.serverHost = it },
+                                    initialMicSource = settings.micSource,
+                                    onMicSourceChange = { settings.micSource = it },
+                                    initialMaxGainDb = settings.maxGainDb,
+                                    onMaxGainChange = { settings.maxGainDb = it },
+                                    initialTargetRmsDbfs = settings.targetRmsDbfs,
+                                    onTargetRmsChange = { settings.targetRmsDbfs = it },
+                                    onToggle = { armed ->
+                                        when {
+                                            armed -> stopAnnouncement()
+                                            hasMicPermission() -> startAnnouncement()
+                                            else -> permissionRequest.launch(requiredPermissions())
+                                        }
+                                    },
+                                )
+                            }
                         }
-                    },
-                )
+                    }
+                }
             }
         }
     }
@@ -190,11 +241,10 @@ private fun AnnounceScreen(
     var showSettings by remember { mutableStateOf(false) }
     val armed = uiState.state == AnnounceState.CONNECTING || uiState.state == AnnounceState.ON_AIR
 
-    Scaffold { padding ->
+    Box(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -289,6 +339,9 @@ private fun AnnounceScreen(
         }
     }
 }
+
+private const val TAB_ANNOUNCE = 0
+private const val TAB_DEVICES = 1
 
 /** Selectable microphone sources, see SettingsStore.micSource. */
 private val MIC_SOURCES = listOf(

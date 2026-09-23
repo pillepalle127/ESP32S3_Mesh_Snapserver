@@ -96,12 +96,14 @@ Bugs sind umgesetzt:
   geprüft (jsdom). Auf Hardware zu prüfen: Werte eines Clients laden und
   speichern, Neustart nach Pinwechsel samt Neuladen, Client auf Ebene 3.
 
-- **Client-Konfiguration auch in der App (vorgemerkt 2026-09-23).** Was die
-  Server-Seite jetzt kann (Gerät wählen, seine Einstellungen laden und
-  speichern), auch in der Android-App `android/SnapAnnounce` anbieten. Die
-  API steht: `GET /api/devices` für die Liste, `GET`/`POST
-  /api/devices/config?id=…` und `GET /api/devices/status?id=…` für ein
-  Gerät, alles über den Server, also auch für Clients hinter NAT.
+- **Client-Konfiguration auch in der App (erledigt 2026-09-23, auf dem Handy
+  noch nicht getestet).** Mischform: Tab „Geräte" mit nativer Liste
+  (Lautstärke, Mute, Delay, Name über `/api/devices`), die vollständigen
+  Einstellungen eines Geräts als eingebettete Firmware-Seite
+  (`/?device=<id>&embed=1`), damit Formular und Pin-Logik nur an einer
+  Stelle gepflegt werden. Zu prüfen: Erreichbarkeit mit aktiven mobilen
+  Daten (Prozessbindung ans WLAN), WebView-Dialog beim Factory Reset,
+  Delay-Knöpfe auf schmalen Displays.
 
 - **Unkomplizierte Verteilung (vorgemerkt 2026-09-23).** Flashen soll ohne
   installiertes ESP-IDF/SDK gehen. Naheliegend: ein zusammengeführtes Image

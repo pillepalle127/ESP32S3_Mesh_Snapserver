@@ -20,7 +20,12 @@
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:label="@string/app_name"
-        android:theme="@style/Theme.SnapAnnounce">
+        android:theme="@style/Theme.SnapAnnounce"
+        android:usesCleartextTraffic="true">
+        <!-- Cleartext on purpose: the ESP32 serves its API and config page
+             over plain HTTP on the mesh, and the server address is user
+             set, so no fixed domain list could cover it. Nothing here
+             talks to the internet. -->
 
         <activity
             android:name=".MainActivity"

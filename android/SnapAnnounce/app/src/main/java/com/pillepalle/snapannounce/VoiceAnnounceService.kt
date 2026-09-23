@@ -196,7 +196,7 @@ class VoiceAnnounceService : Service() {
     private suspend fun runAnnouncement() {
         val host = settings.serverHost
 
-        val network = wifiNetworkOrNull()
+        val network = wifiNetworkOrNull(connectivity)
         if (network == null) {
             finish(UiState(state = AnnounceState.ERROR, message = "Kein WLAN verbunden"))
             return
@@ -536,12 +536,6 @@ class VoiceAnnounceService : Service() {
 
     private fun dbfs(peak: Int): Double =
         if (peak > 0) 20.0 * log10(peak / 32767.0) else -120.0
-
-    private fun wifiNetworkOrNull(): Network? =
-        connectivity.allNetworks.firstOrNull { net ->
-            connectivity.getNetworkCapabilities(net)
-                ?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-        }
 
     /**
      * If the Wi-Fi the announcement runs on goes away, stop -- rather than

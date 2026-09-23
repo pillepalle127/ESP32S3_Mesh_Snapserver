@@ -203,8 +203,14 @@ let currentDeviceId = null;
  * (/api/devices/config), since a client past the first hop cannot be
  * reached directly. Every switch bumps selectionToken, and an answer that
  * arrives for an older selection is dropped. */
-let selectedId = null;
-let selectedName = '';
+/* ?device=<id> opens the page on that client's settings, ?embed=1 drops
+ * the page's own title and device list -- both for the app, which shows
+ * its own device list and opens this page for one device at a time. */
+const pageParams = new URLSearchParams(location.search);
+const embedded = pageParams.get('embed') === '1';
+let selectedId = pageParams.get('device') || null;
+let selectedName = selectedId || '';
+let hasDeviceList = false;
 let selectedConnected = true;
 let selectionToken = 0;
 let configLoaded = false;
@@ -218,7 +224,7 @@ const statusUrl = () => selectedId === null ? '/api/status' : '/api/devices/stat
 
 function updateSettingsHead() {
   const title = $('settings_title');
-  title.hidden = $('devices_section').hidden;
+  title.hidden = !hasDeviceList;
   const name = selectedId === null ? serverName : selectedName;
   title.textContent = 'Settings: ' + name +
     (selectedId !== null && !selectedConnected ? ' (not connected)' : '');
@@ -740,7 +746,8 @@ async function loadDevices() {
   } finally {
     devicesBusy = false;
   }
-  $('devices_section').hidden = !d.clients;
+  hasDeviceList = !!d.clients;
+  $('devices_section').hidden = !hasDeviceList || embedded;
   if (!d.clients) return;
   delayMax = d.delay_max_ms;
   serverName = `This server (${d.server.id})`;
@@ -790,6 +797,10 @@ async function loadDevices() {
   updateSettingsHead();
 }
 
+if (embedded) {
+  $('pageTitle').hidden = true;
+  document.querySelector('footer').hidden = true;
+}
 for (const id of ['local_input_threshold_db', 'delay_trim_ms', 'sub_gain_db', 'wideband_gain_db']) {
   addSignToggle($(id));
 }

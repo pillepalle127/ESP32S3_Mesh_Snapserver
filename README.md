@@ -228,9 +228,15 @@ Eigener Kanal neben dem Stream: niedrige Latenz statt Lückenlosigkeit.
 * Grenzen: keine Echounterdrückung gegenüber den Lautsprechern; eine Durchsage zur Zeit (sonst `busy`);
   das Handy muss im Mesh-WLAN sein.
 
-**App** `android/SnapAnnounce` (Kotlin, Compose, ab Android 8): verriegelnder Sprechknopf, Foreground-Service
-mit WLAN-Lock. Einstellungen: Mikrofonquelle, max. Verstärkung, Durchsage-Pegel (AGC mit Limiter; Musik liegt
-bei etwa −24 bis −28 dBFS).
+**App** `android/SnapAnnounce` (Kotlin, Compose, ab Android 8), zwei Tabs:
+
+* **Durchsage:** verriegelnder Sprechknopf, Foreground-Service mit WLAN-Lock. Einstellungen: Mikrofonquelle,
+  max. Verstärkung, Durchsage-Pegel (AGC mit Limiter; Musik liegt bei etwa −24 bis −28 dBFS).
+* **Geräte:** native Geräteliste über `/api/devices` (Poll 3 s): Lautstärke, Mute, Delay (±10/±100 ms, 0,7 s
+  gesammelt), Umbenennen. **Einstellungen** öffnet die Firmware-Seite eines Geräts in einer WebView
+  (`/?device=<id>&embed=1`: Gerät vorausgewählt, ohne eigene Liste). Solange sie offen ist, ist der Prozess an das
+  Mesh-WLAN gebunden (`bindProcessToNetwork`), sonst ginge der Traffic über mobile Daten. Cleartext-HTTP ist
+  erlaubt, weil die Server-Adresse frei einstellbar ist.
 
 <img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce" width="320">
 
