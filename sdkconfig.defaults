@@ -40,3 +40,8 @@ CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 # snapclient_start()). At the IDF default of 2304 B every client overflowed
 # sys_evt right after getting its mesh IP and rebooted in a loop.
 CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
+# The whole request header block must fit in this. 512 (the IDF default)
+# is too small for an Android WebView: its User-Agent and Accept headers
+# plus X-Requested-With came to more, and the settings page in the app
+# failed with 431 "Header fields are too long".
+CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
