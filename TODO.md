@@ -105,18 +105,47 @@ Bugs sind umgesetzt:
   Daten (Prozessbindung ans WLAN), WebView-Dialog beim Factory Reset,
   Delay-Knöpfe auf schmalen Displays.
 
-- **Unkomplizierte Verteilung (vorgemerkt 2026-09-23).** Flashen soll ohne
-  installiertes ESP-IDF/SDK gehen. Naheliegend: ein zusammengeführtes Image
-  (`esptool.py merge_bin` aus `build/flash_args`, ein einziges `.bin` ab
-  0x0) als Release-Artefakt, dazu eine Flash-Seite mit ESP Web Tools
-  (WebSerial, flasht direkt aus Chrome/Edge per USB, ohne Installation; auf
-  GitHub Pages hostbar). Zu klären: ob die Boards dabei `usb_reset`
-  brauchen wie hier im Container (ESP Web Tools nutzt den USB-Serial/JTAG
-  des S3 direkt, sollte also gehen); dass ein Update NVS nicht löscht
-  (Erase-Option aus lassen, sonst sind Rolle und Pins weg); Rückfall für
-  Leute ohne Chromium-Browser (esptool als pip-Paket oder das
-  Standalone-Binary von Espressif). Später denkbar: OTA über die
-  Web-Seite, braucht aber erst OTA-Partitionen (siehe nächster Punkt).
+- **Unkomplizierte Verteilung (vorgemerkt 2026-09-23).** Ziel: Nutzer
+  brauchen nur einen Browser und ein USB-Kabel für den ESP32 und einen
+  Download für die App, keine eigene Toolchain.
+
+  *Firmware*
+  1. **Ein Image statt mehrerer Dateien:** `esptool.py merge_bin` fasst
+     Bootloader, Partitionstabelle und App anhand von `build/flash_args` zu
+     einem `.bin` ab 0x0 zusammen.
+  2. **Flashen im Browser mit ESP Web Tools:** kleine Seite mit
+     „Installieren“-Knopf und `manifest.json` (Chip-Familie „ESP32-S3“,
+     Pfad zum Image). Flasht per WebSerial direkt aus Chrome/Edge über USB,
+     ohne ESP-IDF, Python oder Treiber; der USB-Serial/JTAG des S3 geht
+     direkt. Hosting kostenlos auf GitHub Pages. Wichtig: Bei Updates die
+     Option „Löschen“ aus lassen, sonst sind Rolle, Pins und alle
+     Einstellungen im NVS weg; bei einer Erstinstallation ist Löschen in
+     Ordnung.
+  3. **Automatisch bauen mit GitHub Actions:** bei jedem Release-Tag baut
+     `espressif/esp-idf-ci-action` mit der festgelegten IDF-Version
+     (5.4.3), erzeugt das zusammengeführte Image, hängt es an das
+     GitHub-Release und aktualisiert optional die Flash-Seite auf Pages.
+     Dann baut niemand mehr lokal.
+  4. **Ausweichweg ohne Chromium-Browser:** das eigenständige esptool von
+     Espressif (ohne Python-Installation), ein einzeiliger Befehl mit
+     `--before usb_reset` im README.
+  5. **Später: OTA über die Web-Oberfläche:** `.bin` auf der
+     Konfigurationsseite hochladen. Braucht OTA-Partitionen, die
+     `partitions.csv` heute nicht hat (siehe nächster Punkt); der Umbau
+     erfordert einmal ein komplettes Neuflashen mit Löschen.
+
+  *Android-App*
+  - Signiertes Release-APK im GitHub-Release, einmal mit eigenem Keystore
+    signiert, der für alle Updates derselbe bleiben muss. Installation
+    braucht auf dem Handy „Unbekannte Apps installieren“.
+  - Ebenfalls per GitHub Actions baubar (JDK 21, Gradle), der Keystore
+    liegt als Secret.
+  - Später denkbar: F-Droid oder Play Store; mehr Aufwand (Richtlinien, bei
+    Play die Datenschutzangaben).
+
+  *Reihenfolge:* (1) GitHub Action für Firmware und APK, (2) Flash-Seite
+  mit ESP Web Tools auf GitHub Pages, (3) OTA später zusammen mit dem Umbau
+  der Partitionen.
 
 - `partitions.csv` hat keine OTA- oder Coredump-Partition. Kein Problem für
   den aktuellen Funktionsumfang, aber falls OTA-Updates oder
