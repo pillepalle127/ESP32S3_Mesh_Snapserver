@@ -51,3 +51,11 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 # no new connection -- web page, Snapcast, clients -- could be set up any
 # more, and the server stayed unreachable until reset.
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+# The values the devices run and were tested with. Without them a fresh
+# build (e.g. in CI, which has no sdkconfig) takes IDF's defaults for
+# SPIRAM_TRY_ALLOCATE_WIFI_LWIP instead: 16 static RX buffers, an RX block-ack
+# window of 16 and unlimited out-of-order segments per connection -- untested
+# here, and a different Wi-Fi behaviour than what is on the boards.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_RX_BA_WIN=6
+CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS=4
