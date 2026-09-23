@@ -1,617 +1,255 @@
-# ESP32-S3 Mini Snapserver
+# ESP32-S3 Mesh Snapserver
 
-**Stand:** 2026-09-20
+**Stand:** 2026-09-23
 
-## Projektziel
+Snapcast-kompatibles Mehrraum-Audiosystem auf ESP32-S3, ohne PC oder Raspberry Pi im Betrieb. Eine
+Firmware, zwei Rollen, zur Laufzeit per Web-Konfiguration umschaltbar:
 
-Dieses Projekt implementiert ein eigenständiges **Snapcast-kompatibles Audiosystem auf ESP32-S3**,
-das in einem eigenen ESP-Mesh-Lite-Netzwerk sowohl als **Server** als auch als **Client**
-laufen kann — dieselbe Firmware, die Rolle wird per Web-Konfiguration gewählt.
+* **Server:** ESP-Mesh-Lite-Root. Nimmt I2S-Stereo auf, mischt zu Mono, encodiert Opus und streamt per
+  Snapcast-Protokoll an alle Clients. Spielt zeitversetzt synchron auf dem eigenen Lautsprecher mit.
+* **Client:** Mesh-Relay (nie Leaf). Empfängt den Stream, synchronisiert auf die Serveruhr und gibt ihn
+  über dieselbe DSP/I2S-Kette aus. Wahlweise mit lokalem I2S-Eingang als Alternativquelle.
 
-Als **Server** übernimmt der ESP32-S3 mehrere Aufgaben:
-
-* Audioeingang über I2S
-* Stereo-zu-Mono-Mischung
-* Opus-Encoding
-* Snapcast-kompatibler Audiostream
-* TCP-Verbindung für Audio auf Port **1704**
-* JSON-RPC-Steuerung auf Port **1705**
-* Sprachdurchsagen vom Handy auf Port **1706**, siehe [Sprachdurchsagen](#sprachdurchsagen)
-* eigenständiger ESP-Mesh-Lite-Root
-* Verteilung des Audiosignals an Snapclients
-* lokale digitale Frequenzweiche für die angeschlossene Audiohardware
-* Potis für Lautstärke und Delay am eigenen Lautsprecher, siehe [Potis für Lautstärke und Delay](#potis-für-lautstärke-und-delay)
-* Web-Konfigurationsoberfläche für Mesh-, DSP- und Opus-Einstellungen
-* Provisioning-AP-Fallback, falls das Gerät sonst nicht erreichbar wäre
-
-Als **Client** (siehe [Client-Rolle](#client-rolle)) tritt ein weiterer ESP32-S3 demselben
-Mesh als Relay bei, empfängt den Snapcast-Stream des Servers und gibt ihn über dieselbe
-DSP-/I2S-Kette an einem eigenen Lautsprecher wieder — wahlweise mit lokalem I2S-Eingang
-als Alternativquelle.
-
-Das Ziel ist ein vollständig eigenständiges Mehr-Lautsprecher-Audiosystem ohne Raspberry Pi
-oder PC im laufenden Betrieb.
+Offizielle Snapclients (PC, Android, iOS) und Snapcast-Control-Apps funktionieren ebenfalls.
 
 ---
 
-## Aktueller Funktionsumfang
+## Funktionen
 
-* ESP32-S3 als Snapserver
-* PSRAM-Unterstützung
-* ESP-Mesh-Lite als eigenes Mesh-Netzwerk
-* ESP32-S3 arbeitet als Mesh-Root
-* I2S-Audioeingang
-* Stereo-Eingang wird vor der weiteren Verarbeitung zu Mono gemischt
-* Opus-Encoding
-* Snapcast-Audiostream über TCP Port 1704
-* Snapcast JSON-RPC über TCP Port 1705
-* monotone Audiozeitbasis mit Abgleich mit der absoluten Client-Zeit
-* Audioübertragung an normale Snapclients
-* lokale digitale Frequenzweiche
-* Ausgabe der getrennten Frequenzbereiche über I2S
-* vorgesehen für die Kombination mit externen I2S-DACs und Verstärkern
-* Web-Konfigurationsseite (HTTP, Port 80) für Mesh-Zugangsdaten, Mesh-Hop-Tiefe,
-  DSP-Frequenzweiche (Enable, Trennfrequenz, Kanal-Gains, Kanalzuordnung) und
-  Opus-Bitrate/Complexity, persistent in NVS gespeichert
-* mDNS-Erreichbarkeit unter einem pro Gerät eindeutigen Namen
-  (`snapserver-<MAC>.local` bzw. `snapclient-<MAC>.local`)
-* Geräteliste auf der Server-Seite: jeder Lautsprecher mit Lautstärke,
-  Delay und Anzahl der Mesh-Hops, siehe [Geräteliste](#geräteliste)
-* Pinbelegung (I2S, Status-LED, Potis) zur Laufzeit auf der Web-Oberfläche
-  einstellbar, siehe [Pinning](#pinning)
-* Factory-Reset über die Web-Oberfläche
-* Offener Provisioning-Access-Point (`ESP32_provisioning_<MAC>`) als Fallback bei
-  Erstinbetriebnahme, nach Factory-Reset, bei deaktiviertem Mesh oder nach
-  mehreren erfolglosen Mesh-Boots
-* Client-Rolle (Snapcast-Empfang, Mesh-Relay) über dieselbe Web-Konfiguration
-  wählbar, siehe [Client-Rolle](#client-rolle)
-* Sprachdurchsagen von einem Android-Handy über einen eigenen, ungepufferten
-  Kanal, mit automatischer Stummschaltung der Musik, siehe
-  [Sprachdurchsagen](#sprachdurchsagen)
+| Bereich | Umsetzung |
+|---|---|
+| Audio | I2S-Vollduplex 48 kHz, L+R → Mono, Opus (Vorgabe 96 kbit/s, Complexity 5) |
+| DSP | LR4-Frequenzweiche (2 × Biquad je Zweig), Gain je Zweig, Kanalzuordnung, live änderbar |
+| Sync | Vierzeiten-Zeitabgleich (Minimum-RTT aus 12 Messungen), Drift-Regelung per Resampling |
+| Netz | ESP-Mesh-Lite, NAPT zwischen den Ebenen, Provisioning-AP als Rückfall |
+| Steuerung | Web-UI + JSON-API (Port 80), Snapcast JSON-RPC (Port 1705), mDNS |
+| Geräte | Geräteliste mit Lautstärke, Mute, Delay, Hops; Einstellungen jedes Clients über den Server |
+| Hardware | Pinbelegung (I2S, LED, Potis) zur Laufzeit, Potis für Lautstärke und Delay, WS2812-Status-LED |
+| Durchsagen | Android-App → UDP 1706, ~90 ms Latenz, Musik pausiert währenddessen |
 
 ---
 
 ## Hardware
 
-### ESP32-S3
+* ESP32-S3 mit PSRAM (getestet: 16 MB Flash, 8 MB Octal-PSRAM, USB-Serial/JTAG)
+* Eingang: TinySine AudioB I2S V2r0
+* Ausgang: PCM5102A
+* optional: 2 × 10-kΩ-Poti, WS2812-LED
 
-Der Server basiert auf einem ESP32-S3 mit PSRAM.
+Standardbelegung (änderbar, siehe [Pins](#pins)):
 
-Die zusätzliche Speichergröße wird unter anderem für Audioverarbeitung, Netzwerk- und Opus-Puffer verwendet.
+| GPIO | Funktion |
+|---|---|
+| 4 | BCLK (PCM5102A BCK, TinySine BCLK) |
+| 6 | LRCLK (PCM5102A LCK, TinySine LRCLK) |
+| 5 | DIN ← TinySine DOUT |
+| 7 | DOUT → PCM5102A DIN |
+| 10 | Lautstärke-Poti (Schleifer) |
+| – | Delay-Poti (Vorgabe: keiner) |
+| 48 | WS2812-Status-LED |
 
-### Audioeingang
-
-Als Audioquelle wird ein I2S-Audioeingang verwendet.
-
-Aktuell vorgesehen:
-
-**TinySine AudioB I2S V2r0**
-
-Das Eingangssignal wird zunächst als Stereo verarbeitet und anschließend zu einem Monosignal gemischt.
-
-### Audioausgang
-
-Für die lokale Audioausgabe ist ein I2S-DAC vorgesehen:
-
-**PCM5102A**
-
-Das Ausgangssignal wird nach der digitalen Frequenzweiche entsprechend der jeweiligen Frequenzbereiche ausgegeben.
+<img src="docs/Verdrahtungsplan.png" width="600">
 
 ---
 
-## Audioverarbeitung
-
-Der grundsätzliche Signalweg ist:
+## Signalweg
 
 ```text
-I2S Stereo Input
-       │
-       ▼
-  L + R → Mono
-       │
-       ├──────────────► Opus Encoder
-       │                     │
-       │                     ▼
-       │              Snapcast Stream
-       │
-       ▼
- Digitale Frequenzweiche
-       │
-       ├────────► Low Band
-       │
-       └────────► High Band
-                     │
-                     ▼
-                 I2S DAC
+I2S in (Stereo) ─► L+R → Mono ─┬─► Opus ─► Snapcast TCP 1704 ─► Clients
+                               │
+                               └─► Delay-Line (bufferMs + trim) ─► LR4 ─► Low/High ─► Gain/Vol ─► I2S out
 ```
 
-Die Stereo-Kanäle werden **vor der Frequenzweiche** zu einem gemeinsamen Monosignal gemischt.
-
-Damit wird ausdrücklich keine getrennte Frequenzweiche für den linken und rechten Kanal betrieben.
-
----
-
-## Digitale Frequenzweiche
-
-Die lokale DSP-Verarbeitung erfolgt direkt auf dem ESP32-S3.
-
-Umgesetzt ist eine **Linkwitz-Riley-Frequenzweiche 4. Ordnung (LR4)**, je
-Zweig als zwei kaskadierte Biquads in `audio_i2s.c`. Trennfrequenz, Gains und
-Kanalzuordnung kommen aus der Konfiguration und lassen sich im laufenden
-Betrieb ändern.
-
-Die Frequenzweiche arbeitet auf dem zuvor aus L und R gebildeten Monosignal.
-
-Beispiel:
-
-```text
-             Mono
-               │
-               ▼
-        ┌────────────-──┐
-        │     LR4       │
-        │ Frequenzweiche│
-        └──────────-────┘
-             │     │
-             │     │
-             ▼     ▼
-            LOW   HIGH
-             │     │
-             ▼     ▼
-           Output Output
-```
-
-Trennfrequenz, Enable/Bypass, Kanal-Gains und Kanalzuordnung sind zur Laufzeit über
-die Web-Konfigurationsseite änderbar (siehe unten) und wirken sofort, ohne Neustart.
-Die Projektkonfiguration (Kconfig) legt dafür nur noch die Standardwerte für
-Erstinbetriebnahme und Factory-Reset fest.
-
-Die DSP-Verarbeitung benötigt für diesen Signalweg kein externes DSP-System und ist auf dem ESP32-S3 ohne zwingende Verwendung von PSRAM für die eigentliche Filterberechnung vorgesehen.
+Die Weiche arbeitet auf dem Monosignal. Die lokale Ausgabe des Servers wird um `bufferMs + delay_trim_ms`
+verzögert, damit sie mit den Clients zusammen spielt. Der Netzwerk-Stream bleibt unverzögert. Die
+Poti-Lautstärke greift am Ende der Ausgabestufe und beeinflusst den Stream nicht.
 
 ---
 
-## Web-Konfiguration
-
-Das Gerät stellt unter Port **80** eine Konfigurationsseite bereit, erreichbar über
-seine IP-Adresse oder per mDNS. Der mDNS-Name enthält Rolle und die letzten
-drei MAC-Bytes (`http://snapserver-E3B689.local/`,
-`http://snapclient-E2BDFD.local/`) — ein gemeinsamer Name für alle Geräte war
-nicht brauchbar, weil zwischengespeicherte Namensauflösungen dann auf dem
-falschen Gerät landen. Dieselbe Seite läuft auf jedem Gerät, unabhängig von
-der Rolle — Screenshots beider Rollen in [Client-Rolle](#client-rolle).
-
-<img src="docs/webconfig-server-screenshot.png" width="360">
-
-Konfigurierbar:
-
-* **Rolle:** Server oder Client (siehe [Client-Rolle](#client-rolle)). Änderung
-  löst einen Neustart aus.
-* **Mesh / Wi-Fi:** Enable, SSID, Passwort, Kanal, maximale Hop-Tiefe
-  (`esp_mesh_lite`-Level). Änderungen an diesen Werten lösen einen Neustart aus, um
-  sie zu übernehmen.
-* **DSP / Frequenzweiche:** Enable, Trennfrequenz, Gain pro Kanal, Kanalzuordnung
-  (Sub/Wideband). Wirkt sofort, ohne Neustart. Gilt für beide Rollen — auch der
-  Client führt sein wiedergegebenes Signal durch dieselbe Weiche.
-* **Opus:** Bitrate, Complexity. Wirkt sofort, ohne Neustart. Nur in der
-  Server-Rolle relevant (Encoder-Einstellungen).
-* **Client-Wiedergabe:** Quellenwahl, Pegelschwelle des lokalen Eingangs,
-  Delay-Trim und feste Server-Adresse wirken sofort. Die Puffergröße
-  (`bufferMs`) löst dagegen einen Neustart aus: aus ihr werden beim Start
-  mehrsekündige Puffer dimensioniert — der Ringpuffer des Clients und die
-  Verzögerungsleitung der lokalen Ausgabe des Servers.
-* **Pins:** I2S-Bus, Status-LED und die beiden Potis, dazu der Bereich des
-  Delay-Potis. Angeboten werden nur nutzbare, freie Pins. Ein Pinwechsel
-  löst einen Neustart aus, der Bereich wirkt sofort. Siehe
-  [Pinning](#pinning) und
-  [Potis für Lautstärke und Delay](#potis-für-lautstärke-und-delay).
-
-Alle Werte werden persistent im NVS gespeichert und überleben Neustarts und
-Firmware-Updates (solange sich das Konfigurationsschema nicht ändert).
-
-Ein **Factory-Reset**-Button setzt die Konfiguration auf die Kconfig-Standardwerte
-zurück und startet das Gerät neu. Die Pinbelegung und die in der Geräteliste
-gesetzten Werte gehen dabei mit.
-
-### Geräteliste
-
-Auf dem Server steht ganz oben eine Liste aller Lautsprecher, die er gerade
-beliefert: zuerst er selbst, darunter die Clients nach Entfernung sortiert.
-Pro Gerät:
-
-* **Name**, direkt in der Liste umbenennbar
-* **Hops** — Anzahl der Mesh-Verbindungen zwischen Server und Gerät: 1 für ein
-  Gerät direkt am Root, eins mehr pro Relay dazwischen. Unsere Clients melden
-  ihre Mesh-Ebene im Hello (`"MeshLevel"`). Ein fremder Snapclient meldet
-  nichts; er bekommt 1, wenn er direkt am AP des Servers hängt, sonst
-  „unbekannt".
-* **Lautstärke und Stummschaltung** — die Snapcast-Lautstärke, dieselbe, die
-  eine Control-App setzt. Ein Lautstärke-Poti am Client multipliziert sich
-  damit.
-* **Delay** in ms, positiv = später. Technisch die Snapcast-`latency` mit
-  umgedrehtem Vorzeichen (latency lässt einen Client früher spielen). Sie
-  kommt zum Delay-Trim bzw. Delay-Poti des Geräts hinzu, Bereich ±2000 ms.
-  Wie beim Poti gilt: Ein Sprung über 100 ms löst auf dem Client einen
-  kurzen harten Resync aus.
-
-Änderungen wirken sofort. Der Server speichert sie pro Client (Schlüssel:
-Snapcast-ID, bei allen echten Clients die MAC) im NVS und spielt sie bei jeder
-neuen Verbindung wieder ein — vorher fing ein Client nach jedem Reconnect
-wieder bei 100 %, Delay 0 an, und im Mesh passiert ein Reconnect bei jedem
-Elternwechsel. Das gilt auch für Werte aus einer Control-App über Port 1705.
-Gemerkt werden bis zu 24 Clients; darüber hinaus fällt der am längsten nicht
-geänderte heraus.
-
-**Settings** bei einem Gerät zeigt dessen Einstellungen im Formular darunter,
-überschrieben mit seinem Namen; Speichern geht an dieses Gerät. So lässt sich
-jeder eigene Client von der Server-Seite aus einstellen, auch einer, der
-mehrere Hops tief hinter dem NAPT eines anderen Knotens liegt und von außen
-nicht erreichbar ist. Der Server reicht die Anfrage dafür über die
-Snapcast-Verbindung weiter, die der Client selbst zu ihm aufgebaut hat
-(eigener Nachrichtentyp 100, nur an Clients, die sich im Hello als
-`"SnapMesh"` ausweisen). Löst das Speichern einen Neustart des Clients aus,
-steht er so lange als „not connected" in der Überschrift; sobald er wieder
-verbunden ist, lädt die Seite seine Werte neu. Factory Reset gibt es nur für
-das Gerät selbst — ein zurückgesetzter Client verlöre das Mesh, über das er
-wieder erreichbar wäre. Fremde Snapcast-Clients tragen das Badge „Snapcast"
-und haben nur Lautstärke, Stummschaltung und Delay.
-
-Die eigene Zeile des Servers ist nur Anzeige (Poti-Stellung, Delay-Trim);
-eingestellt wird beides weiter unten auf der Seite. Auf einem Client gibt es
-keine Liste.
-
-Die Liste kommt aus `GET /api/devices`; `POST /api/devices` mit
-`{"id": …, "volume_percent"|"muted"|"delay_ms"|"name": …}` ändert ein Gerät.
-Die Einstellungen eines Clients laufen über `GET`/`POST
-/api/devices/config?id=…` und `GET /api/devices/status?id=…` — dieselben
-Daten wie `/api/config` und `/api/status` auf dem Client selbst. Antwortet
-der Client nicht innerhalb von 3 s (Status: 2 s), kommt 504; ist er nicht
-verbunden, 404.
-Für Control-Apps steht dasselbe in `Server.GetStatus` auf Port 1705: Jeder
-Client trägt dort zusätzlich `"snapmesh": {"hops": n, "own": true|false}`
-(`hops` ist `null`, wenn unbekannt). Ändert sich Lautstärke, Delay, Name oder
-Hop-Zahl eines Clients, gleich von wem, bekommen verbundene Control-Apps ein
-`Server.OnUpdate`.
-
-### Provisioning-Access-Point
-
-Ist das Gerät über sein konfiguriertes Mesh nicht erreichbar, öffnet es automatisch
-einen offenen, unverschlüsselten Access Point (`ESP32_provisioning_<MAC>`), über
-den dieselbe Konfigurationsseite erreichbar ist. Auslöser sind:
-
-* Erstinbetriebnahme (noch keine gespeicherte Konfiguration)
-* Factory-Reset
-* Mesh in der Konfiguration deaktiviert
-* 7 aufeinanderfolgende Boots ohne dass sich eine Station am eigenen Mesh-AP anmeldet
-
-Der Provisioning-AP bleibt 3 Minuten aktiv; läuft dieses Fenster ab, ohne dass
-gespeichert wurde, schaltet sich der Funk komplett ab — ein erneutes Fenster öffnet
-sich erst nach einem Stromzyklus. Ein Speichern innerhalb des Fensters startet das
-Gerät neu und übergibt an die normale Mesh-Entscheidung.
-
----
-
-## Client-Rolle
-
-Dieselbe Firmware kann statt als Server auch als Snapcast-**Client** laufen —
-z. B. auf einem zweiten ESP32-S3 an einem anderen Lautsprecher im selben
-Mesh. Umschaltbar über die Web-Konfiguration (Feld „Rolle", siehe
-[Web-Konfiguration](#web-konfiguration)), Übernahme per Neustart.
-
-<img src="docs/webconfig-client-screenshot.png" width="360">
-
-In der Client-Rolle:
-
-* Das Gerät tritt dem Mesh als **Non-Root-Relay** bei, niemals als Leaf —
-  ein Leaf könnte in einer langgestreckten, mehrere Hops tiefen Topologie
-  keine weiteren Kinder mehr annehmen und die Kette damit vorzeitig beenden.
-* Der Snapserver wird automatisch über `esp_mesh_lite_get_root_ip()`
-  gefunden (funktioniert auch über mehrere Hops und nach
-  Mesh-Umstrukturierungen hinweg, anders als das lokale DHCP-Gateway oder
-  mDNS, die beide nur bis zur ersten Ebene reichen). Alternativ ist in der
-  Web-Konfiguration eine feste Server-Adresse eintragbar.
-* Empfangenes Snapcast-Audio (Opus, mono) wird dekodiert und über dieselbe
-  DSP-/I2S-Ausgabekette wie beim Server wiedergegeben.
-* Der lokale I2S-Eingang steht als **alternative Audioquelle** zur
-  Verfügung (z. B. Aux-Eingang) — per Pegelerkennung automatisch priorisiert,
-  sobald dort ein Signal anliegt, oder über die Web-Konfiguration fest auf
-  „nur Netzwerk" oder „nur lokaler Eingang" erzwingbar.
-* Puffergröße (`bufferMs`) und ein zusätzlicher Delay-Trim sind konfigurierbar,
-  um Mesh-Umstrukturierungen in einem dynamischen Funkumfeld zu überbrücken.
-* Die **Lautstärke ist pro Client** einstellbar und wird über die
-  Snapcast-Steuerschnittstelle gesetzt (`Client.SetVolume`, also z. B. aus
-  einer Snapcast-App heraus); der Server meldet jede Änderung sofort an den
-  betroffenen Client. Sie wirkt auf beide Quellen, weil sie die Lautstärke
-  dieses Lautsprechers ist und nicht die des Netzwerkstreams. Die eigene
-  Web-Konfigurationsseite hat dafür bisher kein Feld.
-
-### Zeitabgleich und Drift
-
-Der Client gleicht seine Uhr über `SNAP_MSG_TIME` mit dem Server ab
-(Vierzeiten-Austausch; aus einem gleitenden Fenster zählt die Messung mit der
-kleinsten Laufzeit, weil verzögerte Pakete ihre eigene Schätzung verfälschen).
-Daraus ergibt sich für jeden Chunk ein Soll-Abspielzeitpunkt
-`Zeitstempel + bufferMs − latency + delay_trim_ms`. Abweichungen über 100 ms
-werden in einem Schritt korrigiert, darunter kontinuierlich und unhörbar über
-das Resampling-Verhältnis (±200 ppm).
-
-Damit der Lautsprecher des **Servers** nicht `bufferMs` vor den Clients spielt,
-verzögert dieser seine eigene lokale Ausgabe um denselben Betrag. Der
-Netzwerk-Stream bleibt davon unberührt und geht unverzögert raus.
-
-**Noch nicht verifiziert:** Die tatsächliche Synchronität mehrerer Clients über
-längere Zeit ist mangels Messaufbau bisher nicht nachgemessen; die Parameter der
-Drift-Regelung sind konservativ voreingestellt.
-
----
-
-## Snapcast-Kompatibilität
-
-Der ESP32-S3 stellt die für Snapcast benötigten Netzwerkdienste bereit.
-
-### Audio
-
-**TCP Port 1704**
-
-Über diesen Port wird der Audiostream an die Snapclients übertragen.
-
-### Steuerung
-
-**TCP Port 1705**
-
-Über diesen Port erfolgt die JSON-RPC-Kommunikation.
-
-Damit kann sich beispielsweise ein normaler PC-Snapclient mit dem ESP32-S3 verbinden.
-
-### Fremde Snapclients
-
-Offizielle Snapclients (PC, Android, iOS) funktionieren für Musik ohne
-Einschränkung: Sie verbinden sich auf Port 1704, werden von einer
-Snapcast-Control-App wie jeder andere Client in Lautstärke und Stummschaltung
-geregelt und laufen synchron mit den ESP32-Clients.
-
-Zwei Dinge sind ihnen gegenüber anders:
-
-* **Sprachdurchsagen empfangen sie nicht.** Die laufen über einen eigenen
-  UDP-Kanal, der nicht Teil des Snapcast-Protokolls ist. Damit Musik nicht
-  gegen eine laufende Durchsage anspielt, schaltet der Server fremde Clients
-  für deren Dauer stumm (`muted` in den ServerSettings), unabhängig davon, wo
-  im Mesh sie hängen. Danach kehrt der vorherige Zustand zurück; die im
-  Control-App gesetzte Stummschaltung bleibt davon unberührt.
-* **Eigene Protokollfelder ignorieren sie.** Unsere Clients kennzeichnen sich
-  im Hello mit `"SnapMesh":1`, melden dort ihre Mesh-Ebene (`"MeshLevel"`) und
-  werten in den ServerSettings zusätzlich `"announcement"` aus. Alle drei
-  Felder sind Erweiterungen; ein fremder Client überliest sie, und ein
-  fremder Snapserver würde die Hello-Felder ebenso überlesen.
-
----
-
-## Sprachdurchsagen
-
-Zusätzlich zur Musik kann über ein Android-Handy eine **Durchsage** gesprochen
-werden. Sie läuft bewusst nicht über den Snapcast-Stream: Der ist auf
-Lückenlosigkeit ausgelegt und puffert dafür rund drei Sekunden. Eine Durchsage
-braucht das Gegenteil, nämlich niedrige Latenz, und verwirft verspätete Pakete
-lieber, als auf sie zu warten.
-
-### Ablauf
-
-1. Die App meldet die Durchsage über die bestehende JSON-RPC-Verbindung an
-   (`Voice.Start` auf Port 1705). Über TCP, weil ein verlorenes Start- oder
-   Stoppsignal nicht passieren darf.
-2. Sie nimmt auf und sendet Opus-Pakete an **UDP Port 1706** des Servers,
-   16 kHz Mono, etwa 25 kbit/s.
-3. Der Server gibt die Durchsage auf seinem eigenen Lautsprecher aus und
-   verteilt sie an seine direkt verbundenen Clients.
-4. Jeder dieser Clients reicht sie an seine eigenen Kinder weiter, einen Hop
-   weit. Weiter entfernte Knoten bekommen sie nicht.
-5. `Voice.Stop`, eine Sekunde ohne Ton, drei Minuten Gesamtdauer oder der
-   Abbruch der Steuerverbindung beenden die Durchsage.
-
-Gemessene Latenz vom Mund bis zum Lautsprecher, etwa **90 ms**, aufgeteilt in
-rund 30 ms Aufnahme und Opus-Encoder im Handy, 6 ms WLAN, 10 bis 20 ms
-Sprachpuffer im ESP und 40 ms I2S-Ausgabe. Die Werte stehen in den Logzeilen
-der App (`mic_lag`, `enc_lag`, `rtt`) und der Firmware (`voice mailbox: …
-wait`).
-
-### Reichweite und Stummschaltung
-
-Warum nur ein Hop: Jede Ebene erbt das Risiko eines sich umbauenden Meshes.
-Ein Relay kann beim Neuverbinden Sekunden stehen, was die Musik dank Puffer
-überspielt und eine Durchsage nicht. Warum überhaupt ein Hop: Clients, die
-wenige Meter vom Server entfernt nebeneinander stehen, hängen sich im Betrieb
-aneinander statt an den Server, weil der Nachbar das stärkere Signal ist. Ohne
-Weiterleitung wären sie stumm, obwohl sie im selben Raum stehen.
-
-Während einer Durchsage spielt **kein** Gerät Musik. Der Server sendet dazu in
-den ServerSettings eine eigene Flagge (`"announcement"`), und jeder unserer
-Clients hält seine Musik an, solange sie steht. Wer die Durchsage empfängt,
-gibt sie aus; wer nicht, bleibt still. Lautstärke und Stummschaltung des
-Nutzers behalten ihre Bedeutung und wirken auch auf die Durchsage: Ein leise
-gestellter Lautsprecher gibt auch die Durchsage leiser wieder, ein
-stummgeschalteter bleibt stumm.
-
-Nach dem Ende läuft die Musik sofort weiter. Der Stream wird währenddessen
-nämlich nicht angehalten, sondern nur nicht ausgegeben. Dadurch bleiben
-Ringpuffer und Zeitachse intakt, und es entsteht keine Wartezeit für neues
-Vorpuffern.
-
-### Android-App
-
-Die App liegt unter `android/SnapAnnounce` (Kotlin, Jetpack Compose, ab
-Android 8).
-
-<img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce" width="320">
-
-Der Hauptbildschirm hat nur das Nötige: die Server-IP, den Status und den
-verriegelnden Knopf. Ein Druck startet die Durchsage, der nächste beendet sie.
-Aufnahme und Versand laufen in einem Vordergrunddienst weiter, auch bei
-gesperrtem Bildschirm, und solange eine Durchsage läuft hält die App eine
-WLAN-Sperre, damit Android das Funkmodul nicht schlafen legt.
-
-Hinter **Einstellungen** liegt, was einmal je Handy und Raum eingestellt und
-dann in Ruhe gelassen wird:
-
-* **Mikrofonquelle.** Vier Möglichkeiten, Standard ist „Standard-Mikrofon“.
-  Auf einem Galaxy A56 liefert „Telefonat“ nur −40 dBFS, wo das
-  Standard-Mikrofon −5 dBFS erreicht.
-* **Max. Verstärkung.** Obergrenze der Pegelautomatik. Mehr heißt lauter, aber
-  auch mehr Raum und mehr Rückkopplungsgefahr.
-* **Durchsage-Pegel.** Wie laut die Durchsage neben der Musik stehen soll. Zur
-  Orientierung: Musik erreicht die Clients mit etwa −24 bis −28 dBFS.
-
-Eine Pegelautomatik mit Begrenzer hält den eingestellten Pegel. Die richtigen
-Werte hängen von Handy und Raum ab und werden nach Gehör eingestellt.
-
-### Grenzen
-
-* **Keine Echounterdrückung gegenüber den Lautsprechern.** Androids
-  Echounterdrückung kennt nur die eigene Telefonwiedergabe. Steht der Sprecher
-  neben einem Lautsprecher, hallt es. Abhilfe: Handy nah an den Mund, weg von
-  den Lautsprechern.
-* **Knoten tiefer als einen Hop hinter dem Server bleiben stumm**, sie hören
-  weder Musik noch Durchsage.
-* **Eine Durchsage zur Zeit.** Ein zweites `Voice.Start` wird mit `busy`
-  abgelehnt.
-* **Das Handy muss im Mesh-WLAN sein**, am besten direkt am Server.
-
----
-
-## Zeitbasis
-
-Der ESP32-S3 besitzt in dieser Anwendung keine dauerhaft gültige Echtzeituhr (RTC) mit verlässlicher absoluter Zeit.
-
-Deshalb verwendet der Server `esp_timer_get_time()` als monotone Zeitquelle und ergänzt einen Laufzeit-Offset.
-
-* Uptime-basierte ESP-Clients werden nicht als Quelle für die absolute Zeit verwendet.
-* Eine plausible Epoch-Zeit kann von einem PC- oder Android-Client übernommen werden.
-* Nachrichtenheader und Audiochunks verwenden dieselbe monotone Zeitbasis.
-* Audiozeitstempel beziehen sich auf den Beginn des jeweiligen PCM-Frames.
-
-Ziel ist ein sauberer **Abgleich mit der absoluten Client-Zeit**, ohne die Audiozeitbasis selbst von einer möglicherweise unstabilen Echtzeituhr abhängig zu machen.
+## Synchronisation (Client)
+
+* Zeitabgleich über `SNAP_MSG_TIME`. Aus einem Fenster von 12 Messungen zählt die mit der kleinsten RTT;
+  Mitteln würde verzögerte Pakete einrechnen.
+* Soll-Abspielzeit je Chunk: `ts − offset + bufferMs − latency + delay_trim_ms`, verglichen mit
+  `esp_timer` + 40 ms DMA-Latenz.
+* Fehler > 100 ms: harter Resync (Überspringen bzw. Stille). Darunter PI-Regler auf das Resampling-Verhältnis,
+  begrenzt auf ±500 ppm, Slew 5 ppm pro 20-ms-Frame. Resampler mit 32.32-Phasenakkumulator.
+* Ringpuffer = 2 × `bufferMs` (PSRAM), Wiedergabe startet ab 80 % Soll-Füllung.
+* Gemessen: Regelfehler wenige ms. Synchronität mehrerer Clients über Stunden ist noch nicht nachgemessen.
+
+Ohne RTC/SNTP nutzt der Server `esp_timer` plus Offset als Zeitbasis. Eine plausible Wanduhr (> 2024) übernimmt
+er einmalig vom ersten PC-/Android-Client. ESP-Clients melden nur ihre Uptime und werden dafür ignoriert.
 
 ---
 
 ## Netzwerk
 
-Im Normalbetrieb arbeitet der ESP32-S3 als eigenständiger **ESP-Mesh-Lite-Root**.
+| Port | Proto | Zweck |
+|---|---|---|
+| 80 | TCP | Web-UI, JSON-API |
+| 1704 | TCP | Snapcast-Stream; zusätzlich Konfig-Kanal Server → eigene Clients |
+| 1705 | TCP | Snapcast JSON-RPC, `Voice.Start`/`Voice.Stop` |
+| 1706 | UDP | Durchsagen (Handy → Server → Clients) |
 
-Die Mesh-Struktur ermöglicht die Verbindung weiterer ESP-Geräte, ohne dass für die reine Audioverteilung zwingend ein separater Raspberry-Pi-Snapserver erforderlich ist.
+* Mesh-Ebenen sind durch NAPT getrennt: Ab Ebene 3 (2 Hops) ist ein Client vom Server aus nicht adressierbar.
+  Deshalb laufen alle Wege zum Client über Verbindungen, die der Client selbst aufbaut.
+* Clients finden den Server über `esp_mesh_lite_get_root_ip()` (funktioniert über alle Ebenen, anders als
+  DHCP-Gateway oder mDNS). Eine feste Server-Adresse ist konfigurierbar.
+* mDNS-Name pro Gerät: `snapserver-<MAC>.local` bzw. `snapclient-<MAC>.local` (letzte 3 Bytes der SoftAP-MAC).
+* WLAN-Powersave ist in beiden Rollen aus (`WIFI_PS_NONE`).
+* Fusion-Intervall 20 s, damit eine Mesh-Insel nach einem Root-Ausfall wieder zusammenfindet.
 
-Der Snapserver selbst stellt seine Dienste über das lokale Netzwerk beziehungsweise Mesh-Netzwerk bereit.
+### Provisioning-AP
 
-Ist das Mesh nicht erreichbar oder nicht konfiguriert, fällt das Gerät automatisch
-auf einen offenen Provisioning-Access-Point zurück (siehe [Web-Konfiguration](#web-konfiguration)),
-damit es niemals dauerhaft unerreichbar wird. Das gilt für beide Rollen: auch
-ein als Client konfiguriertes Gerät, das keinen Parent findet, fällt auf den
-Provisioning-AP zurück statt dauerhaft unerreichbar zu bleiben.
+Offener AP `ESP32_provisioning_<MAC>` mit derselben Web-UI. Er startet bei fehlender Konfiguration, nach
+Factory Reset, bei deaktiviertem Mesh oder nach 7 Boots in Folge ohne Station am Mesh-AP. Nach 3 Minuten ohne
+Speichern schaltet er den Funk ab; ein neues Fenster gibt es erst nach einem Power-Cycle. Speichern startet das
+Gerät neu.
 
-Weitere Geräte können dem Mesh als **Client** beitreten und dort empfangenes
-Audio wiedergeben, siehe [Client-Rolle](#client-rolle).
+### Snapcast-Erweiterungen
 
-### Ports
+Alle Felder sind optional; fremde Clients und Server ignorieren sie.
 
-| Port | Protokoll | Zweck |
-| --- | --- | --- |
-| 80 | TCP | Web-Konfiguration |
-| 1704 | TCP | Snapcast-Audiostream |
-| 1705 | TCP | Snapcast JSON-RPC, dazu `Voice.Start`/`Voice.Stop` |
-| 1706 | UDP | Sprachdurchsagen, Handy → Server → Clients |
+| Wo | Feld | Bedeutung |
+|---|---|---|
+| Hello | `"SnapMesh":1` | eigener Client: versteht `announcement` und Nachrichtentyp 100 |
+| Hello | `"MeshLevel":n` | Mesh-Ebene (Root = 1), ergibt die Hops in der Geräteliste |
+| ServerSettings | `"announcement":bool` | Durchsage läuft, Musik pausieren |
+| Nachrichtentyp 100 | JSON-Request/Antwort | Konfig-Anfrage Server → Client, `refersTo` = Request-ID |
+| `Server.GetStatus` | `"snapmesh":{"hops","own"}` | Hops und Herkunft je Client |
 
-Die Ebenen des Meshes sind durch NAPT getrennt. Ein Gerät ab Ebene 2 ist
-deshalb vom Server aus nicht direkt adressierbar und erscheint dort unter der
-Adresse seines Elternknotens. Aus demselben Grund reicht bei Durchsagen jeder
-Knoten selbst an seine Kinder weiter, statt dass der Server sie anspricht.
+Fremde Clients bekommen während einer Durchsage `muted:true`, weil sie den UDP-Kanal nicht empfangen.
+
+---
+
+## Web-UI und API
+
+Jedes Gerät bietet die Seite auf Port 80 an. Alle Werte liegen im NVS und überleben Updates.
+
+| Gruppe | Felder | Übernahme |
+|---|---|---|
+| Rolle | Server/Client | Neustart |
+| Client-Wiedergabe | Quelle (Auto/Netz/lokal), Eingangsschwelle, `buffer_ms` (200–10000), Delay-Trim (±2000 ms), Server-Adresse | sofort; `buffer_ms` Neustart |
+| Mesh | Enable, SSID, Passwort, Kanal (1–13), max. Hops (1–15) | Neustart |
+| DSP | Enable, Trennfrequenz (40–500 Hz), Gain Sub/Wideband (−24…+12 dB), Sub-Kanal | sofort |
+| Pins | I2S, LED, Potis, Delay-Poti-Bereich | Neustart; Bereich sofort |
+| Opus | Bitrate (16–192 kbit/s), Complexity (0–10) | sofort, nur Server |
+
+Kconfig (`idf.py menuconfig`) liefert nur die Vorgaben für den ersten Start und den Factory Reset;
+`SNAPSERVER_STATUS_LED_ENABLE` und `SNAPSERVER_POTS_ENABLE` nehmen LED- bzw. Poti-Code ganz heraus. Factory Reset
+setzt Konfiguration, Pins, Potis und die gespeicherten Client-Werte zurück.
+
+### Geräteliste (Server)
+
+Oben auf der Server-Seite, ein Eintrag je belieferten Lautsprecher:
+
+* **Name** (inline umbenennbar), **Hops**, **Lautstärke**, **Mute**, **Delay** (ms, positiv = später;
+  intern Snapcast-`latency` mit umgekehrtem Vorzeichen). Änderungen wirken sofort.
+* Pro Client-ID (MAC) im NVS gespeichert (`client_store.c`, max. 24, LRU) und bei jedem Hello wieder eingespielt.
+  Das gilt auch für Werte aus Control-Apps.
+* **Settings** lädt die Einstellungen des Geräts in das Formular darunter. Die Überschrift zeigt den Namen,
+  Speichern geht an dieses Gerät. Das funktioniert für eigene Clients in jeder Tiefe: Der Server sendet die
+  Anfrage als Nachrichtentyp 100 über die Snapcast-Verbindung des Clients (`snapserver_remote_request()` →
+  `webconfig_handle_remote_request()`). Nach einem Neustart zeigt die Seite „not connected“ und lädt neu,
+  sobald der Client wieder verbunden ist. Factory Reset ist nur lokal möglich.
+* Fremde Snapcast-Clients: Badge „Snapcast“, nur Lautstärke/Mute/Delay. Hops = 1, wenn ihre MAC direkt am
+  Server-AP hängt, sonst unbekannt.
+
+### Endpunkte
+
+| Methode | Pfad | Inhalt |
+|---|---|---|
+| GET/POST | `/api/config` | Konfiguration des Geräts; POST antwortet `{"reboot":bool}` |
+| GET | `/api/status` | Provisioning-Grund, Uptime, Poti-Werte, Pin-Probestatus, Server-Verbindung (Client) |
+| POST | `/api/factory-reset` | Reset + Neustart |
+| GET | `/api/devices` | Geräteliste (nur Server) |
+| POST | `/api/devices` | `{"id", "volume_percent"\|"muted"\|"delay_ms"\|"name"}` |
+| GET/POST | `/api/devices/config?id=` | `/api/config` eines Clients über den Server |
+| GET | `/api/devices/status?id=` | `/api/status` eines Clients über den Server |
+
+Fehler bei `?id=`: 404 = nicht verbunden bzw. kein eigener Client, 504 = keine Antwort (3 s, Status 2 s),
+400 = vom Client abgelehnt.
 
 ---
 
-## Projektstruktur
+## Pins
 
-Die wichtigsten Komponenten befinden sich unter anderem in:
+Alle Funktionen werden zur Laufzeit im Abschnitt *Pins* belegt; Neu-Flashen ist nicht nötig.
 
-```text
-main/
-├── app_main.c            Rollenwahl und Start
-├── audio_i2s.c           I2S, Mono-Mischung, Frequenzweiche
-├── audio_opus.c          Opus-Encoder (Server)
-├── audio_sink.c          Wiedergabe, Quellenwahl, Drift (Client)
-├── audio_resample.c      Feinregelung der Abspielrate
-├── snapserver.c          Snapcast-Server, Port 1704
-├── snapclient.c          Snapcast-Client
-├── snapcontrol.c         JSON-RPC, Port 1705
-├── voice_announce.c      Sprachdurchsagen, UDP 1706
-├── mesh_root.c           Mesh als Root (Server)
-├── mesh_client.c         Mesh-Beitritt als Relay (Client)
-├── webconfig.c           Konfigurationsseite, Port 80
-├── device_config.c       Einstellungen und Pinbelegung im NVS
-├── pinmap.c              welche GPIOs überhaupt nutzbar sind
-├── client_store.c        gespeicherte Lautstärke/Delay/Name je Client
-├── provisioning.c        Provisioning-AP
-├── status_led.c          Status-LED
-└── cpu_stats.c           Diagnose: CPU-Last je Task
+* I2S BCLK/LRCLK/DIN/DOUT sind immer belegt. LED, Lautstärke- und Delay-Poti können „none“ sein.
+* Vorlagen: *Standard* 4/6/5/7, *Alternative* 17/8/5/18. Kollidiert die LED oder ein Poti mit der Vorlage,
+  wird es auf „none“ gesetzt.
+* Jeder Pin trägt eine Funktion. Die Firmware prüft die gesamte Belegung beim Speichern erneut, auch per API.
+* **Probestart:** Eine geänderte Belegung zählt bei jedem Boot hoch und wird nach vollständigem Start bestätigt
+  (`device_config_confirm_pins()`). Nach 3 unbestätigten Boots fällt das Gerät auf die Standardbelegung zurück
+  und meldet das im Status. Eine falsch verdrahtete, aber zulässige Belegung erkennt die Firmware nicht.
+* Gesperrte GPIOs (`pinmap.c`):
 
-android/SnapAnnounce/     Android-App für Durchsagen
-tools/                    Hilfsskripte
-docs/                     Notizen und Screenshots
-```
+| GPIO | Grund |
+|---|---|
+| 0, 3, 45, 46 | Strapping |
+| 19, 20 | USB |
+| 22–25 | nicht vorhanden |
+| 26–32 | SPI-Flash, PSRAM-CS |
+| 33–37 | Octal-PSRAM (`CONFIG_SPIRAM_MODE_OCT`) |
+| 43, 44 | UART0-Konsole (falls aktiv) |
 
-Die genaue Struktur kann sich während der Entwicklung noch ändern.
+### Potis
+
+10 kΩ, Enden an 3V3/GND, Schleifer an GPIO. **Nur ADC1 (GPIO 1–10)**, weil ADC2 bei aktivem WLAN nicht lesbar
+ist. Bei Standardbelegung sind 1, 2, 8, 9 und 10 frei.
+
+* **Lautstärke** (Vorgabe GPIO 10): Pull-up, ohne Poti also 100 %. Kubische Kennlinie, multipliziert mit der
+  Snapcast-Lautstärke. Wirkt nur auf den lokalen Lautsprecher.
+* **Delay** (Vorgabe: keiner): ersetzt das Feld Delay-Trim. Mitte = 0 ms, Anschläge = ±Bereich (Vorgabe 200 ms,
+  max. 2000 ms), linear. Pull-down, ein offener Pin steht also am negativen Anschlag.
+* Abtastung alle 50 ms, Mittel aus 16 Messungen, ~1 % Totband (Endanschläge ausgenommen). Die Lautstärke wird
+  über 20 ms eingeblendet.
+* Fehler durch Pull-up/Pull-down: ±2,6 % in Mittelstellung, an den Enden exakt.
+* Delay-Sprünge > 100 ms lösen auf Clients einen harten Resync aus. Kleinere Änderungen gleicht die
+  Drift-Regelung aus (≤ 0,5 ms/s).
+* Kein ADC: Lautstärke bleibt bei 100 %, Delay beim Feldwert.
 
 ---
-## Abhängigkeiten
 
-Dieses Projekt verwendet Komponenten aus dem ESP-IDF-Ökosystem, darunter:
+## Sprachdurchsagen
 
-* **ESP-IDF** — Apache License 2.0
-* **ESP-Mesh-Lite** — Apache License 2.0
-* **ESP-IoT-Bridge** — Apache License 2.0
-* **ESP-Modem** — Apache License 2.0
-* **ESP-mDNS** — Apache License 2.0
-* **CMake Utilities** — Apache License 2.0
-* **esp-opus** — MIT License
+Eigener Kanal neben dem Stream: niedrige Latenz statt Lückenlosigkeit.
 
-Die jeweiligen Drittanbieter-Komponenten unterliegen weiterhin ihren
-ursprünglichen Lizenzbedingungen.
+1. App → `Voice.Start` über JSON-RPC 1705 (TCP, damit Start/Stopp sicher ankommen).
+2. Opus 16 kHz Mono (~25 kbit/s) per UDP an Port 1706 des Servers.
+3. Der Server spielt die Durchsage selbst und sendet sie an seine direkten Clients. Diese leiten sie einen Hop
+   weiter, tiefere Knoten bekommen sie nicht.
+4. Ende durch `Voice.Stop`, 1 s Stille, 3 min Maximaldauer oder Abbruch der Steuerverbindung.
 
-Für die vollständigen Lizenztexte und weitere Informationen wird auf die
-jeweiligen Upstream-Repositories und den ESP-IDF-Komponenten-Registry
-verwiesen.
+* Latenz Mund → Lautsprecher ≈ 90 ms (Aufnahme/Encoder 30 ms, WLAN 6 ms, Puffer 10–20 ms, I2S 40 ms).
+* Während der Durchsage pausieren alle eigenen Clients die Musik (`announcement`). Stream und Zeitachse laufen
+  weiter, danach geht es ohne Neupuffern weiter. Lautstärke und Mute gelten auch für die Durchsage.
+* Grenzen: keine Echounterdrückung gegenüber den Lautsprechern; eine Durchsage zur Zeit (sonst `busy`);
+  das Handy muss im Mesh-WLAN sein.
+
+**App** `android/SnapAnnounce` (Kotlin, Compose, ab Android 8): verriegelnder Sprechknopf, Foreground-Service
+mit WLAN-Lock. Einstellungen: Mikrofonquelle, max. Verstärkung, Durchsage-Pegel (AGC mit Limiter; Musik liegt
+bei etwa −24 bis −28 dBFS).
+
+<img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce" width="320">
 
 ---
 
 ## Build
 
-ESP-IDF muss zunächst eingerichtet sein.
+ESP-IDF 5.4.x (getestet 5.4.3), Target `esp32s3`:
 
-Danach im Projektverzeichnis:
-
-```powershell
+```bash
 idf.py set-target esp32s3
 idf.py build
+idf.py -p PORT flash monitor
 ```
 
-Flashen:
+Ein Update ohne `erase_flash` behält Rolle, Pins und alle Einstellungen im NVS. Hängt der Reset über
+USB-Serial/JTAG mit Schreib-Timeout, hilft `esptool.py --before usb_reset … write_flash @flash_args` aus `build/`.
 
-```powershell
-idf.py flash
-```
-
-Serielle Ausgabe:
-
-```powershell
-idf.py monitor
-```
-
-Build und Monitor können auch kombiniert werden:
-
-```powershell
-idf.py flash monitor
-```
-
-### Android-App
-
-Am einfachsten über Android Studio: `android/SnapAnnounce` öffnen und
-ausführen. Auf der Kommandozeile mit einem installierten Gradle 8.13 und
-JDK 21:
+Android-App: `android/SnapAnnounce` in Android Studio öffnen, oder mit Gradle 8.13 und JDK 21:
 
 ```bash
 cd android/SnapAnnounce
@@ -619,212 +257,56 @@ JAVA_HOME=/pfad/zu/jdk-21 gradle assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Das Wrapper-Skript `gradlew` liegt nicht im Repository, nur
-`gradle/wrapper/gradle-wrapper.properties` mit der erwarteten Version.
+(`gradlew` ist nicht im Repository, nur `gradle/wrapper/gradle-wrapper.properties`.)
 
 ---
 
-
-## Pinning
-
-Standardbelegung:
-
-| GPIO | Funktion |
-|------|----------|
-| 4 | ESP32-S3 → PCM5102A BCK und TinySine BCLK |
-| 6 | ESP32-S3 → PCM5102A LCK und TinySine LRCLK |
-| 5 | TinySine DOUT → ESP32-S3 DIN |
-| 7 | ESP32-S3 DOUT → PCM5102A DIN |
-| 10 | Schleifer des Lautstärkepotis |
-| – | Schleifer des Delay-Potis (Vorgabe: keiner) |
-| 48 | WS2812-Status-LED (Vorgabe aus `menuconfig`) |
-
-Dieselbe Verdrahtung als Zeichnung, mit Spannungsversorgung und Masse:
-
-<img src="docs/Verdrahtungsplan.png" width="600">
-
-### Pinbelegung einstellen
-
-Alle Pins werden **zur Laufzeit auf der Web-Oberfläche** eingestellt,
-Abschnitt *Pins*, ähnlich wie bei Tasmota: pro Funktion ein Auswahlfeld mit
-den Pins, die dafür in Frage kommen. Neu flashen muss man dafür nicht.
-
-* **Funktionen:** I2S BCLK, LRCLK, DIN, DOUT (immer belegt), Status-LED,
-  Lautstärke-Poti, Delay-Poti (diese drei auch „none").
-* **Vorlagen:** *Standard* (4/6/5/7) und *Alternative* (17/8/5/18) setzen die
-  vier I2S-Pins auf einmal. Liegt die LED oder ein Poti auf einem der neuen
-  Pins, wird es auf „none" gestellt statt doppelt belegt.
-* **Angeboten wird nur, was geht.** Die Firmware liefert die Liste der
-  nicht nutzbaren Pins mit Grund, die Seite nennt sie unter dem Abschnitt:
-
-  | GPIO | Grund |
-  |------|-------|
-  | 0, 3, 45, 46 | Strapping-Pins, ihr Pegel beim Reset entscheidet über den Boot |
-  | 19, 20 | USB |
-  | 22–25 | gibt es beim ESP32-S3 nicht |
-  | 26–32 | SPI-Flash und PSRAM-Chipselect |
-  | 33–37 | Octal-PSRAM (nur bei `CONFIG_SPIRAM_MODE_OCT`) |
-  | 43, 44 | UART0-Konsole |
-
-  Potis brauchen zusätzlich ADC1, siehe [Mögliche Pins](#mögliche-pins).
-  Jeder Pin trägt genau eine Funktion; ein belegter Pin fehlt in den
-  anderen Listen.
-* **Die Firmware prüft selbst.** Beim Speichern wird die ganze Belegung noch
-  einmal als Einheit geprüft, eine unzulässige oder doppelte Belegung wird
-  auch über die API abgewiesen.
-* **Neustart.** Jeder Pinwechsel startet das Gerät neu, die Treiber
-  übernehmen die Pins nur beim Start.
-* **Probestart.** Eine geänderte Belegung gilt zunächst als Versuch. Kommt
-  das Gerät damit dreimal hintereinander nicht vollständig hoch, fällt es
-  von selbst auf die Standardbelegung zurück, und die Seite sagt das im
-  Statusfeld. Mit einer falsch verdrahteten, aber zulässigen Belegung startet
-  das Gerät normal, bleibt dann aber stumm — das erkennt die Firmware nicht.
-
-`menuconfig` liefert nur noch die Vorgaben für den ersten Start und nach
-einem Factory-Reset:
-
-```
-idf.py menuconfig  →  Snapserver Mesh Project Configuration
-    Status LED (on-board WS2812)          (ein/aus, Vorgabe: ein)
-    Status LED GPIO                       (0 bis 48, Vorgabe: 48)
-    Potentiometer inputs (volume, delay)  (ein/aus, Vorgabe: ein)
-```
-
-Die beiden Schalter nehmen den LED- bzw. Poti-Code ganz heraus; die Felder
-verschwinden dann von der Seite. Die I2S-Vorgaben stehen in
-`main/audio_i2s.h`.
-
-Alles Übrige — Mesh, DSP, Opus, Puffergrößen — wird ebenfalls zur Laufzeit
-über die Web-Oberfläche eingestellt und im NVS gehalten.
-
----
-
-
-## Potis für Lautstärke und Delay
-
-Zwei 10-kΩ-Potentiometer lassen sich anschließen, beide wirken nur auf den
-Lautsprecher an **diesem** Gerät. Server und Clients haben jeweils ihre
-eigenen.
+## Struktur
 
 ```text
-3V3 ──┬── Anschluss 1
-      │
-      ├── Schleifer ────► GPIO (siehe unten)
-      │
-GND ──┴── Anschluss 3
+main/
+├── app_main.c         Rollenwahl, Startreihenfolge
+├── audio_i2s.c        I2S, Mono-Mix, LR4, Delay-Line (Server)
+├── audio_opus.c       Opus-Encoder
+├── audio_sink.c       Wiedergabe, Quellenwahl, Drift-Regelung (Client)
+├── audio_resample.c   Resampler 32.32
+├── snapserver.c       Snapcast-Server 1704, Konfig-Kanal zu Clients
+├── snapclient.c       Snapcast-Client
+├── snapcontrol.c      JSON-RPC 1705
+├── voice_announce.c   Durchsagen, UDP 1706
+├── mesh_root.c        Mesh-Root
+├── mesh_client.c      Mesh-Relay
+├── webconfig.c        Web-UI + API, Port 80
+├── device_config.c    Konfiguration, Pins, Potis im NVS
+├── pinmap.c           nutzbare GPIOs
+├── client_store.c     gespeicherte Client-Werte
+├── pots.c             Potis
+├── provisioning.c     Provisioning-AP
+├── status_led.c       WS2812
+└── cpu_stats.c        CPU-Last je Task
+android/SnapAnnounce/  Durchsage-App
+docs/, tools/          Verdrahtung, Screenshots, Testskripte
 ```
 
-### Lautstärke
+---
 
-Vorgabe **GPIO 10**. **Ohne angeschlossenes Poti liegt volle Lautstärke an**:
-Ein interner Pull-up hält den offenen Eingang oben, das Gerät spielt mit
-100 % und braucht keine Konfiguration.
+## Status
 
-Der Regler greift ganz am Ende der Ausgabestufe, nach der Frequenzweiche. Der
-Opus-Stream an die Clients wird aus einer anderen Kopie gespeist und bleibt
-unberührt: Wer den Server leiser dreht, ändert nichts an dem, was die Clients
-hören. Die Lautstärke pro Client aus einer Snapcast-Control-App bleibt
-wirksam — beide multiplizieren sich. Kennlinie kubisch, wie bei der
-Snapcast-Lautstärke.
+Stabil im Betrieb: Streaming und Sync über das Mesh, LR4, Rollenwechsel, Web-UI, Durchsagen.
 
-### Delay
+Offen (Details und Messwerte in [TODO.md](TODO.md)):
 
-Vorgabe **kein Pin**. Ist einer gewählt, **ersetzt das Poti das Feld
-„Delay trim"** — das Feld wird auf der Seite ausgegraut. Mittelstellung ist
-0 ms, die Anschläge sind ±Bereich; der Bereich ist auf der Seite einstellbar,
-Vorgabe **±200 ms**, höchstens ±2000 ms. Bei ±200 ms entspricht ein Prozent
-Drehweg etwa 4 ms. Linear, denn es ist eine Zeitverschiebung, keine
-Lautstärke.
-
-Wirkung wie beim Feld: Ein Client verschiebt seinen Wiedergabezeitplan, der
-Server die Verzögerungsleitung vor seinem eigenen Lautsprecher. Die
-Bereichsänderung gilt sofort, ohne am Knopf zu drehen.
-
-Warum kein Pin als Vorgabe: Mit internen Pulls lässt sich ein offener Eingang
-nur an ein Ende ziehen, nicht in die Mitte. Ein gewählter, aber abgezogener
-Delay-Pin liegt deshalb per Pull-down am **negativen Anschlag** (−Bereich),
-statt zufällig zu wandern.
-
-Die Seite zeigt beide Potiwerte live im Statusfeld.
-
-### Mögliche Pins
-
-**Nur ADC1, also GPIO 1 bis 10.** ADC2 teilt sich die Hardware mit dem
-WLAN-Funkmodul und ist nicht lesbar, solange das Funkmodul läuft — was hier
-immer der Fall ist. Ein Pin auf ADC2 würde am Schreibtisch funktionieren und
-ausfallen, sobald das Mesh hochkommt. Die Web-Oberfläche bietet ihn deshalb
-gar nicht erst an.
-
-Innerhalb von ADC1, bei der Standardbelegung:
-
-| GPIO | ADC1-Kanal | Status |
-|------|-----------|--------|
-| 1 | CH0 | frei |
-| 2 | CH1 | frei |
-| 3 | CH2 | **ungeeignet** — Strapping-Pin (JTAG-Auswahl), das Poti zöge ihn beim Booten auf einen beliebigen Pegel |
-| 4 | CH3 | belegt — I2S BCLK |
-| 5 | CH4 | belegt — I2S DIN |
-| 6 | CH5 | belegt — I2S LRCLK |
-| 7 | CH6 | belegt — I2S DOUT |
-| 8 | CH7 | frei; bei der Vorlage *Alternative* ist es LRCLK |
-| 9 | CH8 | frei |
-| 10 | CH9 | frei, **Vorgabe** für die Lautstärke |
-
-### Einschränkungen
-
-- **Messfehler durch den Pull-up** (Lautstärke). Rund 45 kΩ gegen die
-  Schleiferimpedanz, die bei 10 kΩ in Mittelstellung mit etwa 2,5 kΩ am
-  höchsten ist: Die Anzeige liegt dort **rund 2,6 %** zu hoch, an beiden
-  Enden exakt. Nicht hörbar. Beim Delay-Poti gilt dasselbe mit dem
-  Pull-down, dort **rund 2,6 % zu niedrig** in Mittelstellung — bei ±200 ms
-  etwa 5 ms. Wer genau „0 ms" in der Mitte braucht, gleicht nach Gehör ab.
-- **Pinwechsel nur mit Neustart.** Kanäle und Pulls werden beim Start
-  gesetzt. Die Seite startet das Gerät nach dem Speichern selbst neu.
-- **Ein gewählter Pin bleibt belegt**, auch wenn kein Poti dran hängt. Wird er
-  anderweitig gebraucht: auf „none" stellen.
-- **Kein Totalausfall bei Fehlern.** Lässt sich der ADC nicht öffnen, bleibt
-  die Lautstärke bei 100 % und das Delay beim Feldwert; der Rest läuft
-  weiter, die Meldung steht im Log.
-- **Glättung.** Abgefragt wird alle 50 ms, 16 Messungen gemittelt, mit einem
-  Totband von gut 1 % gegen Zittern der letzten Bits. Die Lautstärke wird
-  zusätzlich über einen 20-ms-Frame eingeblendet — ein Ruck am Knopf braucht
-  also bis zu 70 ms, dafür knackt es nicht. Die Endanschläge sind vom
-  Totband ausgenommen und bleiben immer erreichbar.
-- **Große Delay-Sprünge auf einem Client** (mehr als 100 ms auf einmal) löst
-  die Wiedergabe als harten Resync aus: ein kurzer Aussetzer oder
-  Stillstand, dann sitzt sie. Kleine Drehungen gleicht die Driftregelung
-  gleitend aus, bei 500 ppm höchstens 0,5 ms pro Sekunde — langsames Drehen
-  wirkt also verzögert.
+* Relays mit mehreren Kindern hängen sich gelegentlich auf.
+* Ein blockierter Client belastet den internen Heap des Servers zu lange.
+* Akustische Artefakte, die bereits im aufgenommenen Signal stecken.
+* Messung des Versatzes zwischen Server- und Client-Lautsprechern.
+* Auf Hardware noch ungetestet: Client-Einstellungen über den Server, Rückfall beim Pin-Probestart.
 
 ---
 
+## Abhängigkeiten und Lizenz
 
-## Entwicklungsstatus
+ESP-IDF, ESP-Mesh-Lite, ESP-IoT-Bridge, ESP-Modem, ESP-mDNS, CMake Utilities (Apache 2.0); esp-opus (MIT).
+Drittkomponenten unterliegen ihren eigenen Lizenzen.
 
-Das Projekt befindet sich in aktiver Entwicklung.
-
-Im Betrieb bewährt: Snapcast-Übertragung und Zeit-Sync über das Mesh
-(Regelfehler wenige Millisekunden), LR4-Frequenzweiche, Rollenumschaltung
-Server/Client, Web-Konfiguration, Sprachdurchsagen mit rund 90 ms Latenz.
-
-In Arbeit:
-
-* Stabilität der Relays: ein Knoten mit mehreren Kindern hängt sich
-  gelegentlich auf
-* der Server hält einen blockierten Client zu lange durch und geht dabei
-  selbst auf dem internen Heap auf Grund
-* ungeklärte akustische Artefakte, die bereits im aufgenommenen Signal
-  stecken
-* echte Messung des Versatzes zwischen Server- und Client-Lautsprecher
-  statt Beurteilung nach Gehör
-
-Offene Punkte und Messergebnisse aus dem Gerätebetrieb stehen in
-[TODO.md](TODO.md).
-
-Änderungen an Audioformat, Buffergrößen, Filterparametern und Netzwerkverhalten sind während der Entwicklung möglich.
-
----
-
-## Lizenz
-
-MIT License
+Dieses Projekt: MIT License.
