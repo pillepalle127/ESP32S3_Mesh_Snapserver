@@ -241,6 +241,11 @@ function selectDevice(id, name) {
   selectedConnected = true;
   selectionToken++;
   configLoaded = false;
+  // The heading names the device being edited; neutral until its role and
+  // ID have both arrived.
+  currentRole = null;
+  currentDeviceId = null;
+  document.title = $('pageTitle').textContent = 'ESP32-S3 Snapmesh';
   for (const [key, row] of deviceRows) {
     row.el.classList.toggle('selected', (key === '\u0000server' ? null : key) === id);
   }
@@ -251,10 +256,10 @@ function selectDevice(id, name) {
   loadStatus();
 }
 
-/* Both fields come from separate endpoints (loadConfig/loadStatus, fetched
- * in parallel), so the title is only updated once both have arrived at
- * least once -- otherwise a server and a client tab are indistinguishable
- * at a glance. */
+/* Names the device whose settings the form shows -- on the server, the
+ * client picked in the device list. Both fields come from separate
+ * endpoints (loadConfig/loadStatus, fetched in parallel), so the title is
+ * only updated once both have arrived. */
 function updatePageTitle() {
   if (currentDeviceId === null || currentRole === null) return;
   const title = `ESP32-S3 ${currentRole === 1 ? 'Snapclient' : 'Snapserver'} ${currentDeviceId}`;
@@ -283,10 +288,8 @@ async function loadConfig() {
   if (token !== selectionToken) return;
   configLoaded = true;
   updateSettingsHead();
-  if (selectedId === null) {
-    currentRole = cfg.role;
-    updatePageTitle();
-  }
+  currentRole = cfg.role;
+  updatePageTitle();
   $('role').value = String(cfg.role);
   $('source_mode').value = String(cfg.source_mode);
   $('local_input_threshold_db').value = cfg.local_input_threshold_db;
@@ -488,10 +491,8 @@ async function loadStatus() {
     }
     const s = await res.json();
     if (token !== selectionToken) return;
-    if (selectedId === null) {
-      currentDeviceId = s.device_id;
-      updatePageTitle();
-    }
+    currentDeviceId = s.device_id;
+    updatePageTitle();
     let knobs = '';
     if (s.pot_volume_percent !== null && s.pot_volume_percent !== undefined) {
       knobs += '\nvolume knob: ' + s.pot_volume_percent + ' %';
