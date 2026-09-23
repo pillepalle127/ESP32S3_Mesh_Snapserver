@@ -45,3 +45,9 @@ CONFIG_ESP_SYSTEM_EVENT_TASK_STACK_SIZE=4096
 # plus X-Requested-With came to more, and the settings page in the app
 # failed with 431 "Header fields are too long".
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
+# Wi-Fi and lwIP buffers go to PSRAM first. When the radio stalls, the 32
+# dynamic TX buffers (~1.6 kB each) fill up; in internal RAM that took
+# ~45 kB at once (2026-09-23, 19:28): the largest free block fell to 1 kB,
+# no new connection -- web page, Snapcast, clients -- could be set up any
+# more, and the server stayed unreachable until reset.
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y

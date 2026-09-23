@@ -74,6 +74,13 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
                               size_t max_clients);
 
 /*
+ * Number of connected clients -- the same ones snapserver_get_clients()
+ * lists -- and, in *own if not NULL, how many of them are ours (SnapMesh).
+ * Cheap: counts under the lock without copying anything.
+ */
+size_t snapserver_client_count(size_t *own);
+
+/*
  * IPs of currently connected clients that are direct children of this
  * node's own AP -- i.e. a matching MAC exists in
  * esp_wifi_ap_get_sta_list(), the same "level 1" test stats_task already

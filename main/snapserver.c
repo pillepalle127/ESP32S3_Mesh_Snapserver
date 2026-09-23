@@ -2629,3 +2629,23 @@ esp_err_t snapserver_remote_request(const char *id,
     xSemaphoreGive(s_remote_mutex);
     return result;
 }
+
+size_t snapserver_client_count(size_t *own)
+{
+    size_t total = 0;
+    size_t ours = 0;
+    portENTER_CRITICAL(&s_clients_lock);
+    for (int i = 0; i < MAX_CLIENTS; ++i) {
+        if (s_clients[i].active && s_clients[i].ready) {
+            ++total;
+            if (s_clients[i].is_snapmesh) {
+                ++ours;
+            }
+        }
+    }
+    portEXIT_CRITICAL(&s_clients_lock);
+    if (own != NULL) {
+        *own = ours;
+    }
+    return total;
+}

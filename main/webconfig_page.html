@@ -507,8 +507,14 @@ async function loadStatus() {
       pins = '\nNew pin assignment on trial until this start completes.';
     }
     if (selectedId === null) updateServerNav(s);
+    let clients = '';
+    if (s.clients) {
+      const foreign = s.clients.total - s.clients.own;
+      clients = '\nconnected clients: ' + s.clients.total +
+        (s.clients.total ? ` (${s.clients.own} SnapMesh, ${foreign} Snapcast)` : '');
+    }
     $('status').textContent =
-      (REASON_LABEL[s.reason] || s.reason) + pins +
+      (REASON_LABEL[s.reason] || s.reason) + pins + clients +
       '\nboot-fail streak: ' + s.boot_fail_count +
       '\nuptime: ' + s.uptime_s + ' s' + knobs;
   } catch (e) {

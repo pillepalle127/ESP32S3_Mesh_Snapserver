@@ -575,6 +575,15 @@ static cJSON *build_status_json(void)
     cJSON_AddBoolToObject(root, "pins_on_trial", pins.trial_boots != 0U);
     cJSON_AddBoolToObject(root, "pins_reverted", device_config_pins_reverted());
 
+    /* Server role: how many speakers it feeds right now. */
+    if (cfg.role == DEVICE_ROLE_SERVER) {
+        size_t own = 0;
+        const size_t total = snapserver_client_count(&own);
+        cJSON *clients = cJSON_AddObjectToObject(root, "clients");
+        cJSON_AddNumberToObject(clients, "total", (double)total);
+        cJSON_AddNumberToObject(clients, "own", (double)own);
+    }
+
     /* Client role: where its server is, so the page can link back to it.
      * The address is the one the client dials, which is reachable from
      * anywhere in the mesh -- unlike the client addresses the server lists,
@@ -976,6 +985,20 @@ esp_err_t webconfig_start(void)
     config.stack_size = 8192;
     /* The default of 8 is one short of the routes registered below. */
     config.max_uri_handlers = 12;
+    /*
+     * A browser keeps several connections open per host, an Android
+     * WebView up to six, and a phone that roams to another mesh AP drops
+     * them without a FIN. With the defaults the server never notices: the
+     * dead sessions fill all max_open_sockets (7) and every new request
+     * times out, while the announcement port, a server of its own, keeps
+     * working. So when full, close the least recently used session, and
+     * let TCP keep-alive find dead peers after about 5 + 3 x 5 s.
+     */
+    config.lru_purge_enable = true;
+    config.keep_alive_enable = true;
+    config.keep_alive_idle = 5;
+    config.keep_alive_interval = 5;
+    config.keep_alive_count = 3;
 
     esp_err_t result = httpd_start(&s_server, &config);
     if (result != ESP_OK) {
