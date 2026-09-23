@@ -32,13 +32,14 @@ jobs:
       # No sdkconfig in the repo: sdkconfig.defaults is the whole config.
       # The merged image fills 0x9000-0xFFFF (NVS, PHY data) with 0xFF, so
       # it is for fresh installs only; updates write the three parts.
+      # The action runs `command` inside single quotes (and sets git's
+      # safe.directory itself), so it must not contain any.
       - name: Build
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.4.3
           target: esp32s3
           command: >-
-            git config --global --add safe.directory '*' &&
             idf.py build &&
             cd build &&
             esptool.py --chip esp32s3 merge_bin -o snapmesh-full.bin @flash_args
