@@ -151,8 +151,6 @@ Standardbelegung (änderbar, siehe [Pins](#pins)):
 | – | Delay-Poti (Vorgabe: keiner) |
 | 48 | WS2812-Status-LED |
 
-<img src="docs/Verdrahtungsplan.png" width="600">
-
 ---
 
 ## Signalweg
