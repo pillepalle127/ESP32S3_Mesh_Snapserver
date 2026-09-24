@@ -186,6 +186,32 @@ bool device_config_is_first_boot(void);
 void device_config_get_pots(device_pots_t *out);
 
 /*
+ * Volume of this device's own speaker, set on the web page and in the app
+ * -- for the server, which has no Snapcast volume of its own. Multiplies
+ * with the volume knob, never touches the stream sent to clients. Own NVS
+ * key, optional like device_pots_t: missing means 100 %, unmuted.
+ */
+typedef struct {
+    uint8_t percent;  /* 0-100 */
+    uint8_t muted;    /* 0 or 1 */
+    uint8_t reserved[2];
+} device_local_volume_t;
+
+void device_config_get_local_volume(device_local_volume_t *out);
+
+/* Stores it; ESP_ERR_INVALID_ARG if percent > 100. */
+esp_err_t device_config_save_local_volume(const device_local_volume_t *volume);
+
+/*
+ * Client role: the Snapcast volume and mute the server last sent. The
+ * server keeps them per client too, but a client only hears them once
+ * connected -- until then it played at 100 %, audibly so on the local
+ * input, and then dropped. Applied at start, stored only when changed.
+ */
+void device_config_get_stream_volume(device_local_volume_t *out);
+esp_err_t device_config_save_stream_volume(const device_local_volume_t *volume);
+
+/*
  * Knob settings on their own: each pin 0 or one pots_pin_blocked_reason()
  * accepts, the two pins different unless both are 0, range between
  * DEVICE_POTS_DELAY_RANGE_MIN_MS and DEVICE_CONFIG_DELAY_TRIM_MAX_MS. Not

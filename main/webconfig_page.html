@@ -666,6 +666,7 @@ function makeDeviceRow(dev) {
       <input type="text" class="dev-name" maxlength="63">
       <span class="badge dev-hops"></span>
       <span class="badge dev-kind" title="Not one of ours: only volume, mute and delay can be set">Snapcast</span>
+      <span class="dev-ip dev-knob"></span>
       <button type="button" class="dev-sel">Settings</button>
     </div>
     <div class="dev-ctrl">
@@ -680,6 +681,7 @@ function makeDeviceRow(dev) {
     name: el.querySelector('.dev-name'),
     hops: el.querySelector('.dev-hops'),
     kind: el.querySelector('.dev-kind'),
+    knob: el.querySelector('.dev-knob'),
     sel: el.querySelector('.dev-sel'),
     vol: el.querySelector('.dev-vol'),
     volval: el.querySelector('.dev-volval'),
@@ -694,17 +696,16 @@ function makeDeviceRow(dev) {
     selectDevice(dev.server ? null : dev.id, row.name.value));
 
   if (dev.server) {
-    // The server's own knob and trim are set in the sections below.
+    // Volume and mute of the server's own speaker are set here; its delay
+    // (trim or knob) in the sections below, its name is its ID.
     row.name.readOnly = true;
-    row.vol.disabled = true;
     row.delay.disabled = true;
-    row.mute.parentElement.hidden = true;
-    return row;
   }
   row.vol.addEventListener('input', () => { row.volval.textContent = row.vol.value + ' %'; });
   row.vol.addEventListener('change', () =>
     postDevice(dev.id, { volume_percent: Number(row.vol.value) }, row));
   row.mute.addEventListener('change', () => postDevice(dev.id, { muted: row.mute.checked }, row));
+  if (dev.server) return row;
   row.delay.addEventListener('change', () => {
     const v = Math.max(-delayMax, Math.min(delayMax, Math.round(Number(row.delay.value) || 0)));
     row.delay.value = v;
@@ -726,6 +727,9 @@ function updateDeviceRow(row, dev) {
   row.kind.hidden = !foreign;
   row.sel.hidden = foreign;
   row.el.classList.toggle('selected', (dev.server ? null : dev.id) === selectedId);
+  // The server's own knob multiplies with the volume set here.
+  row.knob.textContent = (dev.server && dev.knob_percent !== null && dev.knob_percent !== undefined)
+    ? `knob ${dev.knob_percent} %` : '';
   if (dev.volume_percent === null) {
     row.vol.hidden = true;
     row.volval.textContent = 'no volume knob';

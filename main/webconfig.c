@@ -702,8 +702,10 @@ static size_t take_clients(snapserver_client_info_t **out)
  * client play earlier, and on this page delay means later, as it does for
  * the delay trim and the delay knob. Volume is the Snapcast volume, the
  * same one control apps set; a client's own volume knob multiplies with
- * it. The server's own row shows its knob and trim and is not editable
- * here -- those live in the config sections below.
+ * it. The server has no Snapcast volume: its row carries the volume of its
+ * own speaker (device_local_volume_t), which multiplies with its knob
+ * ("knob_percent", null without one). Its delay is the trim or the delay
+ * knob and is set in the config sections below.
  */
 static esp_err_t api_devices_get_handler(httpd_req_t *req)
 {
@@ -723,11 +725,15 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
     cJSON *server = cJSON_AddObjectToObject(root, "server");
     cJSON_AddStringToObject(server, "id", device_id);
     cJSON_AddNumberToObject(server, "hops", 0);
-    const int volume_percent = pots_volume_percent();
-    if (volume_percent >= 0) {
-        cJSON_AddNumberToObject(server, "volume_percent", volume_percent);
+    device_local_volume_t local_volume;
+    device_config_get_local_volume(&local_volume);
+    cJSON_AddNumberToObject(server, "volume_percent", local_volume.percent);
+    cJSON_AddBoolToObject(server, "muted", local_volume.muted != 0U);
+    const int knob_percent = pots_volume_percent();
+    if (knob_percent >= 0) {
+        cJSON_AddNumberToObject(server, "knob_percent", knob_percent);
     } else {
-        cJSON_AddNullToObject(server, "volume_percent");
+        cJSON_AddNullToObject(server, "knob_percent");
     }
     int16_t knob_delay_ms = 0;
     cJSON_AddNumberToObject(server, "delay_ms",
@@ -780,6 +786,42 @@ static esp_err_t api_devices_post_handler(httpd_req_t *req)
     char id[64] = "";
     if (cJSON_IsString(id_item)) {
         strlcpy(id, id_item->valuestring, sizeof(id));
+    }
+
+    /* The server's own row: only the volume of its speaker is set here. */
+    char own_id[7];
+    get_device_id_suffix(own_id, sizeof(own_id));
+    if (strcmp(id, own_id) == 0) {
+        device_local_volume_t volume;
+        device_config_get_local_volume(&volume);
+        double num = 0.0;
+        bool muted = volume.muted != 0U;
+        const bool volume_given = parse_number_field(root, "volume_percent", &num);
+        parse_bool_field(root, "muted", &muted);
+        const bool other_given = cJSON_GetObjectItemCaseSensitive(root, "delay_ms") != NULL ||
+                                 cJSON_GetObjectItemCaseSensitive(root, "name") != NULL;
+        cJSON_Delete(root);
+        if (other_given) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                                "the server's delay is set in its config, its name is fixed");
+            return ESP_OK;
+        }
+        if (volume_given && (num < 0.0 || num > 100.0)) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "out of range");
+            return ESP_OK;
+        }
+        if (volume_given) {
+            volume.percent = (uint8_t)num;
+        }
+        volume.muted = muted ? 1U : 0U;
+        if (device_config_save_local_volume(&volume) != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "storing volume failed");
+            return ESP_OK;
+        }
+        audio_i2s_set_user_volume(volume.percent, volume.muted != 0U);
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddBoolToObject(resp, "ok", true);
+        return send_json(req, resp);
     }
 
     /* Current values, so a request may change just one field. */

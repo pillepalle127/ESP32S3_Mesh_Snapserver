@@ -131,7 +131,10 @@ fun DevicesScreen(host: String, onOpenSettings: (MeshDevice) -> Unit) {
                 modifier = Modifier.padding(vertical = 8.dp),
             )
             OutlinedButton(onClick = {
-                onOpenSettings(MeshDevice(null, host, null, true, null, false, 0))
+                onOpenSettings(
+                    MeshDevice(id = null, name = host, hops = null, own = true,
+                               volumePercent = null, muted = false, delayMs = 0)
+                )
             }) { Text("Einstellungen dieses Geräts") }
         }
 
@@ -144,14 +147,16 @@ fun DevicesScreen(host: String, onOpenSettings: (MeshDevice) -> Unit) {
                 // Keys must be unique; an old firmware can list a reconnected
                 // client twice until the stale connection times out.
                 items(current.devices.distinctBy { it.id }, key = { it.id ?: "\u0000server" }) { dev ->
+                    // The server's row posts under the server's own ID.
+                    val postId = dev.id ?: current.serverId
                     DeviceCard(
                         dev = dev,
                         delayMaxMs = current.delayMaxMs,
                         onVolume = { v ->
-                            change(dev, dev.copy(volumePercent = v)) { setDevice(dev.id!!, volumePercent = v) }
+                            change(dev, dev.copy(volumePercent = v)) { setDevice(postId, volumePercent = v) }
                         },
                         onMute = { m ->
-                            change(dev, dev.copy(muted = m)) { setDevice(dev.id!!, muted = m) }
+                            change(dev, dev.copy(muted = m)) { setDevice(postId, muted = m) }
                         },
                         onDelay = { d ->
                             change(dev, dev.copy(delayMs = d)) { setDevice(dev.id!!, delayMs = d) }
@@ -205,9 +210,11 @@ private fun DeviceCard(
             }
 
             if (dev.isServer) {
-                // Knob and trim of the server are set on the device or in its settings.
+                // Volume of its own speaker here; its knob multiplies with it,
+                // its delay (trim or knob) is set in the settings.
+                VolumeRow(dev, onVolume, onMute)
                 Text(
-                    "Lautstärke-Poti: " + (dev.volumePercent?.let { "$it %" } ?: "keins") +
+                    "Lautstärke-Poti: " + (dev.knobPercent?.let { "$it %" } ?: "keins") +
                         "   Delay: ${signed(dev.delayMs)} ms",
                     style = MaterialTheme.typography.bodyMedium,
                 )

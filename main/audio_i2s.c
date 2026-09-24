@@ -143,6 +143,8 @@ static float s_wideband_gain_linear = 1.0f;
  */
 static float s_master_volume_target = 1.0f;
 static float s_master_volume_current = 1.0f;
+/* audio_i2s_set_user_volume(); multiplies s_master_volume_target. */
+static float s_user_volume = 1.0f;
 static portMUX_TYPE s_dsp_lock = portMUX_INITIALIZER_UNLOCKED;
 /*
  * Bumped under s_dsp_lock every time audio_i2s_set_dsp_params() installs a
@@ -344,6 +346,19 @@ void audio_i2s_set_master_volume(float linear)
 
     portENTER_CRITICAL(&s_dsp_lock);
     s_master_volume_target = linear;
+    portEXIT_CRITICAL(&s_dsp_lock);
+}
+
+void audio_i2s_set_user_volume(uint8_t percent, bool muted)
+{
+    if (percent > 100U) {
+        percent = 100U;
+    }
+    const float fraction = (float)percent / 100.0f;
+    const float linear = muted ? 0.0f : fraction * fraction * fraction;
+
+    portENTER_CRITICAL(&s_dsp_lock);
+    s_user_volume = linear;
     portEXIT_CRITICAL(&s_dsp_lock);
 }
 
@@ -638,7 +653,7 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     dsp = s_dsp_params;
     sub_gain_linear = s_sub_gain_linear;
     wideband_gain_linear = s_wideband_gain_linear;
-    master_target = s_master_volume_target;
+    master_target = s_master_volume_target * s_user_volume;
     dsp_generation = s_dsp_generation;
     portEXIT_CRITICAL(&s_dsp_lock);
 

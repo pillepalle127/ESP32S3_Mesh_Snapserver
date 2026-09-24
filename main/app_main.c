@@ -126,6 +126,13 @@ void app_main(void)
      */
     ESP_ERROR_CHECK(audio_i2s_start());
 
+    /* The volume set for this speaker on the page or in the app. */
+    {
+        device_local_volume_t local_volume;
+        device_config_get_local_volume(&local_volume);
+        audio_i2s_set_user_volume(local_volume.percent, local_volume.muted != 0U);
+    }
+
     const audio_dsp_params_t dsp_params = {
         .bypass = cfg.dsp_bypass,
         .crossover_hz = (float)cfg.crossover_hz,
@@ -152,6 +159,13 @@ void app_main(void)
 
     if (client_role) {
         ESP_ERROR_CHECK(audio_sink_start(cfg.buffer_ms));
+
+        /* The server's last volume for this client, until it sends a new one. */
+        {
+            device_local_volume_t stream_volume;
+            device_config_get_stream_volume(&stream_volume);
+            audio_sink_set_volume(stream_volume.percent, stream_volume.muted != 0U);
+        }
         audio_sink_set_source_mode(cfg.source_mode);
         audio_sink_set_local_input_threshold_db(cfg.local_input_threshold_db);
         audio_sink_set_delay_trim_ms(cfg.delay_trim_ms);

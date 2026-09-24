@@ -120,6 +120,14 @@ void audio_i2s_get_dsp_params(audio_dsp_params_t *out);
 void audio_i2s_set_master_volume(float linear);
 
 /*
+ * Second volume factor for this device's own speaker, from the web page or
+ * the app (device_local_volume_t), multiplied with the knob's master volume
+ * and ramped the same way. percent uses the cubic curve of the knob and the
+ * Snapcast volume; muted silences the speaker. Stream to clients untouched.
+ */
+void audio_i2s_set_user_volume(uint8_t percent, bool muted);
+
+/*
  * Liest Stereo vom TinySine und bildet daraus Mono.
  * Das ungefilterte Mono wird dem Snapserver im Puffer "mono" bereitgestellt.
  * Lokal wird dasselbe Mono durch eine Linkwitz-Riley-Weiche 4. Ordnung

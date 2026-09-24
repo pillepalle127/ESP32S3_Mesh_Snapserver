@@ -34,6 +34,7 @@
 #include "freertos/task.h"
 
 #include "audio_sink.h"
+#include "device_config.h"
 #include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -740,6 +741,20 @@ static void handle_server_settings(const uint8_t *payload, uint32_t size)
     if (cJSON_IsNumber(volume) || cJSON_IsBool(muted)) {
         const int32_t percent = cJSON_IsNumber(volume) ? (int32_t)volume->valuedouble : 100;
         audio_sink_set_volume(percent, cJSON_IsTrue(muted));
+
+        /*
+         * Remembered, so the next start plays at this level right away
+         * instead of at 100 % until the server's settings arrive. Only a
+         * change is written; this task's stack is in internal RAM.
+         */
+        device_local_volume_t stored;
+        device_config_get_stream_volume(&stored);
+        const uint8_t clamped = (uint8_t)((percent < 0) ? 0 : (percent > 100) ? 100 : percent);
+        const uint8_t now_muted = cJSON_IsTrue(muted) ? 1U : 0U;
+        if (stored.percent != clamped || stored.muted != now_muted) {
+            const device_local_volume_t next = { .percent = clamped, .muted = now_muted };
+            (void)device_config_save_stream_volume(&next);
+        }
     }
 
     /*

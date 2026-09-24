@@ -20,6 +20,8 @@ static const char *TAG = "DEVICE_CONFIG";
 #define DEVICE_CONFIG_NVS_KEY       "cfg"
 #define DEVICE_POTS_NVS_KEY         "pots"
 #define DEVICE_PINS_NVS_KEY         "pins"
+#define DEVICE_LVOL_NVS_KEY         "lvol"
+#define DEVICE_SVOL_NVS_KEY         "svol"
 
 /*
  * s_cfg is written from whichever task calls device_config_save()/
@@ -44,6 +46,11 @@ static bool s_first_boot;
 static bool s_erased;
 
 /* Guarded by s_cfg_lock like s_cfg. */
+static device_local_volume_t s_local_volume = { .percent = 100U };
+static device_local_volume_t s_stream_volume = { .percent = 100U };
+
+static void load_volume_blob(nvs_handle_t handle, const char *key, device_local_volume_t *out);
+
 static device_pots_t s_pots = {
     .volume_gpio = DEVICE_POTS_DEFAULT_VOLUME_GPIO,
     .delay_gpio = DEVICE_POTS_DEFAULT_DELAY_GPIO,
@@ -309,6 +316,12 @@ esp_err_t device_config_load(void)
     device_pins_t pins;
     size_t pins_len = sizeof(pins);
     const esp_err_t pins_result = nvs_get_blob(handle, DEVICE_PINS_NVS_KEY, &pins, &pins_len);
+
+    /* Optional too: missing or out of range means full volume, unmuted. */
+    device_local_volume_t local_volume;
+    load_volume_blob(handle, DEVICE_LVOL_NVS_KEY, &local_volume);
+    device_local_volume_t stream_volume;
+    load_volume_blob(handle, DEVICE_SVOL_NVS_KEY, &stream_volume);
     nvs_close(handle);
 
     if (pins_result != ESP_OK || pins_len != sizeof(pins) || !pins_valid(&pins)) {
@@ -361,6 +374,8 @@ esp_err_t device_config_load(void)
     s_pots = pots;
     s_pins = pins;
     s_boot_pins = pins;
+    s_local_volume = local_volume;
+    s_stream_volume = stream_volume;
     portEXIT_CRITICAL(&s_cfg_lock);
 
     const bool found = (result == ESP_OK) && (len == sizeof(loaded)) &&
@@ -478,6 +493,13 @@ esp_err_t device_config_factory_reset(void)
         if (pins_result != ESP_OK && pins_result != ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "Erasing pin assignment failed: %s", esp_err_to_name(pins_result));
         }
+        const char *const volume_keys[] = { DEVICE_LVOL_NVS_KEY, DEVICE_SVOL_NVS_KEY };
+        for (size_t i = 0; i < sizeof(volume_keys) / sizeof(volume_keys[0]); ++i) {
+            const esp_err_t vol_result = nvs_erase_key(handle, volume_keys[i]);
+            if (vol_result != ESP_OK && vol_result != ESP_ERR_NVS_NOT_FOUND) {
+                ESP_LOGW(TAG, "Erasing %s failed: %s", volume_keys[i], esp_err_to_name(vol_result));
+            }
+        }
         result = nvs_commit(handle);
     } else {
         ESP_LOGE(TAG, "Erasing config failed: %s", esp_err_to_name(result));
@@ -518,6 +540,76 @@ bool device_config_pots_valid(const device_pots_t *pots)
         return false;
     }
     return true;
+}
+
+/* Volume blobs share one layout; missing or out of range means 100 %, unmuted. */
+static void load_volume_blob(nvs_handle_t handle, const char *key, device_local_volume_t *out)
+{
+    size_t len = sizeof(*out);
+    if (nvs_get_blob(handle, key, out, &len) != ESP_OK || len != sizeof(*out) ||
+        out->percent > 100U) {
+        memset(out, 0, sizeof(*out));
+        out->percent = 100U;
+    }
+    out->muted = out->muted ? 1U : 0U;
+}
+
+static esp_err_t store_volume_blob(const char *key, device_local_volume_t *cache,
+                                   const device_local_volume_t *volume)
+{
+    if (s_erased) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (volume == NULL || volume->percent > 100U) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    device_local_volume_t to_store = { .percent = volume->percent,
+                                       .muted = volume->muted ? 1U : 0U };
+
+    nvs_handle_t handle;
+    esp_err_t result = nvs_open(DEVICE_CONFIG_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(result));
+        return result;
+    }
+    result = nvs_set_blob(handle, key, &to_store, sizeof(to_store));
+    if (result == ESP_OK) {
+        result = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Storing %s failed: %s", key, esp_err_to_name(result));
+        return result;
+    }
+
+    portENTER_CRITICAL(&s_cfg_lock);
+    *cache = to_store;
+    portEXIT_CRITICAL(&s_cfg_lock);
+    return ESP_OK;
+}
+
+void device_config_get_local_volume(device_local_volume_t *out)
+{
+    portENTER_CRITICAL(&s_cfg_lock);
+    *out = s_local_volume;
+    portEXIT_CRITICAL(&s_cfg_lock);
+}
+
+esp_err_t device_config_save_local_volume(const device_local_volume_t *volume)
+{
+    return store_volume_blob(DEVICE_LVOL_NVS_KEY, &s_local_volume, volume);
+}
+
+void device_config_get_stream_volume(device_local_volume_t *out)
+{
+    portENTER_CRITICAL(&s_cfg_lock);
+    *out = s_stream_volume;
+    portEXIT_CRITICAL(&s_cfg_lock);
+}
+
+esp_err_t device_config_save_stream_volume(const device_local_volume_t *volume)
+{
+    return store_volume_blob(DEVICE_SVOL_NVS_KEY, &s_stream_volume, volume);
 }
 
 void device_config_get_pots(device_pots_t *out)

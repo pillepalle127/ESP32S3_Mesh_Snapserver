@@ -16,9 +16,11 @@ data class MeshDevice(
     val hops: Int?,
     /** One of ours: answers settings requests. False for a foreign Snapcast client. */
     val own: Boolean,
-    /** Snapcast volume; for the server its volume knob, null without one. */
+    /** Snapcast volume; for the server the volume of its own speaker. */
     val volumePercent: Int?,
     val muted: Boolean,
+    /** Server only: its volume knob, which multiplies with volumePercent; null without one. */
+    val knobPercent: Int? = null,
     /** Positive = later. For the server its knob or trim, read only here. */
     val delayMs: Int,
 ) {
@@ -56,8 +58,9 @@ class MeshApi(private val host: String, private val network: Network?) {
                 hops = 0,
                 own = true,
                 volumePercent = server.optIntOrNull("volume_percent"),
-                muted = false,
+                muted = server.optBoolean("muted"),
                 delayMs = server.optInt("delay_ms"),
+                knobPercent = server.optIntOrNull("knob_percent"),
             )
         )
         val parsed = (0 until clients.length()).map { i ->
@@ -76,7 +79,10 @@ class MeshApi(private val host: String, private val network: Network?) {
         return DeviceList(serverId, root.optInt("delay_max_ms", 2000), list)
     }
 
-    /** Changes one client; fields left null keep their value. */
+    /**
+     * Changes one device; fields left null keep their value. For the server
+     * itself pass its ID (DeviceList.serverId); it takes volume and mute only.
+     */
     @Throws(IOException::class)
     fun setDevice(
         id: String,
