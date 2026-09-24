@@ -866,16 +866,19 @@ static void player_task(void *arg)
                 }
             }
             /*
-             * Only flush when *leaving* the network source: its queued
-             * audio is now stale (there was a gap while something else
-             * played) and must not be played back out of order. Do NOT
-             * flush when *entering* it -- that ring content is exactly the
-             * prebuffer network_source_or_none() just required before
-             * allowing this switch, and discarding it here would
-             * immediately re-empty the ring and undo the whole point of
-             * prebuffering.
+             * Flush only when the network source is lost (NETWORK -> NONE):
+             * the connection is gone and what is queued is stale. Handing
+             * over to the local input does not flush -- the stream keeps
+             * playing silently underneath (see below), so switching back
+             * finds exactly the audio that is due and carries on without a
+             * gap. Flushing there, as this first did, cost a full bufferMs
+             * of silence (~3 s, measured) plus a hard resync on every return
+             * from the local input. Never flush when *entering* the network
+             * source either: that ring content is the prebuffer
+             * network_source_or_none() just required.
              */
-            if (s_active_source == AUDIO_SINK_SOURCE_NETWORK) {
+            if (s_active_source == AUDIO_SINK_SOURCE_NETWORK &&
+                desired == AUDIO_SINK_SOURCE_NONE) {
                 ring_flush(&s_ring);
                 control_reset();
             }
@@ -905,6 +908,16 @@ static void player_task(void *arg)
         const int16_t *chosen;
         if (s_active_source == AUDIO_SINK_SOURCE_LOCAL_INPUT && have_local) {
             chosen = local_mono;
+            /*
+             * The network stream keeps running underneath, exactly as for
+             * an announcement: rendered on schedule and thrown away, so the
+             * ring drains at its normal rate and the timeline and drift
+             * control stay locked. playout_mono is free here; the volume
+             * step below overwrites it from local_mono.
+             */
+            if (network_source_or_none() == AUDIO_SINK_SOURCE_NETWORK) {
+                (void)render_network_frame(playout_mono);
+            }
         } else if (s_active_source == AUDIO_SINK_SOURCE_NETWORK) {
             if (!render_network_frame(playout_mono)) {
                 memset(playout_mono, 0, sizeof(playout_mono));
@@ -1076,15 +1089,12 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm,
                                int64_t chunk_ts_us)
 {
     /*
-     * Accepted while playing from the network AND while merely prebuffering
-     * for it (source is NONE, network active, not yet past
-     * NETWORK_PREBUFFER_PERCENT -- see network_source_or_none()): the ring
-     * must be allowed to fill during that wait, or prebuffering could never
-     * complete. Only actually dropped while local input is the active
-     * source, matching the original source-arbitration intent of this
-     * check.
+     * Accepted whatever source is playing: while prebuffering (the ring must
+     * fill), while playing, and while the local input covers it -- the
+     * stream then runs silently underneath (see player_task), so switching
+     * back to it is seamless instead of starting over from an empty ring.
      */
-    if (!s_started || s_active_source == AUDIO_SINK_SOURCE_LOCAL_INPUT) {
+    if (!s_started) {
         s_network_bytes_dropped += sample_count * sizeof(int16_t);
         return 0;
     }
