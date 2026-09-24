@@ -64,13 +64,14 @@
     WLAN <code>ESP32_provisioning_…</code>. Mit dem Handy verbinden, <code>http://192.168.5.1/</code> öffnen,
     Rolle (Server oder Client), Mesh-Name und -Passwort eintragen, bei Bedarf die Pins, dann
     <em>Save</em>.</p>
-  <p class="muted">Vorausgesetzt ist ein ESP32-S3 mit 16&nbsp;MB Flash und 8&nbsp;MB Octal-PSRAM
-    (z.&nbsp;B. YD-ESP32-S3 N16R8). Auf Boards mit Quad-PSRAM oder weniger Flash startet die Firmware nicht.</p>
+  <p class="muted">Vorausgesetzt ist ein ESP32-S3 mit mindestens 4&nbsp;MB Flash und Octal-PSRAM, z.&nbsp;B.
+    N16R8 oder N8R8 (etwa das YD-ESP32-S3). Auf Boards mit Quad-PSRAM (z.&nbsp;B. N8R2, N16R2) oder ohne PSRAM
+    startet die Firmware nicht.</p>
 
   <h2>Ohne Chrome oder Edge</h2>
   <p>Mit dem eigenständigen <a href="https://github.com/espressif/esptool/releases">esptool</a> und den
-    drei Dateien aus dem <a href="https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases">Release</a>:</p>
-  <p><code>esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin</code></p>
+    vier Dateien aus dem <a href="https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases">Release</a>:</p>
+  <p><code>esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin 0x3d0000 ota_data_initial.bin</code></p>
   <p class="muted"><code>snapmesh-full.bin</code> ist ein Gesamt-Image ab <code>0x0</code> für eine Neuinstallation.
     Es überschreibt auch die gespeicherten Einstellungen, für Updates also nicht verwenden.</p>
 

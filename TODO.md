@@ -111,8 +111,9 @@ Bugs sind umgesetzt:
   und das signierte APK, hängt beides an das GitHub-Release und stellt die
   Flash-Seite (`flasher/`, ESP Web Tools) auf GitHub Pages. Ein manueller
   Lauf baut nur, als Probe vor dem Tag.
-  - **Updates schreiben drei Teile** (Bootloader `0x0`, Partitionstabelle
-    `0x8000`, App `0x10000`). Das Gesamt-Image aus `merge_bin` füllt
+  - **Updates schreiben vier Teile** (Bootloader `0x0`, Partitionstabelle
+    `0x8000`, App `0x10000`, leeres `otadata` `0x3D0000`). Das Gesamt-Image
+    aus `merge_bin` füllt
     `0x9000–0xFFFF` mit `0xFF` und löscht damit NVS und PHY-Daten; es ist
     nur für Neuinstallationen gedacht (geprüft 2026-09-23).
   - `sdkconfig.defaults` ergibt jetzt exakt das `sdkconfig` der Geräte
@@ -124,29 +125,29 @@ Bugs sind umgesetzt:
     nächster Punkt) und einmal ein komplettes Neuflashen mit Löschen.
     Später denkbar: F-Droid oder Play Store.
 
-- **Firmware auch auf Boards mit weniger Flash (vorgemerkt 2026-09-23).**
-  Heute startet die Firmware nur auf Boards mit 16 MB Flash: Der Image-Header
-  trägt `ESPTOOLPY_FLASHSIZE_16MB`, und ESP-IDF bricht beim Start ab, wenn
-  der Chip kleiner ist (`esp_flash_spi_init.c`: „Detected size smaller than
-  the size in the binary image header. Probe failed.“). Ein N8R8 läuft
-  deshalb nicht, obwohl die Firmware nur ~1,4 MB belegt.
-  Umsetzung: Header auf 4 MB (`CONFIG_ESPTOOLPY_FLASHSIZE_4MB` in
-  `sdkconfig.defaults`) und die `factory`-Partition in `partitions.csv` von
-  4 MB auf ~3 MB verkleinern, sodass alles unter `0x400000` endet. Dann
-  läuft dasselbe Image auf 4-, 8- und 16-MB-Boards (größerer Flash bleibt
-  ungenutzt). Mit dem späteren OTA-Umbau (nächster Punkt) zusammen planen:
-  zwei App-Bereiche à ~1,5–1,9 MB passen noch in 4 MB.
-  Folgen: Die Partitionstabelle ändert sich, bestehende Boards brauchen
-  einmal ein komplettes Neuflashen mit „Erase device“, danach Einstellungen
-  neu eintragen; README (Abschnitt „Was du brauchst“, Partitionstabelle)
-  und Flash-Seite anpassen. Octal-PSRAM bleibt Voraussetzung: Quad-PSRAM
-  (N8R2/N16R2) bräuchte eine zweite Firmware-Variante (`SPIRAM_MODE_QUAD`),
-  ganz ohne PSRAM geht es wegen der Audiopuffer nicht.
+- **Firmware auch auf Boards mit weniger Flash (umgesetzt 2026-09-24, auf
+  Hardware noch ungetestet).** Image-Header auf 4 MB
+  (`CONFIG_ESPTOOLPY_FLASHSIZE_4MB`), `partitions.csv` passt in 4 MB. Dasselbe
+  Image läuft damit auf N8R8 und N16R8. ESP-IDF bricht nur ab, wenn der Chip
+  *kleiner* ist als der Header (`esp_flash_spi_init.c`); ein größerer bleibt
+  ungenutzt. `nvs` (`0x9000`) und `phy_init` (`0xF000`) liegen unverändert,
+  deshalb ist **kein Löschen** nötig: Ein Board mit dem alten 16-MB-Layout
+  behält beim Update seine Einstellungen, solange `otadata` leer mitgeschrieben
+  wird. Sonst läge dort ein Rest der alten App, und der Bootloader müsste ihn
+  als ungültig verwerfen. Zu prüfen auf einem Board mit altem Layout:
+  Start aus `ota_0`, `Config loaded from NVS`, Pins unverändert. Octal-PSRAM
+  bleibt Voraussetzung; Quad-PSRAM (N8R2/N16R2) bräuchte eine zweite Variante
+  mit `SPIRAM_MODE_QUAD`.
 
-- `partitions.csv` hat keine OTA- oder Coredump-Partition. Kein Problem für
-  den aktuellen Funktionsumfang, aber falls OTA-Updates oder
-  Crash-Diagnose per Coredump später gewünscht sind, fehlt dafür die
-  Partitionierung.
+- **OTA über die Web-Seite (offen).** Die Partitionen sind seit 2026-09-24
+  vorbereitet (`ota_0`/`ota_1` je 1,875 MB, `otadata`), es fehlt der Teil in
+  der Firmware: Upload-Route in `webconfig.c` (`esp_ota_begin/write/end`,
+  `esp_ota_set_boot_partition`), ein Feld auf der Seite, für Clients der Weg
+  über den Server, und am besten Rollback (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`,
+  bestätigen wie bei `device_config_confirm_pins()`). Achtung: Nach einem
+  OTA-Update startet das Board aus `ota_1`; der Browser-Flasher schreibt die
+  App nach `ota_0` und setzt `otadata` zurück, das passt also weiter.
+  Keine Coredump-Partition; in den 184 KB hinter `otadata` wäre Platz dafür.
 
 - **Lautstärke der Quelle wirkt auf alle Clients gemeinsam (gemeldet
   2026-09-17):** Wird am A2DP-Gerät, das den I2S-Eingang des Servers

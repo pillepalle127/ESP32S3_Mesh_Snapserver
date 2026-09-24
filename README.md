@@ -24,8 +24,10 @@ bereitgestellt.
 
 ### Was du brauchst
 
-* **Ein ESP32-S3-Board je Lautsprecher** mit 16 MB Flash und 8 MB PSRAM (Bezeichnung „N16R8“), z. B. das
-  YD-ESP32-S3 N16R8. Andere Varianten (weniger Speicher, „Quad-PSRAM“) werden nicht unterstützt.
+* **Ein ESP32-S3-Board je Lautsprecher** mit **mindestens 4 MB Flash und Octal-PSRAM**, z. B. die Varianten
+  „N16R8“ oder „N8R8“ (etwa das YD-ESP32-S3 N16R8). Auf Boards mit Quad-PSRAM (z. B. N8R2, N16R2) oder ganz
+  ohne PSRAM (z. B. N16) startet diese Firmware nicht. Die Bezeichnung steht in der Produktbeschreibung oder
+  auf dem Modul.
 * **Ein USB-Kabel, das Daten überträgt.** Viele Kabel, die bei Geräten liegen, können nur laden; dann taucht
   das Board am PC nicht auf.
 * **Einen PC oder Laptop mit Chrome oder Edge** (Windows, macOS oder Linux). Firefox, Safari und Handys können
@@ -107,10 +109,11 @@ Neue Versionen der App lassen sich danach einfach darüber installieren.
 ### Für Fortgeschrittene: Flashen mit esptool
 
 Ohne Chrome oder Edge geht es mit dem eigenständigen [esptool](https://github.com/espressif/esptool/releases)
-(kein Python nötig) und den drei Dateien aus dem Release:
+(kein Python nötig) und den vier Dateien aus dem Release:
 ```bash
-esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin
+esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin 0x3d0000 ota_data_initial.bin
 ```
+`ota_data_initial.bin` setzt den OTA-Datenbereich zurück, damit das Board die gerade geschriebene App startet.
 `snapmesh-full.bin` ist ein Gesamt-Image ab `0x0` für eine Neuinstallation. Es füllt NVS und PHY-Daten
 (`0x9000–0xFFFF`) mit `0xFF` und löscht damit alle Einstellungen, für Updates also nicht verwenden.
 
@@ -133,7 +136,7 @@ esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 
 
 ## Hardware
 
-* ESP32-S3 mit PSRAM (getestet: 16 MB Flash, 8 MB Octal-PSRAM, USB-Serial/JTAG), z. B. YD-ESP32-S3 N16R8
+* ESP32-S3 mit mindestens 4 MB Flash und Octal-PSRAM (N16R8, N8R8; USB-Serial/JTAG), z. B. YD-ESP32-S3 N16R8
   von VCC-GND Studio ([Schaltplan V1.4](https://github.com/vcc-gnd/YD-ESP32-S3/blob/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf))
 * Eingang: TinySine AudioB I2S V2r0
 * Ausgang: PCM5102A
@@ -380,10 +383,10 @@ Abweichungen.
 
 | Bereich | Option | Wert | Grund |
 |---|---|---|---|
-| Flash | `ESPTOOLPY_FLASHSIZE_16MB` | y | Board N16R8 |
+| Flash | `ESPTOOLPY_FLASHSIZE_4MB` | y | Mindestgröße im Image-Header: läuft auf 4-, 8- und 16-MB-Boards (IDF bricht nur bei kleinerem Chip ab) |
 | | `PARTITION_TABLE_CUSTOM` | `partitions.csv` | 4-MB-App-Partition, siehe unten |
 | CPU | `ESP32S3_DEFAULT_CPU_FREQ_240` | y | Opus-Encoder und DSP |
-| PSRAM | `SPIRAM`, `SPIRAM_MODE_OCT`, `SPIRAM_SPEED_80M` | y | 8 MB Octal-PSRAM des N16R8 |
+| PSRAM | `SPIRAM`, `SPIRAM_MODE_OCT`, `SPIRAM_SPEED_80M` | y | Octal-PSRAM (N16R8, N8R8); Quad-PSRAM bräuchte `SPIRAM_MODE_QUAD` |
 | | `SPIRAM_USE_CAPS_ALLOC` | y | PSRAM nur gezielt (Puffer, Task-Stacks), `malloc()` bleibt intern |
 | | `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` | y | WLAN-/lwIP-Puffer ins PSRAM; ein Sendestau fraß sonst den internen RAM |
 | WLAN | `ESP_WIFI_STATIC_RX_BUFFER_NUM` | 10 | getestete Werte; ohne sie setzt IDF mit der Option oben 16 |
@@ -416,15 +419,19 @@ Reset, danach gilt, was auf der Web-Seite eingestellt und im NVS gespeichert ist
 | `SNAPSERVER_OPUS_COMPLEXITY` | 5 | Opus-Complexity (0–10) |
 | `SNAPSERVER_CROSSOVER_HZ` | 120 | Trennfrequenz der Weiche (40–500 Hz) |
 
-**Partitionstabelle** (`partitions.csv`, 16 MB Flash):
+**Partitionstabelle** (`partitions.csv`, passt in 4 MB Flash):
 
 | Name | Typ | Offset | Größe | Inhalt |
 |---|---|---|---|---|
 | `nvs` | data/nvs | `0x9000` | 24 KB | Konfiguration, Pins, Potis, Client-Werte, DHCP-Bereich |
 | `phy_init` | data/phy | `0xF000` | 4 KB | WLAN-Kalibrierung |
-| `factory` | app | `0x10000` | 4 MB | Firmware (belegt ~1,4 MB) |
+| `ota_0` | app | `0x10000` | 1,875 MB | Firmware (belegt ~1,3 MB, 30 % frei) |
+| `ota_1` | app | `0x1F0000` | 1,875 MB | zweiter App-Bereich für spätere OTA-Updates |
+| `otadata` | data/ota | `0x3D0000` | 8 KB | welcher App-Bereich startet; beim Flashen leer → `ota_0` |
 
-Keine OTA- und keine Coredump-Partition; OTA-Updates brauchen einen Umbau (siehe TODO.md).
+`nvs` und `phy_init` liegen an denselben Adressen wie in der früheren 16-MB-Tabelle. Ein Board mit älterer
+Firmware lässt sich deshalb ohne „Erase device“ aktualisieren und behält seine Einstellungen. Die OTA-Bereiche
+sind vorbereitet, Updates über die Web-Seite gibt es noch nicht (siehe TODO.md). Keine Coredump-Partition.
 
 ### Android-App bauen
 

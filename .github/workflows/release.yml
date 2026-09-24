@@ -31,7 +31,7 @@ jobs:
 
       # No sdkconfig in the repo: sdkconfig.defaults is the whole config.
       # The merged image fills 0x9000-0xFFFF (NVS, PHY data) with 0xFF, so
-      # it is for fresh installs only; updates write the three parts.
+      # it is for fresh installs only; updates write the four parts.
       # The action runs `command` inside single quotes (and sets git's
       # safe.directory itself), so it must not contain any.
       - name: Build
@@ -49,6 +49,7 @@ jobs:
           mkdir dist
           cp build/bootloader/bootloader.bin dist/
           cp build/partition_table/partition-table.bin dist/
+          cp build/ota_data_initial.bin dist/
           cp build/esp32_s3_mini_snapserver.bin dist/snapmesh-app.bin
           cp build/snapmesh-full.bin dist/
           ls -l dist
@@ -143,7 +144,7 @@ jobs:
 
             **Mit esptool:**
             ```
-            esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin
+            esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin 0x3d0000 ota_data_initial.bin
             ```
             `snapmesh-full.bin` ist ein Gesamt-Image ab `0x0` nur für eine Neuinstallation – es überschreibt die gespeicherten Einstellungen.
 
@@ -176,7 +177,7 @@ jobs:
           mkdir site
           sed "s/__VERSION__/$VERSION/g" flasher/index.html > site/index.html
           sed "s/__VERSION__/$VERSION/g" flasher/manifest.template.json > site/manifest.json
-          cp dist/bootloader.bin dist/partition-table.bin dist/snapmesh-app.bin site/
+          cp dist/bootloader.bin dist/partition-table.bin dist/snapmesh-app.bin dist/ota_data_initial.bin site/
           ls -l site
 
       - uses: actions/upload-pages-artifact@v3
