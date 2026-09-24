@@ -288,14 +288,24 @@ Bugs sind umgesetzt:
     TinySine. Die Firmware gab nachweislich nur den lokalen Eingang aus;
     nach Beenden der App war es weg. Kein Firmwarefehler.
   - *A -- nur A2DP gestört, bis zum Aus- und Einschalten (offen):* tritt
-    nach einem Start auf, sowohl nach einem Reset nur des ESP (belegt:
-    2. von 2 Resets an 14:E4) als auch nach einem Power-Cycle. Der Stream
-    bleibt dabei sauber. Noch keine Messung im Fehlerzustand; die 100-ms-
-    Pegelspur (`trace in/out`) soll beim nächsten Auftreten zeigen, ob die
-    Daten schon verfälscht beim ESP ankommen. Der TinySine ist ein I2S-Slave
-    (vom Händler bestätigt). Ausprobiert und verworfen: 24-Bit-Slots mit
-    2,304 MHz BCLK (dem Master-Takt des TinySine) -- klang auch nach einem
-    Power-Cycle gestört, zurück auf 32-Bit-Slots/3,072 MHz.
+    nach einem Start auf, sowohl nach einem Reset nur des ESP (der TinySine
+    läuft dabei durch) als auch nach einem Power-Cycle. Der Stream bleibt
+    dabei sauber. **Die Daten kommen schon verfälscht beim ESP an:** die
+    Schadenszähler (`damage: jumps in=…`, Sprünge > 16384 zwischen zwei
+    Samples, die Musik bei 48 kHz praktisch nie macht) zeigen 0 je 5 s im
+    sauberen Zustand, 150-360 im gestörten und bis zu 49000 im schwer
+    gestörten (14:E4, 2026-09-24, 3 ESP-Resets: sauber, schwer gestört,
+    gestört). Der TinySine ist ein I2S-Slave (vom Händler bestätigt).
+    Ausprobiert: 24-Bit-Slots mit 2,304 MHz BCLK (dem Master-Takt des
+    TinySine). Der erste Versuch lief mit MCLK 256 x fs und damit mit
+    51,2 kHz statt 48 kHz (bclk_div 5,33 -> 5), also ohne Aussage; der
+    zweite mit 384 x fs lief korrekt, der Fehler trat genauso auf. Zurück
+    auf 32-Bit-Slots/3,072 MHz. Nächste Schritte: (1) die Rohwerte um einen
+    Sprung als Hex protokollieren -- einzelne gekippte Bits sprechen für
+    knappes Timing oder Pegel, ein um ein Bit verschobenes Wort für eine
+    Rahmung, die beim Start falsch einrastet; (2) den High-Pegel an SD/BCK
+    messen: eine TinySine-Seite nennt 1,8 V I2S-Pegel, der ESP32-S3 braucht
+    für High laut Datenblatt 0,75 x 3,3 V = 2,5 V.
   - *B -- beide Quellen knacksen (offen):* an 14:E4 gesehen, Stream und
     A2DP gleichermaßen. Der ESP lieferte dabei nachweislich lückenlose
     Daten (underrun 0, dropped 0, kein Resync, gleichmäßige Pegel je
@@ -304,6 +314,9 @@ Bugs sind umgesetzt:
     und nach jedem Start seine PLL aus BCK neu einrasten muss -- SCK muss
     dafür fest auf GND liegen (Lötbrücke am Modul prüfen). Alternative:
     MCLK (12,288 MHz) vom ESP an SCK führen, dann entfällt die PLL.
+    SCK ist an 14:E4 inzwischen gebrückt, das Knacksen bleibt, die
+    Schadenszähler am Ausgang stehen auf 0. Verdacht jetzt: das
+    PCM5102A-Modul selbst ist defekt; Gegenprobe durch Tausch des Moduls.
   - *C -- Knacksen 2-3,5 s nach dem Stopp von A2DP (weitgehend behoben):*
     Der TinySine treibt SD nach dem Stopp nicht mehr; die offene Leitung
     fing Übersprechen von BCLK/LRCLK ein (100-ms-Spur: Pakete von -33 bis

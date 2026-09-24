@@ -425,7 +425,10 @@ esp_err_t audio_i2s_start(void)
     /*
      * 16-bit audio in 32-bit slots: 48 kHz x 2 x 32 bit = 3.072 MHz BCLK.
      * 24-bit slots (2.304 MHz, the TinySine's own master clock) were tried
-     * on 2026-09-24 and sounded distorted even after a power cycle.
+     * twice on 2026-09-24. The first trial kept MCLK at 256 x fs: bclk_div
+     * 5.33 truncated to 5, LRCLK ran at 51.2 kHz and everything sounded
+     * distorted. The second, with 384 x fs, ran at the right rate but did
+     * not cure the start-dependent A2DP corruption either.
      */
     standard_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
     standard_config.slot_cfg.ws_width = 32;

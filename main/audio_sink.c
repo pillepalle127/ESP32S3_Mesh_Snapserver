@@ -289,6 +289,39 @@ static int8_t s_trace_in[TRACE_BUCKETS];
 static int8_t s_trace_out[TRACE_BUCKETS];
 static uint32_t s_trace_frame;
 
+/*
+ * Signs of damaged samples, per stats window: steps of more than half the
+ * range from one sample to the next (music at 48 kHz practically never
+ * does that; bit errors and a misaligned serial stream do all the time),
+ * and samples at full scale. Counted for the local input and the output,
+ * so noise that is in the data can be told from noise made after the ESP.
+ */
+#define JUMP_THRESHOLD 16384
+static uint32_t s_jumps_in;
+static uint32_t s_jumps_out;
+static uint32_t s_clips_in;
+static uint32_t s_clips_out;
+static int16_t s_last_in;
+static int16_t s_last_out;
+
+static void count_damage(const int16_t *samples, size_t count, int16_t *last,
+                         uint32_t *jumps, uint32_t *clips)
+{
+    int32_t prev = *last;
+    for (size_t i = 0; i < count; ++i) {
+        const int32_t v = samples[i];
+        const int32_t step = v - prev;
+        if (step > JUMP_THRESHOLD || step < -JUMP_THRESHOLD) {
+            (*jumps)++;
+        }
+        if (v >= 32767 || v <= -32767) {
+            (*clips)++;
+        }
+        prev = v;
+    }
+    *last = (int16_t)prev;
+}
+
 static int8_t trace_db(float db)
 {
     return (int8_t)((db < -120.0f) ? -120 : (db > 0.0f) ? 0 : (int)lrintf(db));
@@ -565,6 +598,10 @@ typedef struct {
     uint32_t voice_wait_max_ms;
     int8_t trace_in[TRACE_BUCKETS];
     int8_t trace_out[TRACE_BUCKETS];
+    uint32_t jumps_in;
+    uint32_t jumps_out;
+    uint32_t clips_in;
+    uint32_t clips_out;
 } sink_stats_t;
 
 static sink_stats_t s_stats_snapshot;
@@ -611,6 +648,14 @@ static void maybe_log_stats(float output_rms_db)
                                  ? (s_voice_wait_total_ms / s_voice_wait_count) : 0U,
         .voice_wait_max_ms = s_voice_wait_max_ms,
     };
+    snapshot.jumps_in = s_jumps_in;
+    snapshot.jumps_out = s_jumps_out;
+    snapshot.clips_in = s_clips_in;
+    snapshot.clips_out = s_clips_out;
+    s_jumps_in = 0;
+    s_jumps_out = 0;
+    s_clips_in = 0;
+    s_clips_out = 0;
     memcpy(snapshot.trace_in, s_trace_in, sizeof(s_trace_in));
     memcpy(snapshot.trace_out, s_trace_out, sizeof(s_trace_out));
     trace_reset();
@@ -675,6 +720,9 @@ static void sink_stats_task(void *arg)
                 in_len += snprintf(in_line + in_len, sizeof(in_line) - in_len, " %d", st.trace_in[i]);
                 out_len += snprintf(out_line + out_len, sizeof(out_line) - out_len, " %d", st.trace_out[i]);
             }
+            ESP_LOGI(TAG, "damage: jumps in=%lu out=%lu, full scale in=%lu out=%lu",
+                     (unsigned long)st.jumps_in, (unsigned long)st.jumps_out,
+                     (unsigned long)st.clips_in, (unsigned long)st.clips_out);
             ESP_LOGI(TAG, "trace in  (max frame RMS dBFS per 100 ms):%s", in_line);
             ESP_LOGI(TAG, "trace out (max frame RMS dBFS per 100 ms):%s", out_line);
         }
@@ -985,6 +1033,10 @@ static void player_task(void *arg)
             s_local_peak_db = local_db;
         }
         update_local_signal_state(local_db);
+        if (have_local) {
+            count_damage(local_mono, AUDIO_SINK_FRAME_SAMPLES, &s_last_in,
+                         &s_jumps_in, &s_clips_in);
+        }
 
         const bool voice = voice_recent();
 
@@ -1112,6 +1164,8 @@ static void player_task(void *arg)
         audio_i2s_write_mono(chosen, AUDIO_SINK_FRAME_SAMPLES);
         const float frame_rms_db = rms_dbfs(chosen, AUDIO_SINK_FRAME_SAMPLES);
         trace_frame(local_db, frame_rms_db);
+        count_damage(chosen, AUDIO_SINK_FRAME_SAMPLES, &s_last_out,
+                     &s_jumps_out, &s_clips_out);
         status_led_set_level_db(frame_rms_db);
         maybe_log_stats(frame_rms_db);
     }
