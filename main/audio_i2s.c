@@ -11,6 +11,7 @@
 #include <string.h>
 
 #include "device_config.h"
+#include "driver/gpio.h"
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -421,8 +422,10 @@ esp_err_t audio_i2s_start(void)
         },
     };
 
-    /* 16-Bit-Audiodaten in 32-Bit-I2S-Slots:
-     * 48 kHz x 2 Kanaele x 32 Bit = 3,072 MHz BCLK.
+    /*
+     * 16-bit audio in 32-bit slots: 48 kHz x 2 x 32 bit = 3.072 MHz BCLK.
+     * 24-bit slots (2.304 MHz, the TinySine's own master clock) were tried
+     * on 2026-09-24 and sounded distorted even after a power cycle.
      */
     standard_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
     standard_config.slot_cfg.ws_width = 32;
@@ -437,6 +440,19 @@ esp_err_t audio_i2s_start(void)
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "RX standard mode failed: %s", esp_err_to_name(result));
         goto fail;
+    }
+
+    /*
+     * Pull the data input low. The TinySine stops driving its SD output for
+     * a few seconds after an A2DP stream ends; left floating, the pin picked
+     * up crosstalk from BCLK/LRCLK and the capture turned it into bursts of
+     * -33 to -90 dBFS -- crackling for 2-3.5 s after every stop (100 ms
+     * level trace, 2026-09-24). A DSP like the ADAU1701 has pull-downs on
+     * its serial inputs, which is why the module never did this there. Weak
+     * enough (~45 kOhm) to be irrelevant while the module drives the line.
+     */
+    if (gpio_pulldown_en((gpio_num_t)pins.i2s_din) != ESP_OK) {
+        ESP_LOGW(TAG, "Pull-down on I2S DIN (GPIO %u) failed", (unsigned)pins.i2s_din);
     }
 
     result = i2s_channel_enable(s_tx_channel);

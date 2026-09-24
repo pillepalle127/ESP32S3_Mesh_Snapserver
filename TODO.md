@@ -282,17 +282,35 @@ Bugs sind umgesetzt:
   Last. Nächster Schritt, wenn es wieder auftritt: Uhrzeit notieren und den
   Server-Log um diesen Start herum mit einem sauberen Start vergleichen.
 
-  **Stand 2026-09-24 -- zwei verschiedene Dinge:**
+  **Stand 2026-09-24 -- mehrere unabhängige Fehler um den TinySine:**
   - *Stream und A2DP überlagert (geklärt):* Auf dem Android lief die
     Snapcast-App im Hintergrund und spielte den Stream per Bluetooth in den
-    TinySine, der zugleich vom iPhone per A2DP belegt war. Die Firmware gab
-    nachweislich nur den lokalen Eingang aus; nach Beenden der App war die
-    Überlagerung weg. Kein Firmwarefehler.
-  - *Rauschen/Knacksen auf dem A2DP-Eingang (offen):* Laut Nutzer eindeutig
-    im A2DP-Signal, nicht im Stream, und nur ein Aus- und Einschalten (POR)
-    behebt es. Wird gerade reproduziert (B6:88 mit TinySine). Unklar, ob
-    der TinySine, die I2S-Verbindung oder der Start der I2S-Takte beim
-    Reset des ESP (bei weiterlaufendem TinySine) die Ursache ist.
+    TinySine. Die Firmware gab nachweislich nur den lokalen Eingang aus;
+    nach Beenden der App war es weg. Kein Firmwarefehler.
+  - *A -- nur A2DP gestört, bis zum Aus- und Einschalten (offen):* tritt
+    nach einem Start auf, sowohl nach einem Reset nur des ESP (belegt:
+    2. von 2 Resets an 14:E4) als auch nach einem Power-Cycle. Der Stream
+    bleibt dabei sauber. Noch keine Messung im Fehlerzustand; die 100-ms-
+    Pegelspur (`trace in/out`) soll beim nächsten Auftreten zeigen, ob die
+    Daten schon verfälscht beim ESP ankommen. Der TinySine ist ein I2S-Slave
+    (vom Händler bestätigt). Ausprobiert und verworfen: 24-Bit-Slots mit
+    2,304 MHz BCLK (dem Master-Takt des TinySine) -- klang auch nach einem
+    Power-Cycle gestört, zurück auf 32-Bit-Slots/3,072 MHz.
+  - *B -- beide Quellen knacksen (offen):* an 14:E4 gesehen, Stream und
+    A2DP gleichermaßen. Der ESP lieferte dabei nachweislich lückenlose
+    Daten (underrun 0, dropped 0, kein Resync, gleichmäßige Pegel je
+    100 ms), das Knacksen entsteht also hinter dem ESP. Hauptverdacht:
+    PCM5102A, der als einziger im Ausgangspfad einen ESP-Reset übersteht
+    und nach jedem Start seine PLL aus BCK neu einrasten muss -- SCK muss
+    dafür fest auf GND liegen (Lötbrücke am Modul prüfen). Alternative:
+    MCLK (12,288 MHz) vom ESP an SCK führen, dann entfällt die PLL.
+  - *C -- Knacksen 2-3,5 s nach dem Stopp von A2DP (weitgehend behoben):*
+    Der TinySine treibt SD nach dem Stopp nicht mehr; die offene Leitung
+    fing Übersprechen von BCLK/LRCLK ein (100-ms-Spur: Pakete von -33 bis
+    -90 dBFS). Der interne Pull-down an I2S DIN (`audio_i2s_start()`) senkt
+    das auf meist -84 bis -120 dBFS, einzelne Reste bis -55. Ganz weg nur
+    mit externem Pull-down (4,7-10 kOhm SD -> GND); der ADAU1701 hat solche
+    Pull-downs von Haus aus.
 
   **Drift der Clients, behoben 2026-09-24:** Seit 2026-09-19 schrieb der
   Echtzeit-Task der Clients (`player_task`) alle 5 s vier Log-Zeilen samt

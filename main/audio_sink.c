@@ -277,6 +277,43 @@ static uint64_t s_timeline_shift_count;
  */
 static float s_local_peak_db = -120.0f;
 
+/*
+ * Level trace for the stats line: the loudest frame of the local input and
+ * of the output in each 100 ms of the current stats window, in whole dB.
+ * The 5 s peak alone could not tell whether noise heard right after the
+ * local input stops is still in the data or already comes out of silence.
+ */
+#define TRACE_BUCKET_FRAMES 5U  /* 5 x 20 ms */
+#define TRACE_BUCKETS (STATS_INTERVAL_US / (TRACE_BUCKET_FRAMES * 20000LL))
+static int8_t s_trace_in[TRACE_BUCKETS];
+static int8_t s_trace_out[TRACE_BUCKETS];
+static uint32_t s_trace_frame;
+
+static int8_t trace_db(float db)
+{
+    return (int8_t)((db < -120.0f) ? -120 : (db > 0.0f) ? 0 : (int)lrintf(db));
+}
+
+static void trace_reset(void)
+{
+    memset(s_trace_in, -120, sizeof(s_trace_in));
+    memset(s_trace_out, -120, sizeof(s_trace_out));
+    s_trace_frame = 0;
+}
+
+/* Player task, once per frame. */
+static void trace_frame(float in_db, float out_db)
+{
+    const uint32_t bucket = s_trace_frame / TRACE_BUCKET_FRAMES;
+    if (bucket < TRACE_BUCKETS) {
+        const int8_t in = trace_db(in_db);
+        const int8_t out = trace_db(out_db);
+        if (in > s_trace_in[bucket]) s_trace_in[bucket] = in;
+        if (out > s_trace_out[bucket]) s_trace_out[bucket] = out;
+    }
+    s_trace_frame++;
+}
+
 static esp_err_t ring_init(byte_ring_t *ring, size_t capacity)
 {
     ring->data = heap_caps_malloc(capacity, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -526,6 +563,8 @@ typedef struct {
     uint64_t voice_dropped;
     uint32_t voice_wait_avg_ms;
     uint32_t voice_wait_max_ms;
+    int8_t trace_in[TRACE_BUCKETS];
+    int8_t trace_out[TRACE_BUCKETS];
 } sink_stats_t;
 
 static sink_stats_t s_stats_snapshot;
@@ -549,7 +588,7 @@ static void maybe_log_stats(float output_rms_db)
     const size_t capacity = s_ring.capacity;
     xSemaphoreGive(s_ring.lock);
 
-    const sink_stats_t snapshot = {
+    sink_stats_t snapshot = {
         .source = (int)s_active_source,
         .voice = s_voice_on,
         .fill = fill,
@@ -572,6 +611,9 @@ static void maybe_log_stats(float output_rms_db)
                                  ? (s_voice_wait_total_ms / s_voice_wait_count) : 0U,
         .voice_wait_max_ms = s_voice_wait_max_ms,
     };
+    memcpy(snapshot.trace_in, s_trace_in, sizeof(s_trace_in));
+    memcpy(snapshot.trace_out, s_trace_out, sizeof(s_trace_out));
+    trace_reset();
     portENTER_CRITICAL(&s_stats_lock);
     s_stats_snapshot = snapshot;
     portEXIT_CRITICAL(&s_stats_lock);
@@ -618,6 +660,24 @@ static void sink_stats_task(void *arg)
                  (unsigned long long)st.shifts, (unsigned long long)st.voice_underrun,
                  (unsigned long long)st.voice_dropped,
                  (unsigned long)st.voice_wait_avg_ms, (unsigned long)st.voice_wait_max_ms);
+
+        /* Only when something was not digital silence, to keep quiet logs quiet. */
+        bool any = false;
+        for (size_t i = 0; i < TRACE_BUCKETS; ++i) {
+            any = any || st.trace_in[i] > -120 || st.trace_out[i] > -120;
+        }
+        if (any) {
+            char in_line[TRACE_BUCKETS * 5 + 1];
+            char out_line[TRACE_BUCKETS * 5 + 1];
+            size_t in_len = 0;
+            size_t out_len = 0;
+            for (size_t i = 0; i < TRACE_BUCKETS; ++i) {
+                in_len += snprintf(in_line + in_len, sizeof(in_line) - in_len, " %d", st.trace_in[i]);
+                out_len += snprintf(out_line + out_len, sizeof(out_line) - out_len, " %d", st.trace_out[i]);
+            }
+            ESP_LOGI(TAG, "trace in  (max frame RMS dBFS per 100 ms):%s", in_line);
+            ESP_LOGI(TAG, "trace out (max frame RMS dBFS per 100 ms):%s", out_line);
+        }
 
         /*
          * Peak after the crossover, i.e. what actually reaches the two DAC
@@ -1051,6 +1111,7 @@ static void player_task(void *arg)
 
         audio_i2s_write_mono(chosen, AUDIO_SINK_FRAME_SAMPLES);
         const float frame_rms_db = rms_dbfs(chosen, AUDIO_SINK_FRAME_SAMPLES);
+        trace_frame(local_db, frame_rms_db);
         status_led_set_level_db(frame_rms_db);
         maybe_log_stats(frame_rms_db);
     }
@@ -1076,6 +1137,8 @@ esp_err_t audio_sink_start(uint16_t buffer_ms)
     s_local_attack_count = 0;
     s_local_last_active_us = 0;
     control_reset();
+
+    trace_reset();
 
     /* Not fatal: without it there are just no stats lines. */
     if (xTaskCreatePinnedToCore(sink_stats_task, "sink_stats", SINK_STATS_TASK_STACK, NULL,
