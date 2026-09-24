@@ -26,6 +26,8 @@ static const char *TAG = "AUDIO_SINK";
 #define PLAYER_TASK_STACK   8192
 #define PLAYER_TASK_PRIORITY   5
 #define PLAYER_TASK_CORE       1
+#define SINK_STATS_TASK_STACK  4096
+#define SINK_STATS_TASK_PRIORITY 2
 
 /*
  * How long the local input must stay below the threshold before AUTO mode
@@ -493,6 +495,44 @@ static audio_sink_source_t decide_source(void)
  * client -- as opposed to fed/dropped/underrun, which only ever prove bytes
  * moved through the ring, not that they carried audio.
  */
+/*
+ * What the stats line reports, snapshotted by the player task and printed by
+ * sink_stats_task. The player task must not print: every line blocks it for
+ * several ms on the console, and the heap, station-list and CPU queries add
+ * more. Together that stalled it past the 40 ms of I2S RX buffering every
+ * 5 s -- captured frames were lost, the TX side ran dry (a click) and the
+ * schedule fell ~1.5 ms/s behind until a hard resync, on every client
+ * (measured 2026-09-24 at -1500 ppm "I2S clock", which counts samples
+ * written, not the crystal).
+ */
+typedef struct {
+    int source;
+    bool voice;
+    size_t fill;
+    size_t capacity;
+    uint64_t fed;
+    uint64_t dropped;
+    uint64_t underrun;
+    float output_rms_db;
+    float local_peak_db;
+    int threshold_db;
+    bool synced;
+    int64_t error_us;
+    int ppm;
+    uint32_t resyncs;
+    uint64_t discontinuities;
+    uint64_t shifts;
+    uint64_t voice_underrun;
+    uint64_t voice_dropped;
+    uint32_t voice_wait_avg_ms;
+    uint32_t voice_wait_max_ms;
+} sink_stats_t;
+
+static sink_stats_t s_stats_snapshot;
+static portMUX_TYPE s_stats_lock = portMUX_INITIALIZER_UNLOCKED;
+static TaskHandle_t s_stats_task;
+
+/* Player task: cheap snapshot every STATS_INTERVAL_US, printing is elsewhere. */
 static void maybe_log_stats(float output_rms_db)
 {
     const int64_t now = esp_timer_get_time();
@@ -509,72 +549,105 @@ static void maybe_log_stats(float output_rms_db)
     const size_t capacity = s_ring.capacity;
     xSemaphoreGive(s_ring.lock);
 
-    ESP_LOGI(TAG,
-             "src=%d%s ring=%u/%u B fed=%llu B dropped=%llu B underrun=%llu samples "
-             "output_rms=%.1f dBFS local_peak=%.1f dBFS(thr %d) sync=%s err=%lld us "
-             "ppm=%d resync=%lu disc=%llu shift=%llu voice_underrun=%llu voice_dropped=%llu "
-             "voice_wait=%lu/%lu ms",
-             (int)s_active_source,
-             s_voice_on ? "+voice" : "",
-             (unsigned)fill,
-             (unsigned)capacity,
-             (unsigned long long)s_network_bytes_fed,
-             (unsigned long long)s_network_bytes_dropped,
-             (unsigned long long)s_network_underrun_samples,
-             (double)output_rms_db,
-             (double)s_local_peak_db,
-             (int)s_local_threshold_db,
-             s_server_offset_valid ? "yes" : "no",
-             (long long)s_last_error_us,
-             (int)audio_resample_get_ppm(&s_resample),
-             (unsigned long)s_resync_count,
-             (unsigned long long)s_discontinuity_count,
-             (unsigned long long)s_timeline_shift_count,
-             (unsigned long long)s_voice_underrun_samples,
-             (unsigned long long)s_voice_dropped_samples,
-             (unsigned long)((s_voice_wait_count != 0U)
-                             ? (s_voice_wait_total_ms / s_voice_wait_count) : 0U),
-             (unsigned long)s_voice_wait_max_ms);
+    const sink_stats_t snapshot = {
+        .source = (int)s_active_source,
+        .voice = s_voice_on,
+        .fill = fill,
+        .capacity = capacity,
+        .fed = s_network_bytes_fed,
+        .dropped = s_network_bytes_dropped,
+        .underrun = s_network_underrun_samples,
+        .output_rms_db = output_rms_db,
+        .local_peak_db = s_local_peak_db,
+        .threshold_db = (int)s_local_threshold_db,
+        .synced = s_server_offset_valid,
+        .error_us = s_last_error_us,
+        .ppm = (int)audio_resample_get_ppm(&s_resample),
+        .resyncs = s_resync_count,
+        .discontinuities = s_discontinuity_count,
+        .shifts = s_timeline_shift_count,
+        .voice_underrun = s_voice_underrun_samples,
+        .voice_dropped = s_voice_dropped_samples,
+        .voice_wait_avg_ms = (s_voice_wait_count != 0U)
+                                 ? (s_voice_wait_total_ms / s_voice_wait_count) : 0U,
+        .voice_wait_max_ms = s_voice_wait_max_ms,
+    };
+    portENTER_CRITICAL(&s_stats_lock);
+    s_stats_snapshot = snapshot;
+    portEXIT_CRITICAL(&s_stats_lock);
+    if (s_stats_task != NULL) {
+        xTaskNotifyGive(s_stats_task);
+    }
+
     s_voice_underrun_samples = 0;
     s_voice_dropped_samples = 0;
     s_voice_wait_total_ms = 0;
     s_voice_wait_count = 0;
     s_voice_wait_max_ms = 0;
-
-    /*
-     * Same format as the server's heap line. A client is also a mesh relay,
-     * and a relay carrying several children has twice hung completely
-     * (2026-09-19, WLAN stack unresponsive, no log) -- internal RAM is the
-     * suspect, so every client reports it together with how many stations
-     * it currently carries.
-     */
-    /*
-     * Peak after the crossover, i.e. what actually reaches the two DAC
-     * channels. output_rms above is measured before it, so a signal that
-     * disappears in the DSP stage -- a channel gain turned down, a
-     * misconfigured split -- looks identical there. Same measurement the
-     * server prints.
-     */
-    int16_t dsp_left = 0;
-    int16_t dsp_right = 0;
-    audio_i2s_take_output_peak(&dsp_left, &dsp_right);
-    ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767), I2S clock %+ld ppm",
-             (int)dsp_left, (int)dsp_right, (long)audio_i2s_clock_ppm());
-
-    wifi_sta_list_t stations = {0};
-    const int children = (esp_wifi_ap_get_sta_list(&stations) == ESP_OK) ? stations.num : -1;
-    ESP_LOGI(TAG, "heap: internal free=%u B largest=%u B min_ever=%u B children=%d",
-             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
-             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
-             children);
-    cpu_stats_log(TAG, 2);
-
     s_network_bytes_fed = 0;
     s_network_bytes_dropped = 0;
     s_network_underrun_samples = 0;
     s_local_peak_db = -120.0f;
     s_last_stats_us = now;
+}
+
+/* Low priority, core 0: prints what the player task snapshotted. */
+static void sink_stats_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        sink_stats_t st;
+        portENTER_CRITICAL(&s_stats_lock);
+        st = s_stats_snapshot;
+        portEXIT_CRITICAL(&s_stats_lock);
+
+        ESP_LOGI(TAG,
+                 "src=%d%s ring=%u/%u B fed=%llu B dropped=%llu B underrun=%llu samples "
+                 "output_rms=%.1f dBFS local_peak=%.1f dBFS(thr %d) sync=%s err=%lld us "
+                 "ppm=%d resync=%lu disc=%llu shift=%llu voice_underrun=%llu voice_dropped=%llu "
+                 "voice_wait=%lu/%lu ms",
+                 st.source, st.voice ? "+voice" : "",
+                 (unsigned)st.fill, (unsigned)st.capacity,
+                 (unsigned long long)st.fed, (unsigned long long)st.dropped,
+                 (unsigned long long)st.underrun,
+                 (double)st.output_rms_db, (double)st.local_peak_db, st.threshold_db,
+                 st.synced ? "yes" : "no", (long long)st.error_us, st.ppm,
+                 (unsigned long)st.resyncs, (unsigned long long)st.discontinuities,
+                 (unsigned long long)st.shifts, (unsigned long long)st.voice_underrun,
+                 (unsigned long long)st.voice_dropped,
+                 (unsigned long)st.voice_wait_avg_ms, (unsigned long)st.voice_wait_max_ms);
+
+        /*
+         * Peak after the crossover, i.e. what actually reaches the two DAC
+         * channels. output_rms above is measured before it, so a signal
+         * that disappears in the DSP stage -- a channel gain turned down, a
+         * misconfigured split -- looks identical there. Same measurement
+         * the server prints.
+         */
+        int16_t dsp_left = 0;
+        int16_t dsp_right = 0;
+        audio_i2s_take_output_peak(&dsp_left, &dsp_right);
+        ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767), I2S clock %+ld ppm",
+                 (int)dsp_left, (int)dsp_right, (long)audio_i2s_clock_ppm());
+
+        /*
+         * Same format as the server's heap line. A client is also a mesh
+         * relay, and a relay carrying several children has twice hung
+         * completely (2026-09-19, WLAN stack unresponsive, no log) --
+         * internal RAM is the suspect, so every client reports it together
+         * with how many stations it currently carries.
+         */
+        wifi_sta_list_t stations = {0};
+        const int children = (esp_wifi_ap_get_sta_list(&stations) == ESP_OK) ? stations.num : -1;
+        ESP_LOGI(TAG, "heap: internal free=%u B largest=%u B min_ever=%u B children=%d",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                 children);
+        cpu_stats_log(TAG, 2);
+    }
 }
 
 /*
@@ -1003,6 +1076,13 @@ esp_err_t audio_sink_start(uint16_t buffer_ms)
     s_local_attack_count = 0;
     s_local_last_active_us = 0;
     control_reset();
+
+    /* Not fatal: without it there are just no stats lines. */
+    if (xTaskCreatePinnedToCore(sink_stats_task, "sink_stats", SINK_STATS_TASK_STACK, NULL,
+                                SINK_STATS_TASK_PRIORITY, &s_stats_task, 0) != pdPASS) {
+        s_stats_task = NULL;
+        ESP_LOGW(TAG, "No stats task, running without stats lines");
+    }
 
     if (xTaskCreatePinnedToCore(player_task,
                                 "audio_sink",

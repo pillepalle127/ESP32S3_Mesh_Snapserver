@@ -282,6 +282,27 @@ Bugs sind umgesetzt:
   Last. Nächster Schritt, wenn es wieder auftritt: Uhrzeit notieren und den
   Server-Log um diesen Start herum mit einem sauberen Start vergleichen.
 
+  **Stand 2026-09-24 -- zwei verschiedene Dinge:**
+  - *Stream und A2DP überlagert (geklärt):* Auf dem Android lief die
+    Snapcast-App im Hintergrund und spielte den Stream per Bluetooth in den
+    TinySine, der zugleich vom iPhone per A2DP belegt war. Die Firmware gab
+    nachweislich nur den lokalen Eingang aus; nach Beenden der App war die
+    Überlagerung weg. Kein Firmwarefehler.
+  - *Rauschen/Knacksen auf dem A2DP-Eingang (offen):* Laut Nutzer eindeutig
+    im A2DP-Signal, nicht im Stream, und nur ein Aus- und Einschalten (POR)
+    behebt es. Wird gerade reproduziert (B6:88 mit TinySine). Unklar, ob
+    der TinySine, die I2S-Verbindung oder der Start der I2S-Takte beim
+    Reset des ESP (bei weiterlaufendem TinySine) die Ursache ist.
+
+  **Drift der Clients, behoben 2026-09-24:** Seit 2026-09-19 schrieb der
+  Echtzeit-Task der Clients (`player_task`) alle 5 s vier Log-Zeilen samt
+  Heap-, Stationslisten- und CPU-Abfrage. Das blockierte ihn länger als die
+  40 ms I2S-Empfangspuffer, Samples gingen verloren, die Ausgabe lief kurz
+  leer, und der Plan fiel ~1,5 ms/s zurück (gemessen „I2S clock“ −1500 ppm auf
+  B6:88 und BD:FC, harter Resync etwa jede Minute). Das Protokollieren läuft
+  jetzt in `sink_stats_task` (Kern 0, Priorität 2); danach auf BD:FC über
+  3 min `err` −2…−9 ms, `ppm` 13–28, kein Resync.
+
 - Stufe 7 (Stufe 2 des Server/Client-Plans: Zeit-Sync und Drift, 2026-09-17):
   der Client richtet seine Wiedergabe jetzt auf die Serveruhr aus statt nur
   dem Ringpuffer zu folgen. `snapclient.c` macht den vollständigen
