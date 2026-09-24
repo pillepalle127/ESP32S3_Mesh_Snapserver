@@ -124,6 +124,25 @@ Bugs sind umgesetzt:
     nächster Punkt) und einmal ein komplettes Neuflashen mit Löschen.
     Später denkbar: F-Droid oder Play Store.
 
+- **Firmware auch auf Boards mit weniger Flash (vorgemerkt 2026-09-23).**
+  Heute startet die Firmware nur auf Boards mit 16 MB Flash: Der Image-Header
+  trägt `ESPTOOLPY_FLASHSIZE_16MB`, und ESP-IDF bricht beim Start ab, wenn
+  der Chip kleiner ist (`esp_flash_spi_init.c`: „Detected size smaller than
+  the size in the binary image header. Probe failed.“). Ein N8R8 läuft
+  deshalb nicht, obwohl die Firmware nur ~1,4 MB belegt.
+  Umsetzung: Header auf 4 MB (`CONFIG_ESPTOOLPY_FLASHSIZE_4MB` in
+  `sdkconfig.defaults`) und die `factory`-Partition in `partitions.csv` von
+  4 MB auf ~3 MB verkleinern, sodass alles unter `0x400000` endet. Dann
+  läuft dasselbe Image auf 4-, 8- und 16-MB-Boards (größerer Flash bleibt
+  ungenutzt). Mit dem späteren OTA-Umbau (nächster Punkt) zusammen planen:
+  zwei App-Bereiche à ~1,5–1,9 MB passen noch in 4 MB.
+  Folgen: Die Partitionstabelle ändert sich, bestehende Boards brauchen
+  einmal ein komplettes Neuflashen mit „Erase device“, danach Einstellungen
+  neu eintragen; README (Abschnitt „Was du brauchst“, Partitionstabelle)
+  und Flash-Seite anpassen. Octal-PSRAM bleibt Voraussetzung: Quad-PSRAM
+  (N8R2/N16R2) bräuchte eine zweite Firmware-Variante (`SPIRAM_MODE_QUAD`),
+  ganz ohne PSRAM geht es wegen der Audiopuffer nicht.
+
 - `partitions.csv` hat keine OTA- oder Coredump-Partition. Kein Problem für
   den aktuellen Funktionsumfang, aber falls OTA-Updates oder
   Crash-Diagnose per Coredump später gewünscht sind, fehlt dafür die
