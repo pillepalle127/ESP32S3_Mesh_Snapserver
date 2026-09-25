@@ -287,43 +287,44 @@ Bugs sind umgesetzt:
     Snapcast-App im Hintergrund und spielte den Stream per Bluetooth in den
     TinySine. Die Firmware gab nachweislich nur den lokalen Eingang aus;
     nach Beenden der App war es weg. Kein Firmwarefehler.
-  - *A -- nur A2DP gestört, bis zum Aus- und Einschalten (offen):* tritt
-    nach einem Start auf, sowohl nach einem Reset nur des ESP (der TinySine
-    läuft dabei durch) als auch nach einem Power-Cycle. Der Stream bleibt
-    dabei sauber. **Die Daten kommen schon verfälscht beim ESP an:** die
-    Schadenszähler (`damage: jumps in=…`, Sprünge > 16384 zwischen zwei
-    Samples, die Musik bei 48 kHz praktisch nie macht) zeigen 0 je 5 s im
-    sauberen Zustand, 150-360 im gestörten und bis zu 49000 im schwer
-    gestörten (14:E4, 2026-09-24, 3 ESP-Resets: sauber, schwer gestört,
-    gestört). Der TinySine ist ein I2S-Slave (vom Händler bestätigt).
-    Ausprobiert: 24-Bit-Slots mit 2,304 MHz BCLK (dem Master-Takt des
-    TinySine). Der erste Versuch lief mit MCLK 256 x fs und damit mit
-    51,2 kHz statt 48 kHz (bclk_div 5,33 -> 5), also ohne Aussage; der
-    zweite mit 384 x fs lief korrekt, der Fehler trat genauso auf. Zurück
-    auf 32-Bit-Slots/3,072 MHz. Nächste Schritte: (1) die Rohwerte um einen
-    Sprung als Hex protokollieren -- einzelne gekippte Bits sprechen für
-    knappes Timing oder Pegel, ein um ein Bit verschobenes Wort für eine
-    Rahmung, die beim Start falsch einrastet; (2) den High-Pegel an SD/BCK
-    messen: eine TinySine-Seite nennt 1,8 V I2S-Pegel, der ESP32-S3 braucht
-    für High laut Datenblatt 0,75 x 3,3 V = 2,5 V.
-  - *B -- beide Quellen knacksen (offen):* an 14:E4 gesehen, Stream und
-    A2DP gleichermaßen. Der ESP lieferte dabei nachweislich lückenlose
-    Daten (underrun 0, dropped 0, kein Resync, gleichmäßige Pegel je
-    100 ms), das Knacksen entsteht also hinter dem ESP. Hauptverdacht:
-    PCM5102A, der als einziger im Ausgangspfad einen ESP-Reset übersteht
-    und nach jedem Start seine PLL aus BCK neu einrasten muss -- SCK muss
-    dafür fest auf GND liegen (Lötbrücke am Modul prüfen). Alternative:
-    MCLK (12,288 MHz) vom ESP an SCK führen, dann entfällt die PLL.
-    SCK ist an 14:E4 inzwischen gebrückt, das Knacksen bleibt, die
-    Schadenszähler am Ausgang stehen auf 0. Verdacht jetzt: das
-    PCM5102A-Modul selbst ist defekt; Gegenprobe durch Tausch des Moduls.
+  - *A -- nur A2DP gestört, zeitweise (behoben 2026-09-25 mit
+    Pegelwandler):* **Ursache: der TinySine AudioB I2S V2r0 arbeitet mit
+    1,8 V I2S-Pegel** (gemessen; der ESP32-S3 braucht für High laut
+    Datenblatt 0,75 x 3,3 V = 2,5 V). Der ESP tastete DIN damit zu knapp
+    an der Flanke ab: je nach Start, und auch mitten im Betrieb, kippten
+    Bits -- mal wenige in den unteren Bits, mal Zehntausende je 5 s. Der
+    ADAU1701 kam mit dem Pegel zurecht. **Abhilfe: TXB0104 zwischen
+    TinySine und ESP** -- VCCA 1,8 V (TinySine-Seite), VCCB 3,3 V, OE an
+    VCCA, A1/B1 BCK, A2/B2 LRCK, A3/B3 SD, A4 an GND; der PCM5102A bleibt
+    direkt am ESP. Jeder TinySine braucht einen solchen Wandler. Der
+    ISO1540 taugt nicht (I2C-Isolator, Open-Drain, max. 1 MHz).
+    Belege (Testton 1 kHz, Sinus-Vorhersage: jedes Sample aus den beiden
+    vorherigen, Abweichung > 1024 = Fehler; Testfirmware nicht committet):
+    B6:88 ohne Wandler 3 von 9 Starts gestört (4-22 s lang), mit Wandler
+    0 von 16; 14:E4 mit Wandler 0 von 8.
+    Verworfene Ansätze: 24-Bit-Slots/2,304 MHz (der erste Versuch lief mit
+    MCLK 256 x fs bei 51,2 kHz statt 48 kHz, der zweite mit 384 x fs korrekt
+    -- Fehler unverändert); weichere Taktflanken (GPIO_DRIVE_CAP_0 an
+    BCLK/LRCLK: jeder Start gestört). Die DIN-Abtastverzögerung
+    (`I2S_RX_TIMING_REG.rx_sd_in_dm`, 1 = eine Flanke später) beendete am
+    Server jede Störphase innerhalb von 20-40 ms, war an 14:E4 aber in
+    einzelnen Phasen selbst gestört -- ohne Wandler nur eine Notlösung.
+  - *B -- beide Quellen knacksen (erledigt, Versorgung):* an 14:E4, Stream
+    und A2DP gleichermaßen, Daten im ESP nachweislich sauber
+    (Schadenszähler am Ausgang 0). Mit Netzteil statt USB „quasi weg“, am
+    COM-Port (CH343) statt am nativen USB ganz weg. Im Zielaufbau läuft
+    die Versorgung ohnehin anders; nicht weiter verfolgt. Der PCM5102A ist
+    nicht defekt.
   - *C -- Knacksen 2-3,5 s nach dem Stopp von A2DP (weitgehend behoben):*
     Der TinySine treibt SD nach dem Stopp nicht mehr; die offene Leitung
     fing Übersprechen von BCLK/LRCLK ein (100-ms-Spur: Pakete von -33 bis
     -90 dBFS). Der interne Pull-down an I2S DIN (`audio_i2s_start()`) senkt
     das auf meist -84 bis -120 dBFS, einzelne Reste bis -55. Ganz weg nur
     mit externem Pull-down (4,7-10 kOhm SD -> GND); der ADAU1701 hat solche
-    Pull-downs von Haus aus.
+    Pull-downs von Haus aus. Mit TXB0104 hängt der Pull-down auf der
+    3,3-V-Seite; lässt der TinySine SD offen, hängt A3 frei. Kehrt das
+    Knacksen nach dem Stopp zurück: 100 kOhm von A3 nach GND (der TXB
+    verträgt keine Pull-Widerstände unter etwa 50 kOhm).
 
   **Drift der Clients, behoben 2026-09-24:** Seit 2026-09-19 schrieb der
   Echtzeit-Task der Clients (`player_task`) alle 5 s vier Log-Zeilen samt
