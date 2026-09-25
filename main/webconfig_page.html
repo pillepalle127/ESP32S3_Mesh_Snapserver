@@ -148,6 +148,11 @@
   <div><label for="pin_i2s_din">I2S DIN (from ADC)</label><select id="pin_i2s_din"></select></div>
   <div><label for="pin_i2s_dout">I2S DOUT (to DAC)</label><select id="pin_i2s_dout"></select></div>
 </div>
+<label for="pin_i2s_slave">I2S clock (BCLK/LRCLK)</label>
+<select id="pin_i2s_slave">
+  <option value="0">ESP (master)</option>
+  <option value="1">External (ESP is slave)</option>
+</select>
 <div id="status_led_row"><label for="pin_status_led">Status LED (WS2812 data)</label><select id="pin_status_led"></select></div>
 <div id="pots_section">
 <div class="row">
@@ -232,6 +237,9 @@ const DE = {
   'Delay knob': 'Delay-Poti',
   'Delay knob range (\u00b1 ms)': 'Bereich Delay-Poti (\u00b1 ms)',
   'Reverse direction': 'Drehrichtung umkehren',
+  'I2S clock (BCLK/LRCLK)': 'I2S-Takt (BCLK/LRCLK)',
+  'ESP (master)': 'ESP (Master)',
+  'External (ESP is slave)': 'Extern (ESP als Slave)',
   'Complexity (0-10)': 'Komplexität (0–10)',
   'Save': 'Speichern',
   'Factory Reset': 'Werkseinstellungen',
@@ -491,6 +499,7 @@ async function loadConfig() {
   $('pot_delay_range_ms').value = cfg.pot_delay_range_ms;
   $('pot_volume_reversed').checked = !!cfg.pot_volume_reversed;
   $('pot_delay_reversed').checked = !!cfg.pot_delay_reversed;
+  $('pin_i2s_slave').value = String(cfg.pins.i2s_slave ? 1 : 0);
   fillPinSelects({
     pin_i2s_bclk: cfg.pins.i2s_bclk,
     pin_i2s_lrclk: cfg.pins.i2s_lrclk,
@@ -685,12 +694,14 @@ for (const f of PIN_FIELDS) {
   $(f.id).addEventListener('change', () => fillPinSelects(currentPins()));
 }
 
-/* A preset only sets the I2S bus; the LED or a knob sitting on one of the
- * preset's pins is cleared rather than left clashing. */
+/* A preset only sets the I2S bus (the ESP as master, as wired in the
+ * presets); the LED or a knob sitting on one of the preset's pins is
+ * cleared rather than left clashing. */
 $('pin_preset').addEventListener('change', () => {
   const preset = PIN_PRESETS[$('pin_preset').value];
   $('pin_preset').value = '';
   if (!preset) return;
+  $('pin_i2s_slave').value = '0';
   const values = Object.assign(currentPins(), preset);
   const presetPins = Object.values(preset);
   for (const id of ['pin_status_led', 'pot_volume_gpio', 'pot_delay_gpio']) {
@@ -732,6 +743,7 @@ $('save').addEventListener('click', async () => {
       i2s_din: Number($('pin_i2s_din').value),
       i2s_dout: Number($('pin_i2s_dout').value),
       status_led: Number($('pin_status_led').value),
+      i2s_slave: Number($('pin_i2s_slave').value),
     },
     pot_volume_gpio: Number($('pot_volume_gpio').value),
     pot_delay_gpio: Number($('pot_delay_gpio').value),
