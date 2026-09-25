@@ -2,8 +2,8 @@
 
 **Stand:** 2026-09-23
 
-Snapcast-kompatibles Mehrraum-Audiosystem auf ESP32-S3, ohne PC oder Raspberry Pi im Betrieb. Eine
-Firmware, zwei Rollen, zur Laufzeit per Web-Konfiguration umschaltbar:
+Snapcast-kompatibles Mehrraum-Audiosystem auf ESP32-S3. Eine Firmware, zwei Rollen, zur Laufzeit per
+Web-Konfiguration umschaltbar:
 
 * **Server:** ESP-Mesh-Lite-Root. Nimmt I2S-Stereo auf, mischt zu Mono, encodiert Opus und streamt per
   Snapcast-Protokoll an alle Clients. Spielt zeitversetzt synchron auf dem eigenen Lautsprecher mit.
@@ -125,6 +125,7 @@ esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 
 
 | Bereich | Umsetzung |
 |---|---|
+| Betrieb | Eigenständig: Auch der Server läuft auf einem ESP32-S3, im Betrieb ist kein PC oder Raspberry Pi nötig |
 | Audio | I2S-Vollduplex 48 kHz, L+R → Mono, Opus (Vorgabe 96 kbit/s, Complexity 5) |
 | DSP | LR4-Frequenzweiche (2 × Biquad je Zweig), Gain je Zweig, Kanalzuordnung, live änderbar |
 | Sync | Vierzeiten-Zeitabgleich (Minimum-RTT aus 12 Messungen), Drift-Regelung per Resampling |
