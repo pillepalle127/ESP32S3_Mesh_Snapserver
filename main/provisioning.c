@@ -61,7 +61,8 @@ provisioning_reason_t provisioning_get_active_reason(void)
 void provisioning_build_ssid(char *out, size_t out_len)
 {
     uint8_t mac[6] = {0};
-    if (esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP) != ESP_OK) {
+    /* Base (STA) MAC, the same digits as the device ID in webconfig.c. */
+    if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
         memset(mac, 0, sizeof(mac));
     }
     snprintf(out, out_len, "ESP32_provisioning_%02X%02X%02X",

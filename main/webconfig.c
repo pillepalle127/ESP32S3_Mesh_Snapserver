@@ -522,15 +522,17 @@ static esp_err_t api_factory_reset_post_handler(httpd_req_t *req)
 }
 
 /*
- * Same MAC-suffix convention as the mesh/relay SSIDs (e.g. "SnapMesh_
- * E314E5"), so the value shown here (and used for the mDNS hostname below)
- * lets you match a browser tab back to a specific physical board instead of
- * every device showing/advertising the identical name.
+ * Last three bytes of the board's base (STA) MAC, so the value shown here
+ * (and used for the mDNS hostname below) lets you match a browser tab back
+ * to a specific physical board instead of every device showing/advertising
+ * the identical name. The base MAC, not the SoftAP one (base + 1): it is
+ * what esptool, the USB serial number and the Snapcast client name show,
+ * so the server in the device list ends in the same digits as the board.
  */
 static void get_device_id_suffix(char *out, size_t out_len)
 {
     uint8_t mac[6] = {0};
-    esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);
     snprintf(out, out_len, "%02X%02X%02X", mac[3], mac[4], mac[5]);
 }
 
