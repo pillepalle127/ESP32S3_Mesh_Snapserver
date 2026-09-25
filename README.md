@@ -156,6 +156,20 @@ Standardbelegung (änderbar, siehe [Pins](#pins)):
 
 ---
 
+## Aufbau der Streamer
+
+<img src="docs/IMG_1684.JPG" alt="Streamer von oben: ESP32-S3-Board mit dem PCM5102A darunter" width="280">
+<img src="docs/IMG_1687.JPG" alt="Streamer von unten: PCM5102A-Modul unter dem ESP32-S3-Board" width="280">
+<img src="docs/IMG_1688.JPG" alt="Streamer von der Seite: GND und VIN gekreuzt" width="280">
+
+Der Aufbau spart Platz und Lötarbeit: Das PCM5102A-Modul sitzt direkt unter dem ESP32-S3-Board, über kurze
+Stiftleisten verbunden. Die LEDs bleiben von oben sichtbar, RST- und BOOT-Taster zugänglich. Klinkenbuchse und
+USB-Buchsen liegen an derselben Stirnseite auf einer Ebene, das vereinfacht den Bau des Gehäuses.
+
+GND und VIN müssen dabei gekreuzt werden (in der Seitenansicht als X zu sehen).
+
+---
+
 ## Signalweg
 
 ```text
@@ -230,7 +244,7 @@ Fremde Clients bekommen während einer Durchsage `muted:true`, weil sie den UDP-
 
 Jedes Gerät bietet die Seite auf Port 80 an. Alle Werte liegen im NVS und überleben Updates.
 
-<img src="docs/Screenshot_20260923_215233_Firefox.jpg" alt="Konfigurationsseite des Servers" width="280">
+<img src="docs/Screenshot_20260923_220820_Firefox.jpg" alt="Konfigurationsseite des Servers: Geräteliste und Einstellungen eines Clients" width="280">
 
 | Gruppe | Felder | Übernahme |
 |---|---|---|
