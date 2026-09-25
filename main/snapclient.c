@@ -1037,6 +1037,7 @@ static void snap_task(void *arg)
         opus_decoder_reset();
 
         if (s_run && s_network_available) {
+            status_led_set_state(STATUS_LED_NO_SERVER);
             ESP_LOGI(TAG, "Connection lost, reconnecting in %d ms", SNAP_RECONNECT_DELAY_MS);
             wait_for_reconnect_condition(pdMS_TO_TICKS(SNAP_RECONNECT_DELAY_MS));
         }

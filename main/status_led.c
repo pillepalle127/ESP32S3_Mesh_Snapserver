@@ -43,11 +43,15 @@ static const char *TAG = "STATUS_LED";
 #define LED_TASK_PRIORITY           1
 
 /*
- * Level window. -50 dBFS is about where quiet passages sit, 0 is full scale,
- * and mapping that span onto brightness keeps the LED moving with the music
- * instead of sitting at either end.
+ * Level window, in dBFS of the peak per update. Measured before the volume,
+ * music peaks sit between about -20 and -2 dBFS, quiet passages lower. A
+ * dB scale spreads that evenly; the linear window used before (0.12-0.80
+ * of full scale, i.e. -18 to -2 dBFS, measured after the volume) went dark
+ * at half volume, where the cubic volume curve takes 18 dB off.
  */
-#define LED_LEVEL_FLOOR_DB      -50.0f
+#define LED_LEVEL_FLOOR_DB      -30.0f
+#define LED_LEVEL_CEIL_DB        -2.0f
+
 /*
  * Floor for the meter. Not as dark as it could be, because hue is what
  * carries the level now and an almost-black LED has no readable hue.
@@ -87,19 +91,6 @@ static const char *TAG = "STATUS_LED";
  */
 #define LED_DECAY_PER_UPDATE     0.35f
 
-/*
- * Amplitude window the brightness is spread across.
- *
- * Music measured on this device peaks at 18000-24000 of 32767, so mapping
- * raw amplitude straight to brightness uses barely half the range and never
- * leaves the upper end -- the LED reads as permanently on. Anything under
- * the floor goes dark, the ceiling is full brightness, and the span between
- * carries the movement. The ceiling is deliberately below full scale: a
- * meter that only reaches maximum on a clipped sample never reaches it.
- */
-#define LED_LEVEL_LOW            0.12f
-#define LED_LEVEL_HIGH           0.80f
-
 typedef struct {
     uint8_t r;
     uint8_t g;
@@ -109,6 +100,7 @@ typedef struct {
 static rmt_channel_handle_t s_channel;
 static rmt_encoder_handle_t s_encoder;
 static volatile status_led_state_t s_state = STATUS_LED_BOOTING;
+static volatile status_led_activity_t s_activity = STATUS_LED_ACTIVITY_NONE;
 static volatile float s_level_db = -120.0f;
 
 /*
@@ -185,10 +177,11 @@ static esp_err_t led_write(led_rgb_t colour, float brightness)
 }
 
 /*
- * Server and client measure their output in different places, so each
- * contributes what it already has: the server reads the peak the crossover
- * produced, the client pushes the RMS its player computed. Whichever arrives
- * is converted to the same 0..1 scale here.
+ * Both roles measure before their volume: the server through the peak its
+ * DSP stage records, the client through the peak its player pushes before
+ * applying the stream volume. The larger of the two is shown -- on a
+ * client the DSP peak is the same signal after the volume, so never
+ * larger; on the server nothing is pushed.
  */
 static float current_level(void)
 {
@@ -198,24 +191,19 @@ static float current_level(void)
 
     const int16_t peak = (peak_left > peak_right) ? peak_left : peak_right;
 
-    float amplitude;
+    float db = s_level_db;
     if (peak > 0) {
-        amplitude = (float)peak / 32767.0f;
-    } else {
-        const float db = s_level_db;
-        if (db <= LED_LEVEL_FLOOR_DB) {
-            return 0.0f;
+        const float peak_db = 20.0f * log10f((float)peak / 32767.0f);
+        if (peak_db > db) {
+            db = peak_db;
         }
-        amplitude = (db - LED_LEVEL_FLOOR_DB) / (0.0f - LED_LEVEL_FLOOR_DB);
     }
 
-    /* Spread LED_LEVEL_LOW..LED_LEVEL_HIGH across the whole range. */
-    const float spread =
-        (amplitude - LED_LEVEL_LOW) / (LED_LEVEL_HIGH - LED_LEVEL_LOW);
-    if (spread <= 0.0f) {
+    const float level = (db - LED_LEVEL_FLOOR_DB) / (LED_LEVEL_CEIL_DB - LED_LEVEL_FLOOR_DB);
+    if (level <= 0.0f) {
         return 0.0f;
     }
-    return (spread > 1.0f) ? 1.0f : spread;
+    return (level > 1.0f) ? 1.0f : level;
 }
 
 static void led_task(void *arg)
@@ -225,7 +213,16 @@ static void led_task(void *arg)
     uint32_t tick = 0;
 
     for (;;) {
-        const status_led_state_t state = s_state;
+        /* Priority as documented in status_led.h. */
+        status_led_state_t state = s_state;
+        const status_led_activity_t activity = s_activity;
+        if (state != STATUS_LED_PROVISIONING) {
+            if (activity == STATUS_LED_ACTIVITY_VOICE) {
+                state = STATUS_LED_VOICE_ANNOUNCEMENT;
+            } else if (activity == STATUS_LED_ACTIVITY_LOCAL_INPUT) {
+                state = STATUS_LED_LOCAL_INPUT;
+            }
+        }
         const float level = current_level();
 
         /* Instant attack, gradual release -- see LED_DECAY_PER_UPDATE. */
@@ -348,6 +345,11 @@ void status_led_set_state(status_led_state_t state)
     s_state = state;
 }
 
+void status_led_set_activity(status_led_activity_t activity)
+{
+    s_activity = activity;
+}
+
 void status_led_set_level_db(float dbfs)
 {
     s_level_db = dbfs;
@@ -357,6 +359,7 @@ void status_led_set_level_db(float dbfs)
 
 esp_err_t status_led_start(void) { return ESP_OK; }
 void status_led_set_state(status_led_state_t state) { (void)state; }
+void status_led_set_activity(status_led_activity_t activity) { (void)activity; }
 void status_led_set_level_db(float dbfs) { (void)dbfs; }
 
 #endif

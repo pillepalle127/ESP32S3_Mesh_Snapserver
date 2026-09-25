@@ -728,15 +728,14 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
             *peak_wide = abs_wide;
         }
 
-        int16_t *led_sub = (dsp.sub_channel == PCM_CHANNEL_LEFT)
-                               ? &s_led_peak_left : &s_led_peak_right;
-        int16_t *led_wide = (dsp.wideband_channel == PCM_CHANNEL_LEFT)
-                                ? &s_led_peak_left : &s_led_peak_right;
-        if (abs_sub > *led_sub) {
-            *led_sub = abs_sub;
-        }
-        if (abs_wide > *led_wide) {
-            *led_wide = abs_wide;
+        /* The LED shows the signal, not the speaker: taken before the
+         * crossover and before the master volume (knob, local volume), so
+         * it keeps moving at any volume setting. */
+        const int32_t abs_mono = (mono_sample < 0) ? -(int32_t)mono_sample : mono_sample;
+        const int16_t led_mono = (abs_mono > 32767) ? 32767 : (int16_t)abs_mono;
+        if (led_mono > s_led_peak_left) {
+            s_led_peak_left = led_mono;
+            s_led_peak_right = led_mono;
         }
     }
 

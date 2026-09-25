@@ -9,9 +9,16 @@
  * severity. Steady therefore means nothing is wrong, without reaching for a
  * serial console.
  *
- * Both halves come from measurements that already existed: the server's
- * post-crossover output peak (audio_i2s.c) and the client's output RMS
- * (audio_sink.c). Nothing is computed twice for the LED.
+ * The level comes from measurements that already existed: the peak the
+ * server's DSP stage records and the peak the client's player pushes, both
+ * before the volume (see status_led_set_level_db()).
+ *
+ * What is shown is decided from two inputs, so that no task can overwrite
+ * another's state: the connection state (status_led_set_state()) and the
+ * activity on top of it (status_led_set_activity()). Priority, highest
+ * first: provisioning, voice announcement, local input, connection state.
+ * Playing the local input without a server therefore shows the meter, not
+ * the "no server" blink.
  */
 #pragma once
 
@@ -43,14 +50,26 @@ typedef enum {
  */
 esp_err_t status_led_start(void);
 
-/* Latest state. Cheap and safe from any task; the LED task picks it up. */
+/*
+ * Connection state: BOOTING, PROVISIONING, NO_NETWORK, NO_SERVER or
+ * PLAYING (connected). LOCAL_INPUT and VOICE_ANNOUNCEMENT are only ever
+ * shown, never set here -- they come from status_led_set_activity().
+ * Cheap and safe from any task; the LED task picks it up.
+ */
 void status_led_set_state(status_led_state_t state);
 
+typedef enum {
+    STATUS_LED_ACTIVITY_NONE = 0,
+    STATUS_LED_ACTIVITY_LOCAL_INPUT,   /* shown as STATUS_LED_LOCAL_INPUT */
+    STATUS_LED_ACTIVITY_VOICE,         /* shown as STATUS_LED_VOICE_ANNOUNCEMENT */
+} status_led_activity_t;
+
+/* What the audio path is doing; outranks the connection state. */
+void status_led_set_activity(status_led_activity_t activity);
+
 /*
- * Audio level in dBFS, -120 for silence. A fallback: both roles push their
- * samples through the same crossover stage, so the LED normally reads the
- * post-DSP peak directly and only falls back to this when that peak is
- * silent -- which is also the honest answer, since the peak is measured
- * after the DSP and this is measured before it.
+ * Peak level in dBFS before the volume, -120 for silence. The client pushes
+ * it once per frame; the server's level comes from its DSP stage instead
+ * (audio_i2s_take_led_peak()). The LED shows the larger of the two.
  */
 void status_led_set_level_db(float dbfs);

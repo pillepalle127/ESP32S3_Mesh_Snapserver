@@ -444,6 +444,21 @@ static void timeline_anchor_locked(int64_t chunk_ts_us)
     s_head_ts_valid = true;
 }
 
+static float peak_dbfs(const int16_t *samples, size_t count)
+{
+    int32_t peak = 0;
+    for (size_t i = 0; i < count; ++i) {
+        const int32_t a = (samples[i] < 0) ? -(int32_t)samples[i] : samples[i];
+        if (a > peak) {
+            peak = a;
+        }
+    }
+    if (peak == 0) {
+        return -120.0f;
+    }
+    return 20.0f * log10f((float)peak / 32768.0f);
+}
+
 static float rms_dbfs(const int16_t *samples, size_t count)
 {
     if (count == 0U) {
@@ -522,20 +537,6 @@ static audio_sink_source_t network_source_or_none(void)
 static bool voice_recent(void)
 {
     return (esp_timer_get_time() - s_voice_last_packet_us) < VOICE_INACTIVITY_TIMEOUT_US;
-}
-
-/* LED state for a source once no announcement is covering it. */
-static status_led_state_t led_for_source(audio_sink_source_t source)
-{
-    switch (source) {
-    case AUDIO_SINK_SOURCE_LOCAL_INPUT:
-        return STATUS_LED_LOCAL_INPUT;
-    case AUDIO_SINK_SOURCE_NETWORK:
-        return STATUS_LED_PLAYING;
-    default:
-        /* Prebuffering counts as playing, a lost connection does not. */
-        return s_network_active ? STATUS_LED_PLAYING : STATUS_LED_NO_SERVER;
-    }
 }
 
 static audio_sink_source_t decide_source(void)
@@ -1043,13 +1044,6 @@ static void player_task(void *arg)
         const audio_sink_source_t desired = decide_source();
         if (desired != s_active_source) {
             ESP_LOGI(TAG, "Switching source %d -> %d", (int)s_active_source, (int)desired);
-            if (!voice) {
-                if (desired == AUDIO_SINK_SOURCE_LOCAL_INPUT) {
-                    status_led_set_state(STATUS_LED_LOCAL_INPUT);
-                } else if (desired == AUDIO_SINK_SOURCE_NETWORK) {
-                    status_led_set_state(STATUS_LED_PLAYING);
-                }
-            }
             /*
              * Flush only when the network source is lost (NETWORK -> NONE):
              * the connection is gone and what is queued is stale. Handing
@@ -1079,16 +1073,13 @@ static void player_task(void *arg)
             s_voice_mailbox_fill = 0;
             s_voice_primed = false;
             portEXIT_CRITICAL(&s_voice_lock);
-            if (!voice) {
-                status_led_set_state(led_for_source(s_active_source));
-            }
         }
-        if (voice) {
-            /* Every frame, not just on the edge: snapclient.c sets its own
-             * states (e.g. PLAYING on a reconnect) and would otherwise
-             * overwrite this for the rest of the announcement. */
-            status_led_set_state(STATUS_LED_VOICE_ANNOUNCEMENT);
-        }
+        /* The connection state is snapclient.c's; this only says what
+         * plays on top of it, and wins over it (see status_led.h). */
+        status_led_set_activity(voice ? STATUS_LED_ACTIVITY_VOICE
+                                : (s_active_source == AUDIO_SINK_SOURCE_LOCAL_INPUT)
+                                      ? STATUS_LED_ACTIVITY_LOCAL_INPUT
+                                      : STATUS_LED_ACTIVITY_NONE);
 
         const int16_t *chosen;
         if (s_active_source == AUDIO_SINK_SOURCE_LOCAL_INPUT && have_local) {
@@ -1151,6 +1142,10 @@ static void player_task(void *arg)
          * playout_mono is safe for either source -- it is this task's own
          * buffer, and in the local-input case it is otherwise unused.
          */
+        /* The LED shows the signal, not the speaker: measured before the
+         * volume, so it keeps moving at any volume setting. */
+        status_led_set_level_db(peak_dbfs(chosen, AUDIO_SINK_FRAME_SAMPLES));
+
         const float gain = s_volume_gain;
         if (gain < 1.0f) {
             /* Attenuation only -- the mapping below never exceeds 1.0, so
@@ -1166,7 +1161,6 @@ static void player_task(void *arg)
         trace_frame(local_db, frame_rms_db);
         count_damage(chosen, AUDIO_SINK_FRAME_SAMPLES, &s_last_out,
                      &s_jumps_out, &s_clips_out);
-        status_led_set_level_db(frame_rms_db);
         maybe_log_stats(frame_rms_db);
     }
 }

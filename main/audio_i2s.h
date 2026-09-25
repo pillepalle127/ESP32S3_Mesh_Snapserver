@@ -160,9 +160,11 @@ esp_err_t audio_i2s_capture_mono(int16_t *mono, size_t mono_samples);
 void audio_i2s_take_output_peak(int16_t *left, int16_t *right);
 
 /*
- * Same measurement, separate slot, for the status LED. Kept apart from
- * audio_i2s_take_output_peak() because both readers clear on read and run at
- * very different rates -- one 30 times a second, the other every five.
+ * Peak for the status LED, in its own slot because both readers clear on
+ * read and run at very different rates -- one 30 times a second, the other
+ * every five. Unlike audio_i2s_take_output_peak() it is taken from the mono
+ * signal entering the DSP, before the crossover and the master volume, so
+ * the LED shows the signal whatever the volume. Both values are the same.
  */
 void audio_i2s_take_led_peak(int16_t *left, int16_t *right);
 

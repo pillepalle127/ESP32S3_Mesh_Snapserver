@@ -347,7 +347,7 @@ static void stop_locked(const char *reason)
     restore_music_complexity();
     audio_i2s_set_voice_active(false);
     snapserver_set_announcement(false);
-    status_led_set_state(STATUS_LED_PLAYING);
+    status_led_set_activity(STATUS_LED_ACTIVITY_NONE);
     ESP_LOGI(TAG, "Announcement stopped: %s", reason);
 }
 
@@ -382,7 +382,7 @@ bool voice_announce_rpc_start(int fd)
     lower_music_complexity();
     audio_i2s_set_voice_active(true);
     snapserver_set_announcement(true);
-    status_led_set_state(STATUS_LED_VOICE_ANNOUNCEMENT);
+    status_led_set_activity(STATUS_LED_ACTIVITY_VOICE);
     xSemaphoreGive(s_state_mutex);
 
     ESP_LOGI(TAG, "Announcement started by fd=%d", fd);
