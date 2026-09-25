@@ -168,6 +168,10 @@ USB-Buchsen liegen an derselben Stirnseite auf einer Ebene, das vereinfacht den 
 
 GND und VIN müssen dabei gekreuzt werden (in der Seitenansicht als X zu sehen).
 
+Die rote und die grüne Leitung auf den Fotos gehören nicht zwingend zum Aufbau. Sie sind hier nur nötig, weil der
+Strompfad von der USB-Buchse des ESP aufgetrennt wurde, um eine 18650-Zelle gezielt über einen TP4056 laden zu
+können (Details folgen noch).
+
 ---
 
 ## Signalweg
@@ -329,6 +333,31 @@ ist. Bei Standardbelegung sind 1, 2, 8, 9 und 10 frei.
 * Delay-Sprünge > 100 ms lösen auf Clients einen harten Resync aus. Kleinere Änderungen gleicht die
   Drift-Regelung aus (≤ 0,5 ms/s).
 * Kein ADC: Lautstärke bleibt bei 100 %, Delay beim Feldwert.
+
+### Status-LED
+
+Eine WS2812 (Vorgabe GPIO 48) zeigt Zustand und Pegel. Beim Start blitzt sie kurz rot, grün, blau (Selbsttest;
+fehlt er, stimmt der LED-Pin nicht).
+
+| Anzeige | Bedeutung |
+|---|---|
+| weiß, gedimmt | Start |
+| blau, blinkt langsam (~2 s) | Provisionierung: offenes WLAN `ESP32_provisioning_…` |
+| rot, blinkt schnell (~0,25 s) | kein Netz (Client) |
+| orange, blinkt (~1 s) | Netz, aber kein Snapserver (Client) |
+| Pegelanzeige | Wiedergabe |
+| Pegelanzeige, alle ~3 s kurz dunkel | lokaler Eingang (A2DP) ohne Serververbindung |
+| Pegelanzeige, pulsiert schnell (~0,5 s) | Sprachdurchsage |
+
+Vorrang: Provisionierung vor Durchsage vor lokalem Eingang vor Verbindungszustand. Spielt ein Client den lokalen
+Eingang ohne Server, zeigt er also den Pegel statt des orangen Blinkens.
+
+**Pegelanzeige:** Die Farbe ist der Pegel, von Grün über Gelb nach Rot, die Helligkeit steigt mit (Grundhelligkeit
+30 %). Gemessen wird der RMS-Pegel je 20 ms **vor** der Lautstärke, auf dem Client vor der Snapcast-Lautstärke,
+auf dem Server vor Frequenzweiche, Poti und lokaler Lautstärke. Die LED zeigt also das Signal, nicht wie laut
+der Lautsprecher gestellt ist, und bewegt sich auch bei leiser oder stummer Box. Skala −35 dBFS (grün) bis
+−6 dBFS (rot), sofortiger Anstieg, Abklingen in ~100 ms (`LED_LEVEL_FLOOR_DB`/`LED_LEVEL_CEIL_DB` in
+`status_led.c`).
 
 ---
 
