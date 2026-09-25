@@ -24,7 +24,8 @@ bereitgestellt.
 
 ### Was du brauchst
 
-* **Ein ESP32-S3-Board je Lautsprecher** mit **mindestens 4 MB Flash und Octal-PSRAM**, z. B. die Varianten
+* **Ein ESP32-S3-Board je Standort** (ein Board versorgt dort z. B. Lautsprecher und Subwoofer über die
+  eingebaute Frequenzweiche) mit **mindestens 4 MB Flash und Octal-PSRAM**, z. B. die Varianten
   „N16R8“ oder „N8R8“ (etwa das YD-ESP32-S3 N16R8). Auf Boards mit Quad-PSRAM (z. B. N8R2, N16R2) oder ganz
   ohne PSRAM (z. B. N16) startet diese Firmware nicht. Die Bezeichnung steht in der Produktbeschreibung oder
   auf dem Modul.
@@ -106,10 +107,11 @@ nicht. Wurde ein Recht versehentlich abgelehnt: Android-Einstellungen → Apps �
 Eine selbst gebaute Version der App vorher deinstallieren, sonst verweigert Android das Update (andere Signatur).
 Neue Versionen der App lassen sich danach einfach darüber installieren.
 
-### Für Fortgeschrittene: Flashen mit esptool
+### Alternativ: Flashen mit esptool
 
-Ohne Chrome oder Edge geht es mit dem eigenständigen [esptool](https://github.com/espressif/esptool/releases)
-(kein Python nötig) und den vier Dateien aus dem Release:
+Statt über die Flash-Seite geht es auch mit dem eigenständigen
+[esptool](https://github.com/espressif/esptool/releases) (kein Python nötig, auch ohne Chrome oder Edge) und den
+vier Dateien aus dem Release:
 ```bash
 esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin 0x3d0000 ota_data_initial.bin
 ```
@@ -138,7 +140,7 @@ esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 
 
 * ESP32-S3 mit mindestens 4 MB Flash und Octal-PSRAM (N16R8, N8R8; USB-Serial/JTAG), z. B. YD-ESP32-S3 N16R8
   von VCC-GND Studio ([Schaltplan V1.4](https://github.com/vcc-gnd/YD-ESP32-S3/blob/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf))
-* Eingang: TinySine AudioB I2S V2r0
+* Eingang: TinySine AudioB I2S V2r0 mit Pegelwandler TXB0104 (siehe [Module an den Schnittstellen](#module-an-den-schnittstellen))
 * Ausgang: PCM5102A
 * optional: 2 × 10-kΩ-Poti, WS2812-LED
 
@@ -171,6 +173,48 @@ GND und VIN müssen dabei gekreuzt werden (in der Seitenansicht als X zu sehen).
 Die rote und die grüne Leitung auf den Fotos gehören nicht zwingend zum Aufbau. Sie sind hier nur nötig, weil der
 Strompfad von der USB-Buchse des ESP aufgetrennt wurde, um eine 18650-Zelle gezielt über einen TP4056 laden zu
 können (Details folgen noch).
+
+---
+
+## Module an den Schnittstellen
+
+### Ausgang: PCM5102A
+
+Stereo-DAC von TI mit Line-Ausgang. Er erzeugt seine negative Versorgung selbst (Ladungspumpe), der Ausgang
+liegt deshalb symmetrisch um Masse und braucht keine Koppelkondensatoren. Aus 3,3 V liefert er bei Vollaussteuerung
+**2,1 V<sub>eff</sub>** und ist damit direkt zu gängigen Endstufen kompatibel, z. B. zum **TPA3255**. Der Ausgang
+verträgt Lasten ab etwa 1 kΩ. Bei den üblichen rund 10 kΩ Eingangsimpedanz lassen sich also **etwa 8
+Verstärkereingänge parallel** betreiben.
+
+Der ESP liefert kein MCLK. Der PCM5102A erkennt, dass an SCK kein Takt anliegt, und erzeugt seinen Systemtakt
+dann selbst per PLL aus BCK. SCK bleibt also frei; auf GND gelegt (auf den Modulen meist eine Lötbrücke) ist die
+Erkennung robuster gegen Störungen, nötig ist es in der Regel nicht. Außerdem: FMT auf GND (I2S-Format), XSMT
+auf High (nicht stummgeschaltet).
+
+### Eingang: TinySine AudioB I2S
+
+Bluetooth-Empfänger mit I2S-Ausgang (48 kHz, 16 Bit), unterstützt u. a. **aptX**. Klang, Reichweite (eigene
+Antenne) und Verbindungsverhalten sind sehr gut. Er muss hier als **I2S-Slave** konfiguriert sein; der ESP
+liefert BCLK und LRCLK.
+
+Einen Haken hat er: Seine I2S-Leitungen arbeiten mit **1,8 V**. Der ESP32-S3 erkennt „High“ laut Datenblatt erst
+ab etwa 2,5 V. Direkt angeschlossen kippen deshalb je nach Start einzelne oder sehr viele Bits, hörbar als
+Rauschen und Knacksen, das von selbst kommt und geht. Abhilfe ist ein **Pegelwandler** wie der **TXB0104**
+zwischen Modul und ESP:
+
+| TXB0104 | anschließen an |
+|---|---|
+| VCCA | 1,8 V (Seite TinySine) |
+| VCCB | 3,3 V (Seite ESP) |
+| OE | VCCA |
+| A1 ↔ B1 | TinySine BCK ↔ ESP BCLK |
+| A2 ↔ B2 | TinySine LRCK ↔ ESP LRCLK |
+| A3 ↔ B3 | TinySine SD ↔ ESP DIN |
+| A4 | GND |
+
+Der PCM5102A bleibt direkt am ESP. Ein I2C-Isolator wie der ISO1540 eignet sich nicht (Open-Drain, zu langsam
+für 3 MHz). Nach dem Ende einer Wiedergabe treibt der TinySine SD einige Sekunden nicht; die Firmware hält DIN
+deshalb mit einem Pull-down fest (Details in `TODO.md`, Fehler A und C).
 
 ---
 
@@ -322,6 +366,12 @@ Alle Funktionen werden zur Laufzeit im Abschnitt *Pins* belegt; Neu-Flashen ist 
 
 10 kΩ, Enden an 3V3/GND, Schleifer an GPIO. **Nur ADC1 (GPIO 1–10)**, weil ADC2 bei aktivem WLAN nicht lesbar
 ist. Bei Standardbelegung sind 1, 2, 8, 9 und 10 frei.
+
+Ein Vorwiderstand ist für den Betrieb nicht nötig: Durch das Poti fließen 0,33 mA, und der ADC-Eingang ist
+hochohmig. Empfohlen sind trotzdem **1 kΩ zwischen Schleifer und GPIO** als Schutz. Die Pins sind zur Laufzeit
+umbelegbar, und wird ein Poti-Pin versehentlich als Ausgang vergeben, schließt der Schleifer am Anschlag den
+Ausgang sonst direkt gegen 3V3 oder GND kurz. Zusammen mit dem internen Pull-up bzw. Pull-down (~45 kΩ)
+verschiebt der Widerstand einen der beiden Anschläge um etwa 2 %, sonst ändert er an der Messung nichts.
 
 * **Lautstärke** (Vorgabe GPIO 10): Pull-up, ohne Poti also 100 %. Kubische Kennlinie, multipliziert mit der
   Snapcast-Lautstärke. Wirkt nur auf den lokalen Lautsprecher.
