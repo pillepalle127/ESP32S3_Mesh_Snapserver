@@ -118,11 +118,16 @@ typedef struct {
  * status_led 0 means "no LED" (GPIO 0 is a strapping pin and never
  * assignable). The I2S pins are always set. Every change needs a reboot.
  *
+ * i2s_slave selects who drives BCLK/LRCLK: 0 = the ESP (master, the
+ * default), 1 = one external device that clocks the source, the DAC and
+ * the ESP alike (ESP slave in both directions). It was a reserved byte
+ * before, which older blobs hold as 0, so they read as master unchanged.
+ *
  * trial_boots is bookkeeping, not configuration: a save that changes any
- * pin sets it to 1, every boot that loads it counts it up, and
- * device_config_confirm_pins() clears it once the device came up. A pin
- * set that keeps the device from getting that far is dropped for the
- * defaults after DEVICE_PINS_TRIAL_BOOTS_MAX attempts.
+ * pin (or the I2S role) sets it to 1, every boot that loads it counts it
+ * up, and device_config_confirm_pins() clears it once the device came up.
+ * A pin set that keeps the device from getting that far is dropped for
+ * the defaults after DEVICE_PINS_TRIAL_BOOTS_MAX attempts.
  */
 typedef struct {
     uint8_t i2s_bclk;
@@ -131,7 +136,8 @@ typedef struct {
     uint8_t i2s_dout;
     uint8_t status_led;
     uint8_t trial_boots;
-    uint8_t reserved[2];
+    uint8_t i2s_slave;
+    uint8_t reserved;
 } device_pins_t;
 
 #define DEVICE_PINS_TRIAL_BOOTS_MAX 3U

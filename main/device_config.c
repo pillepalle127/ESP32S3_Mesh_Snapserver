@@ -103,6 +103,9 @@ static bool pin_taken(const device_pins_t *pins, uint8_t gpio)
 
 static bool pins_valid(const device_pins_t *pins)
 {
+    if (pins->i2s_slave > 1U) {
+        return false;
+    }
     const uint8_t used[] = {
         pins->i2s_bclk, pins->i2s_lrclk, pins->i2s_din, pins->i2s_dout, pins->status_led,
     };
@@ -124,12 +127,14 @@ static bool pins_valid(const device_pins_t *pins)
     return true;
 }
 
-/* Whether two pin sets assign different pins; trial_boots does not count. */
+/* Whether two pin sets assign different pins or I2S roles; trial_boots
+ * does not count. The role is in here because a wrong one can leave the
+ * device without an audio clock, which the trial boots must catch too. */
 static bool pins_differ(const device_pins_t *a, const device_pins_t *b)
 {
     return a->i2s_bclk != b->i2s_bclk || a->i2s_lrclk != b->i2s_lrclk ||
            a->i2s_din != b->i2s_din || a->i2s_dout != b->i2s_dout ||
-           a->status_led != b->status_led;
+           a->status_led != b->status_led || a->i2s_slave != b->i2s_slave;
 }
 
 static esp_err_t write_pins_blob(const device_pins_t *pins)
@@ -654,7 +659,7 @@ esp_err_t device_config_save_pin_set(const device_pins_t *pins, const device_pot
     portEXIT_CRITICAL(&s_cfg_lock);
 
     device_pins_t to_store = *pins;
-    memset(to_store.reserved, 0, sizeof(to_store.reserved));
+    to_store.reserved = 0U;
     /* Unchanged pins keep whatever trial state they are in. */
     to_store.trial_boots = pins_differ(&stored, pins) ? 1U : stored.trial_boots;
 

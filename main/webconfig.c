@@ -237,6 +237,7 @@ static cJSON *build_config_json(void)
     cJSON_AddNumberToObject(pin_obj, "i2s_din", pins.i2s_din);
     cJSON_AddNumberToObject(pin_obj, "i2s_dout", pins.i2s_dout);
     cJSON_AddNumberToObject(pin_obj, "status_led", pins.status_led);
+    cJSON_AddNumberToObject(pin_obj, "i2s_slave", pins.i2s_slave);
 #if CONFIG_SNAPSERVER_STATUS_LED_ENABLE
     cJSON_AddBoolToObject(root, "status_led_supported", true);
 #else
@@ -415,6 +416,7 @@ static esp_err_t apply_config_json(const cJSON *root, bool *reboot, const char *
         if (parse_number_field(pin_obj, "i2s_din", &num)) next_pins.i2s_din = (uint8_t)num;
         if (parse_number_field(pin_obj, "i2s_dout", &num)) next_pins.i2s_dout = (uint8_t)num;
         if (parse_number_field(pin_obj, "status_led", &num)) next_pins.status_led = (uint8_t)num;
+        if (parse_number_field(pin_obj, "i2s_slave", &num)) next_pins.i2s_slave = (num != 0) ? 1U : 0U;
     }
 
     /*

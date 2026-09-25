@@ -1793,7 +1793,8 @@ static void audio_task(void *arg)
                     }
                 }
             }
-        } else {
+        } else if (audio_result != ESP_ERR_TIMEOUT) {
+            /* A timeout means no I2S clock; audio_i2s.c reports that. */
             ESP_LOGE(TAG, "Audio frame failed: %s", esp_err_to_name(audio_result));
         }
 

@@ -33,6 +33,27 @@ static const char *TAG = "AUDIO_I2S";
  */
 #define TIMESTAMP_RESYNC_THRESHOLD_US 100000LL
 
+/*
+ * With the ESP as I2S slave the samples arrive on an external clock, which
+ * runs a few ppm off esp_timer. The timeline follows it instead of jumping
+ * every time the difference reaches the threshold above (at 50 ppm that
+ * would be every 33 minutes, for every client): whenever the averaged drift
+ * leaves the dead band, the anchor moves by at most TIMELINE_SLEW_US per
+ * frame, i.e. 250 ppm at 20 ms frames. The dead band keeps it still against
+ * the jitter of the blocking read. Master mode (one crystal) does not use it.
+ */
+#define TIMELINE_SLEW_US         5LL
+#define TIMELINE_DEADBAND_US   200.0f
+
+/*
+ * How long a read or write waits for the I2S clock. A frame takes 20 ms,
+ * so this only runs out when there is no clock at all -- as slave, when the
+ * external master is off or not connected. Without a limit the player (or
+ * the encoder on the server) would hang for good.
+ */
+#define I2S_IO_TIMEOUT_MS      100U
+#define I2S_CLOCK_WARN_US  5000000LL
+
 /* How far ahead of bufferMs the server's own speaker plays, on top of the
  * TX queue. See audio_i2s_set_output_delay() for what it is made of. */
 #define SERVER_LEAD_MS 20U
@@ -55,6 +76,14 @@ typedef struct {
 static i2s_chan_handle_t s_tx_channel;
 static i2s_chan_handle_t s_rx_channel;
 static bool s_started;
+/* The ESP is I2S slave: BCLK/LRCLK come from one external master. */
+static bool s_i2s_slave;
+
+/* Reads/writes that ran into I2S_IO_TIMEOUT_MS since the last warning. */
+static uint32_t s_clock_timeouts;
+static int64_t s_clock_warn_us;
+/* Averaged capture-timeline drift, see TIMELINE_SLEW_US. */
+static float s_timeline_drift_avg_us;
 
 static int16_t s_input_stereo[MAX_FRAME_SAMPLES * AUDIO_I2S_CHANNELS];
 static int16_t s_output_stereo[MAX_FRAME_SAMPLES * OUTPUT_CHANNELS];
@@ -384,9 +413,17 @@ esp_err_t audio_i2s_start(void)
     device_pins_t pins;
     device_config_get_pins(&pins);
 
+    /*
+     * One clock for both directions, always: either the ESP drives BCLK/
+     * LRCLK (master, the default) or one external device does and the ESP
+     * follows it in both directions (slave). Full duplex shares the two
+     * pins either way, so input and output never run on different clocks
+     * and the frame-for-frame pairing of capture and output stays valid.
+     */
+    s_i2s_slave = (pins.i2s_slave != 0U);
     i2s_chan_config_t channel_config = I2S_CHANNEL_DEFAULT_CONFIG(
         I2S_NUM_0,
-        I2S_ROLE_MASTER);
+        s_i2s_slave ? I2S_ROLE_SLAVE : I2S_ROLE_MASTER);
     channel_config.dma_desc_num = DMA_DESC_NUM;
     channel_config.dma_frame_num = DMA_FRAME_NUM;
     channel_config.auto_clear = true;
@@ -457,6 +494,15 @@ esp_err_t audio_i2s_start(void)
         ESP_LOGW(TAG, "Pull-down on I2S DIN (GPIO %u) failed", (unsigned)pins.i2s_din);
     }
 
+    /*
+     * As slave BCLK and LRCLK are inputs. Held low while no master drives
+     * them, so an unconnected line picks up nothing that looks like a clock.
+     */
+    if (s_i2s_slave) {
+        (void)gpio_pulldown_en((gpio_num_t)pins.i2s_bclk);
+        (void)gpio_pulldown_en((gpio_num_t)pins.i2s_lrclk);
+    }
+
     result = i2s_channel_enable(s_tx_channel);
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "TX enable failed: %s", esp_err_to_name(result));
@@ -472,11 +518,13 @@ esp_err_t audio_i2s_start(void)
 
     s_stream_anchor_us = 0;
     s_samples_captured = 0;
+    s_timeline_drift_avg_us = 0.0f;
     s_started = true;
 
     ESP_LOGI(TAG,
-             "I2S full duplex ready: master, 48 kHz, 16-bit data in 32-bit slots, stereo, "
+             "I2S full duplex ready: %s, 48 kHz, 16-bit data in 32-bit slots, stereo, "
              "BCLK=%d LRCLK=%d DIN=%d DOUT=%d, no MCLK",
+             s_i2s_slave ? "slave (clock from an external master)" : "master",
              pins.i2s_bclk,
              pins.i2s_lrclk,
              pins.i2s_din,
@@ -617,6 +665,24 @@ static bool apply_output_delay(const int16_t *in, int16_t *out, size_t mono_samp
     return true;
 }
 
+/*
+ * A read or write ran out of time: no I2S clock. Counted and reported at
+ * most every I2S_CLOCK_WARN_US, not per frame -- without a clock this
+ * happens ten times a second.
+ */
+static void note_clock_timeout(void)
+{
+    ++s_clock_timeouts;
+    const int64_t now = esp_timer_get_time();
+    if (now - s_clock_warn_us >= I2S_CLOCK_WARN_US) {
+        ESP_LOGW(TAG, "No I2S clock: %lu reads/writes timed out%s",
+                 (unsigned long)s_clock_timeouts,
+                 s_i2s_slave ? " (ESP is I2S slave -- is the external master running?)" : "");
+        s_clock_timeouts = 0;
+        s_clock_warn_us = now;
+    }
+}
+
 static esp_err_t capture_mono_from_rx(int16_t *mono, size_t mono_samples)
 {
     const size_t stereo_bytes =
@@ -628,7 +694,11 @@ static esp_err_t capture_mono_from_rx(int16_t *mono, size_t mono_samples)
         s_input_stereo,
         stereo_bytes,
         &bytes_read,
-        portMAX_DELAY);
+        pdMS_TO_TICKS(I2S_IO_TIMEOUT_MS));
+    if (result == ESP_ERR_TIMEOUT) {
+        note_clock_timeout();
+        return result;
+    }
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "I2S read failed: %s", esp_err_to_name(result));
         return result;
@@ -802,7 +872,11 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
         s_output_stereo,
         stereo_bytes,
         &bytes_written,
-        portMAX_DELAY);
+        pdMS_TO_TICKS(I2S_IO_TIMEOUT_MS));
+    if (result == ESP_ERR_TIMEOUT) {
+        note_clock_timeout();
+        return result;
+    }
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "I2S write failed: %s", esp_err_to_name(result));
         return result;
@@ -1059,7 +1133,18 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
 
         s_stream_anchor_us = esp_timer_get_time() - frame_duration_us;
         s_samples_captured = 0;
+        s_timeline_drift_avg_us = 0.0f;
         frame_timestamp_us = s_stream_anchor_us;
+    } else if (s_i2s_slave) {
+        /* Follow the external clock, see TIMELINE_SLEW_US. */
+        s_timeline_drift_avg_us += ((float)drift_us - s_timeline_drift_avg_us) / 64.0f;
+        if (s_timeline_drift_avg_us > TIMELINE_DEADBAND_US) {
+            s_stream_anchor_us += TIMELINE_SLEW_US;
+            s_timeline_drift_avg_us -= (float)TIMELINE_SLEW_US;
+        } else if (s_timeline_drift_avg_us < -TIMELINE_DEADBAND_US) {
+            s_stream_anchor_us -= TIMELINE_SLEW_US;
+            s_timeline_drift_avg_us += (float)TIMELINE_SLEW_US;
+        }
     }
 
     *timestamp_us = frame_timestamp_us;
