@@ -444,21 +444,6 @@ static void timeline_anchor_locked(int64_t chunk_ts_us)
     s_head_ts_valid = true;
 }
 
-static float peak_dbfs(const int16_t *samples, size_t count)
-{
-    int32_t peak = 0;
-    for (size_t i = 0; i < count; ++i) {
-        const int32_t a = (samples[i] < 0) ? -(int32_t)samples[i] : samples[i];
-        if (a > peak) {
-            peak = a;
-        }
-    }
-    if (peak == 0) {
-        return -120.0f;
-    }
-    return 20.0f * log10f((float)peak / 32768.0f);
-}
-
 static float rms_dbfs(const int16_t *samples, size_t count)
 {
     if (count == 0U) {
@@ -1144,7 +1129,7 @@ static void player_task(void *arg)
          */
         /* The LED shows the signal, not the speaker: measured before the
          * volume, so it keeps moving at any volume setting. */
-        status_led_set_level_db(peak_dbfs(chosen, AUDIO_SINK_FRAME_SAMPLES));
+        status_led_set_level_db(rms_dbfs(chosen, AUDIO_SINK_FRAME_SAMPLES));
 
         const float gain = s_volume_gain;
         if (gain < 1.0f) {

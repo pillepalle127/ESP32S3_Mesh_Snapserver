@@ -197,13 +197,12 @@ static volatile size_t s_delay_samples;
 static int16_t s_peak_left;
 static int16_t s_peak_right;
 /*
- * A second, independent pair for the status LED. Both readers clear what
- * they read, so sharing one pair would mean each takes level away from the
- * other -- the LED samples 30 times a second, the diagnostic every five
- * seconds, and neither would see the real peak.
+ * The status LED has its own reading. Both readers clear what they read,
+ * so sharing would mean each takes level away from the other -- the LED
+ * samples 30 times a second, the diagnostic every five seconds.
  */
-static int16_t s_led_peak_left;
-static int16_t s_led_peak_right;
+/* Loudest frame RMS (0..1 of full scale) since the LED last read it. */
+static float s_led_rms;
 
 static int16_t float_to_int16(float sample)
 {
@@ -687,6 +686,7 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
                                   ? ((master_target - master) / (float)mono_samples)
                                   : 0.0f;
 
+    float led_sum_sq = 0.0f;
     for (size_t i = 0; i < mono_samples; ++i) {
         const int16_t mono_sample = mono[i];
 
@@ -728,14 +728,16 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
             *peak_wide = abs_wide;
         }
 
-        /* The LED shows the signal, not the speaker: taken before the
-         * crossover and before the master volume (knob, local volume), so
-         * it keeps moving at any volume setting. */
-        const int32_t abs_mono = (mono_sample < 0) ? -(int32_t)mono_sample : mono_sample;
-        const int16_t led_mono = (abs_mono > 32767) ? 32767 : (int16_t)abs_mono;
-        if (led_mono > s_led_peak_left) {
-            s_led_peak_left = led_mono;
-            s_led_peak_right = led_mono;
+        led_sum_sq += (float)mono_sample * (float)mono_sample;
+    }
+
+    /* The LED shows the signal, not the speaker: frame RMS taken before
+     * the crossover and before the master volume (knob, local volume), so
+     * it keeps moving at any volume setting. */
+    if (mono_samples > 0U) {
+        const float rms = sqrtf(led_sum_sq / (float)mono_samples) / 32768.0f;
+        if (rms > s_led_rms) {
+            s_led_rms = rms;
         }
     }
 
@@ -839,14 +841,13 @@ int32_t audio_i2s_clock_ppm(void)
     return (int32_t)((samples - expected) * 1000000LL / expected);
 }
 
-void audio_i2s_take_led_peak(int16_t *left, int16_t *right)
+float audio_i2s_take_led_rms(void)
 {
     portENTER_CRITICAL(&s_dsp_lock);
-    *left = s_led_peak_left;
-    *right = s_led_peak_right;
-    s_led_peak_left = 0;
-    s_led_peak_right = 0;
+    const float rms = s_led_rms;
+    s_led_rms = 0.0f;
     portEXIT_CRITICAL(&s_dsp_lock);
+    return rms;
 }
 
 void audio_i2s_take_output_peak(int16_t *left, int16_t *right)

@@ -43,14 +43,15 @@ static const char *TAG = "STATUS_LED";
 #define LED_TASK_PRIORITY           1
 
 /*
- * Level window, in dBFS of the peak per update. Measured before the volume,
- * music peaks sit between about -20 and -2 dBFS, quiet passages lower. A
- * dB scale spreads that evenly; the linear window used before (0.12-0.80
- * of full scale, i.e. -18 to -2 dBFS, measured after the volume) went dark
- * at half volume, where the cubic volume curve takes 18 dB off.
+ * Level window, in dBFS of the frame RMS (20 ms), measured before the
+ * volume. The peak was tried first and sat at the top: loudly mastered
+ * music reaches -1 to 0 dBFS in almost every update. The RMS of the same
+ * music moves between about -30 and -8 dBFS, which this window spreads
+ * across the colour scale. Before that, a linear peak window after the
+ * volume went dark at half volume, where the cubic curve takes 18 dB off.
  */
-#define LED_LEVEL_FLOOR_DB      -30.0f
-#define LED_LEVEL_CEIL_DB        -2.0f
+#define LED_LEVEL_FLOOR_DB      -35.0f
+#define LED_LEVEL_CEIL_DB        -6.0f
 
 /*
  * Floor for the meter. Not as dark as it could be, because hue is what
@@ -68,9 +69,10 @@ static const char *TAG = "STATUS_LED";
 #define LED_BLINK_CALM_PERIOD      60   /* ~2 s, provisioning AP    */
 
 /*
- * The local input is a good state, so it keeps the meter rather than
- * blinking at the user. It marks itself with a short blank every few
- * seconds -- visible if watched, invisible if not.
+ * The local input keeps the meter even without a server, since it plays
+ * fine on its own. The missing server connection only shows as a short
+ * blank every few seconds -- visible if watched, invisible if not. With
+ * the server connected there is no blank.
  */
 #define LED_LOCAL_MARK_PERIOD      91   /* ~3 s  */
 #define LED_LOCAL_MARK_BLANK        3   /* ~100 ms */
@@ -177,25 +179,20 @@ static esp_err_t led_write(led_rgb_t colour, float brightness)
 }
 
 /*
- * Both roles measure before their volume: the server through the peak its
- * DSP stage records, the client through the peak its player pushes before
- * applying the stream volume. The larger of the two is shown -- on a
- * client the DSP peak is the same signal after the volume, so never
- * larger; on the server nothing is pushed.
+ * Both roles measure the frame RMS before their volume: the server in its
+ * DSP stage, the client in its player before applying the stream volume.
+ * The larger of the two is shown -- on a client the DSP stage sees the same
+ * signal after the volume, so never more; on the server nothing is pushed.
  */
 static float current_level(void)
 {
-    int16_t peak_left = 0;
-    int16_t peak_right = 0;
-    audio_i2s_take_led_peak(&peak_left, &peak_right);
-
-    const int16_t peak = (peak_left > peak_right) ? peak_left : peak_right;
+    const float rms = audio_i2s_take_led_rms();
 
     float db = s_level_db;
-    if (peak > 0) {
-        const float peak_db = 20.0f * log10f((float)peak / 32767.0f);
-        if (peak_db > db) {
-            db = peak_db;
+    if (rms > 0.0f) {
+        const float rms_db = 20.0f * log10f(rms);
+        if (rms_db > db) {
+            db = rms_db;
         }
     }
 
@@ -214,7 +211,8 @@ static void led_task(void *arg)
 
     for (;;) {
         /* Priority as documented in status_led.h. */
-        status_led_state_t state = s_state;
+        const status_led_state_t connection = s_state;
+        status_led_state_t state = connection;
         const status_led_activity_t activity = s_activity;
         if (state != STATUS_LED_PROVISIONING) {
             if (activity == STATUS_LED_ACTIVITY_VOICE) {
@@ -249,6 +247,7 @@ static void led_task(void *arg)
             brightness = LED_METER_FLOOR + shown * (1.0f - LED_METER_FLOOR);
 
             if (state == STATUS_LED_LOCAL_INPUT &&
+                connection != STATUS_LED_PLAYING &&
                 (tick % LED_LOCAL_MARK_PERIOD) < LED_LOCAL_MARK_BLANK) {
                 brightness = 0.0f;
             } else if (state == STATUS_LED_VOICE_ANNOUNCEMENT &&

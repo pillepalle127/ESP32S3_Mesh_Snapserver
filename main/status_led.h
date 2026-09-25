@@ -9,16 +9,16 @@
  * severity. Steady therefore means nothing is wrong, without reaching for a
  * serial console.
  *
- * The level comes from measurements that already existed: the peak the
- * server's DSP stage records and the peak the client's player pushes, both
- * before the volume (see status_led_set_level_db()).
+ * The level is the frame RMS before the volume: recorded by the server's
+ * DSP stage, pushed by the client's player (see status_led_set_level_db()).
  *
  * What is shown is decided from two inputs, so that no task can overwrite
  * another's state: the connection state (status_led_set_state()) and the
  * activity on top of it (status_led_set_activity()). Priority, highest
  * first: provisioning, voice announcement, local input, connection state.
  * Playing the local input without a server therefore shows the meter, not
- * the "no server" blink.
+ * the "no server" blink; the missing connection only shows as a short
+ * blank every ~3 s.
  */
 #pragma once
 
@@ -35,7 +35,8 @@ typedef enum {
     STATUS_LED_NO_NETWORK,      /* red          */
     STATUS_LED_NO_SERVER,       /* orange       */
     STATUS_LED_PLAYING,         /* green        */
-    STATUS_LED_LOCAL_INPUT,     /* cyan         */
+    STATUS_LED_LOCAL_INPUT,     /* level colour; short blank every ~3 s
+                                 * while there is no server connection */
     STATUS_LED_VOICE_ANNOUNCEMENT, /* level colour, fast pulse */
 } status_led_state_t;
 
@@ -68,8 +69,8 @@ typedef enum {
 void status_led_set_activity(status_led_activity_t activity);
 
 /*
- * Peak level in dBFS before the volume, -120 for silence. The client pushes
+ * Frame RMS in dBFS before the volume, -120 for silence. The client pushes
  * it once per frame; the server's level comes from its DSP stage instead
- * (audio_i2s_take_led_peak()). The LED shows the larger of the two.
+ * (audio_i2s_take_led_rms()). The LED shows the larger of the two.
  */
 void status_led_set_level_db(float dbfs);
