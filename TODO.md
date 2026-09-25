@@ -677,7 +677,8 @@ Bugs sind umgesetzt:
   (Anker erst nach einigen Sekunden setzen, über ein gleitendes Fenster
   statt seit dem Start rechnen) oder sie wieder entfernen.
 
-- **Akustische Artefakte im Eingangssignal (2026-09-20, ungeklärt).** Traten
+- **Akustische Artefakte im Eingangssignal (2026-09-20; behoben 2026-09-25,
+  siehe Fehler A: TinySine mit 1,8 V I2S-Pegel, TXB0104).** Traten
   gleichzeitig auf Server und allen Clients auf, nur bei laufendem Stream,
   und verschwanden nach einigen Minuten von selbst. Der Server-Lautsprecher
   hängt nicht am Netzwerk, sein Signal kommt direkt vom I2S-Eingang: Mesh,
@@ -686,6 +687,9 @@ Bugs sind umgesetzt:
   nichts (`underrun=0`, `skipped=0`, keine Clipping-Spitzen, Peaks bei
   13000–18000 von 32767). Zum Eingrenzen fehlt eine feinere Messung des
   Eingangspegels, etwa die Zahl der Frames je Sekunde unter einer Schwelle.
+  Nachtrag 2026-09-25: Das Bild -- nur der I2S-Eingang betroffen, nach
+  Minuten von selbst weg -- entspricht genau den wandernden Störphasen von
+  Fehler A. Mit Pegelwandler nicht mehr aufgetreten.
 
 - **Durchsage-App: Standort-Berechtigung wieder entfernen (vorgemerkt
   2026-09-19, auf Nutzerwunsch; noch nicht umgesetzt, nur geplant).** Damit
