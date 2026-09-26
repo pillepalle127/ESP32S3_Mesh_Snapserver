@@ -28,7 +28,6 @@
   #save { background: #2b6cb0; color: #fff; border: none; border-radius: 0.25rem; }
   #factoryReset { background: #b03030; color: #fff; border: none; border-radius: 0.25rem; }
   #status { margin-top: 1rem; padding: 0.5rem; border-radius: 0.25rem; background: #eee; font-size: 0.85rem; white-space: pre-line; }
-  .hint { font-size: 0.78rem; color: #666; margin-top: 0.1rem; }
   input:disabled, select:disabled, button:disabled { opacity: 0.45; }
   button:disabled { cursor: default; }
   label.disabled { opacity: 0.45; }
@@ -62,9 +61,6 @@
 <div id="devices_section" hidden>
 <h2>Devices</h2>
 <div id="device_list"></div>
-<div class="hint">Volume and delay apply at once and stay with the device when it reconnects.
-Delay is added on top of the device's own delay trim or knob; hops count the mesh links
-between the server and the device. <b>Settings</b> shows a device's settings below.</div>
 </div>
 
 <h2 id="settings_title" hidden></h2>
@@ -72,17 +68,16 @@ between the server and the device. <b>Settings</b> shows a device's settings bel
 <h2>Role</h2>
 <label for="role">Device role</label>
 <select id="role">
-  <option value="0">Server (mesh root, captures &amp; encodes audio)</option>
-  <option value="1">Client (mesh relay, plays back from a server)</option>
+  <option value="0">Server</option>
+  <option value="1">Client</option>
 </select>
-<div class="hint">Changing this reboots the device to apply it.</div>
 
 <div id="client_fields">
   <label for="source_mode">Playback source</label>
   <select id="source_mode">
-    <option value="0">Auto (local I2S input has priority when present)</option>
-    <option value="1">Network only</option>
-    <option value="2">Local I2S input only</option>
+    <option value="0">Auto</option>
+    <option value="1">Network</option>
+    <option value="2">Local I2S input</option>
   </select>
   <label for="local_input_threshold_db" id="local_input_threshold_db_label">Local input threshold (dBFS)</label>
   <input type="number" id="local_input_threshold_db" min="-80" max="0">
@@ -90,7 +85,6 @@ between the server and the device. <b>Settings</b> shows a device's settings bel
     <div><label for="buffer_ms">Buffer (ms)</label><input type="number" id="buffer_ms" min="200" max="10000" step="100"></div>
     <div><label for="delay_trim_ms" id="delay_trim_ms_label">Delay trim (ms)</label><input type="number" id="delay_trim_ms" min="-2000" max="2000" step="10"></div>
   </div>
-  <div class="hint" id="delay_trim_hint" hidden>Set by the delay knob while a delay pin is selected below.</div>
   <label for="server_host">Server address override</label>
   <input type="text" id="server_host" maxlength="31" placeholder="auto (mesh root)">
 </div>
@@ -108,7 +102,6 @@ between the server and the device. <b>Settings</b> shows a device's settings bel
   <div><label for="mesh_channel">Wi-Fi channel (1-13)</label><input type="number" id="mesh_channel" min="1" max="13"></div>
   <div><label for="mesh_max_level">Max mesh hops (1-15)</label><input type="number" id="mesh_max_level" min="1" max="15"></div>
 </div>
-<div class="hint">Changing anything here reboots the device to apply it.</div>
 
 <h2>DSP / Crossover</h2>
 <div class="checkbox-row"><input type="checkbox" id="crossover_enabled"><label for="crossover_enabled">Crossover enabled</label></div>
@@ -120,7 +113,6 @@ between the server and the device. <b>Settings</b> shows a device's settings bel
 </div>
 <label for="sub_channel" id="sub_channel_label">Sub output channel</label>
 <select id="sub_channel"><option value="0">Left</option><option value="1">Right</option></select>
-<div class="hint">Wideband automatically uses the other channel.</div>
 
 <h2>Pins</h2>
 <label for="pin_preset">Load wiring preset</label>
@@ -145,14 +137,7 @@ between the server and the device. <b>Settings</b> shows a device's settings bel
 </div>
 <label for="pot_delay_range_ms" id="pot_delay_range_ms_label">Delay knob range (&plusmn; ms)</label>
 <input type="number" id="pot_delay_range_ms" min="10" max="2000" step="10">
-<div class="hint">10 k&Omega; potentiometer: one end to 3V3, the other to GND, wiper to the pin.
-Knobs need an ADC1 pin (GPIO 1&ndash;10). Volume with no knob attached reads full scale
-(100&nbsp;%); the delay knob replaces the delay trim above, centre = 0&nbsp;ms.</div>
 </div>
-<div class="hint">Every pin carries one function, so a pin in use is left out of the other lists.
-Never offered: <span id="pin_blocked"></span>.
-Changing a pin reboots the device. If it then fails to start three times in a row, it goes back
-to the standard pins.</div>
 
 <h2>Opus</h2>
 <div class="row">
@@ -326,7 +311,6 @@ async function loadConfig() {
   $('pots_section').hidden = !cfg.pots_supported;
   $('status_led_row').hidden = !cfg.status_led_supported;
   pinRules = { max: cfg.gpio_max, blocked: cfg.gpio_blocked, adc: cfg.adc1_pins };
-  $('pin_blocked').textContent = describeBlocked();
   $('pot_delay_range_ms').max = cfg.pot_delay_range_max_ms;
   $('pot_delay_range_ms').value = cfg.pot_delay_range_ms;
   savedDelayPin = cfg.pot_delay_gpio;
@@ -372,25 +356,6 @@ function currentPins() {
   return values;
 }
 
-/* "0, 3, 45, 46 strapping pin; 19-20 USB; ..." from the firmware's list. */
-function describeBlocked() {
-  const byReason = {};
-  for (const [gpio, reason] of Object.entries(pinRules.blocked)) {
-    (byReason[reason] = byReason[reason] || []).push(Number(gpio));
-  }
-  return Object.entries(byReason).map(([reason, pins]) => {
-    pins.sort((a, b) => a - b);
-    const parts = [];
-    for (let i = 0; i < pins.length; ) {
-      let j = i;
-      while (j + 1 < pins.length && pins[j + 1] === pins[j] + 1) j++;
-      parts.push(j > i + 1 ? `${pins[i]}\u2013${pins[j]}` : pins.slice(i, j + 1).join(', '));
-      i = j + 1;
-    }
-    return `GPIO ${parts.join(', ')} (${reason})`;
-  }).join('; ');
-}
-
 /* Each list offers the usable pins minus those another function holds. A
  * stored pin the rules no longer allow is still shown, marked, so saving
  * the form unchanged does not silently move it. */
@@ -419,7 +384,6 @@ function updatePotFieldsEnabled() {
   // The trim field only yields to a knob that is actually running, i.e.
   // saved and booted with -- not one merely picked in the list.
   const knobOwnsTrim = savedDelayPin !== 0;
-  $('delay_trim_hint').hidden = !knobOwnsTrim;
   if (knobOwnsTrim) {
     $('delay_trim_ms').disabled = true;
     $('delay_trim_ms_label').classList.add('disabled');
