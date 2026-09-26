@@ -179,9 +179,11 @@ USB-Buchsen liegen an derselben Stirnseite auf einer Ebene, das vereinfacht den 
 
 GND und VIN müssen dabei gekreuzt werden (in der Seitenansicht als X zu sehen).
 
-Die rote und die grüne Leitung auf den Fotos gehören nicht zwingend zum Aufbau. Sie sind hier nur nötig, weil der
-Strompfad von der USB-Buchse des ESP aufgetrennt wurde, um eine 18650-Zelle gezielt über einen TP4056 laden zu
-können (Details folgen noch).
+Die rote und die grüne Leitung auf den Fotos gehören nicht zwingend zum Aufbau. Mit ihnen ist der Strompfad von
+der USB-Buchse des ESP aufgetrennt und zum TP4056-Lademodul geführt: Über die eine Buchse am ESP wird
+kommuniziert und die 18650-Zelle geladen, auch wenn der ESP ausgeschaltet ist. Die eigene Buchse des Lademoduls
+wird dafür nicht gebraucht. Ein- und ausgeschaltet wird mit einem **Poti mit Schalter**: Der Schalter trennt den
+Strompfad zum ESP, das Poti regelt die Lautstärke (siehe [Potis](#potis)).
 
 ### Gehäuse
 
@@ -192,9 +194,10 @@ können (Details folgen noch).
 <img src="docs/IMG_1690_copy.jpg" alt="Platine eingesetzt, darunter die Zelle" width="300">
 <img src="docs/3d_Streamer.png" alt="FreeCAD-Modell des Gehäuseunterteils" width="300">
 
-3D-gedrucktes Gehäuse: Im Unterteil liegt unten eine 18650-Zelle mit TP4056-Lademodul (eigene USB-C-Buchse),
-darüber sitzt die Platine. USB-C und Klinke sind von der Stirnseite zugänglich, durch den lichtdurchlässigen
-Deckel scheint die Status-LED. Die Dateien liegen in [`mechanics/housing/`](mechanics/housing/):
+3D-gedrucktes Gehäuse: Im Unterteil liegt unten eine 18650-Zelle mit TP4056-Lademodul, darüber sitzt die Platine.
+Die USB-C-Buchsen des ESP-Boards und die Klinke sind von der Stirnseite zugänglich; geladen wird über die Buchse am
+ESP (siehe oben). Durch den lichtdurchlässigen Deckel scheint die
+Status-LED. Die Dateien liegen in [`mechanics/housing/`](mechanics/housing/):
 
 | Datei | Inhalt |
 |---|---|
