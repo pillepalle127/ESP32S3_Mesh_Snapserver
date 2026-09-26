@@ -26,64 +26,36 @@ auch einen eigenen I2S-Eingang haben, zum Beispiel Bluetooth.
 
 ## Installation
 
-Firmware und App liegen fertig gebaut unter
-[Releases](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases). Die Firmware lässt sich aus dem
-Browser aufspielen, die App ist eine normale APK. Eine Entwicklungsumgebung ist nicht nötig.
+Firmware und App liegen fertig unter [Releases](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases).
+Geflasht wird aus dem Browser, eine Entwicklungsumgebung ist nicht nötig.
 
-**Benötigt:**
-
-* **ein ESP32-S3-Board je Standort** mit **mindestens 4 MB Flash und Octal-PSRAM**, etwa „N16R8“ oder „N8R8“
-  (z. B. YD-ESP32-S3 N16R8). Mit Quad-PSRAM oder ohne PSRAM startet die Firmware nicht.
-* **ein USB-Kabel mit Datenleitungen**, reine Ladekabel reichen nicht,
-* **ein PC mit Chrome oder Edge** (Windows, macOS oder Linux); Firefox, Safari und Handys können nicht flashen,
-* für die App ein **Android-Handy** ab Android 8. Auf dem iPhone gehen die Einstellungen im Browser.
+**Benötigt:** ein ESP32-S3-Board je Standort mit mindestens 4 MB Flash und **Octal-PSRAM** (z. B. N16R8, N8R8), ein
+USB-Kabel mit Datenleitungen und Chrome oder Edge am PC. Für die App ein Android-Handy.
 
 ### 1. Firmware aufspielen
 
-1. Die **[Flash-Seite](https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/)** in Chrome oder Edge öffnen.
-2. Das Board anschließen. Bei zwei USB-Buchsen die am ESP32-S3 nehmen (meist „USB“, nicht „COM“ oder „UART“).
-3. **Installieren** klicken, **„USB JTAG/serial debug unit“** wählen, **Verbinden**.
-4. Bei einem neuen Board darf „Erase device“ gesetzt sein. **Bei einem Update „Erase device“ nicht anhaken**, sonst
-   gehen die Einstellungen verloren.
-5. Etwa eine Minute warten, das Kabel stecken lassen. Nach „Installation complete“ startet das Board neu.
+1. **[Flash-Seite](https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/)** öffnen, Board anschließen (bei zwei
+   Buchsen die mit „USB“).
+2. **Installieren**, „USB JTAG/serial debug unit“ wählen, **Verbinden**.
+3. **Bei Updates „Erase device“ nicht anhaken**, sonst sind die Einstellungen weg.
 
-Erscheint das Board nicht in der Liste, hilft meist ein anderes Kabel oder die andere Buchse. Sonst **BOOT**
-gedrückt halten, kurz **RST** drücken und BOOT loslassen. Unter Linux muss der Benutzer in der Gruppe `dialout` sein.
-
-### 2. Neues Gerät einrichten
-
-1. Mit dem offenen WLAN **`ESP32_provisioning_…`** verbinden, auch wenn das Handy „kein Internet“ meldet.
-2. **http://192.168.5.1/** öffnen, Rolle, Mesh-Name und Passwort eintragen (auf allen Geräten gleich), **Save**.
-
-Am besten erst den Server einrichten, dann die Clients. Die tauchen danach in der Geräteliste des Servers auf. Was die
-Seite sonst noch kann, steht unter [Web-UI](#web-ui).
-
-### 3. Updates
-
-Wie Schritt 1, nur **ohne „Erase device“**. Jedes Gerät wird einzeln per USB aktualisiert, die Einstellungen bleiben
-erhalten. Die installierte Version steht im Statusfeld (`firmware: v…`).
-
-### 4. App installieren (Android)
-
-1. Auf dem Handy **`SnapAnnounce-….apk`** von der
-   [Release-Seite](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases) laden und öffnen. Die
-   Nachfrage, ob der Browser Apps installieren darf, mit **Erlauben** beantworten.
-2. Das Handy ins Mesh-WLAN bringen und die App öffnen. Die Server-Adresse `192.168.5.1` ist voreingestellt.
-   * **Durchsage:** Knopf drücken und sprechen, zum Beenden erneut drücken.
-   * **Geräte:** Lautstärke, Stummschaltung und Verzögerung aller Lautsprecher. **Einstellungen** öffnet die
-     Konfiguration eines Geräts.
-
-Die App fragt nach Mikrofon und ab Android 13 nach Benachrichtigungen, beides braucht sie für Durchsagen. Eine
-selbst gebaute Version vorher deinstallieren, sonst lehnt Android das Update ab.
-
-### Alternativ: Flashen mit esptool
-
-Ohne Chrome oder Edge geht es mit dem eigenständigen [esptool](https://github.com/espressif/esptool/releases), das
-kein Python braucht, und den vier Dateien aus dem Release:
+Taucht das Board nicht auf: anderes Kabel, oder BOOT halten und kurz RST drücken. Ohne Chrome geht es mit
+[esptool](https://github.com/espressif/esptool/releases) und den Einzeldateien aus dem Release:
 ```bash
 esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin 0x3d0000 ota_data_initial.bin
 ```
-`snapmesh-full.bin` ist ein Gesamt-Image ab `0x0` für Neuinstallationen, es löscht die Einstellungen.
+
+### 2. Einrichten
+
+1. Mit dem offenen WLAN **`ESP32_provisioning_…`** verbinden und **http://192.168.5.1/** öffnen.
+2. Rolle, Mesh-Name und Passwort eintragen (auf allen Geräten gleich), **Save**.
+
+Erst den Server einrichten, dann die Clients. Mehr unter [Web-UI](#web-ui).
+
+### 3. App (Android)
+
+**`SnapAnnounce-….apk`** vom [Release](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases) aufs Handy
+laden und installieren. Handy ins Mesh-WLAN, App öffnen, fertig.
 
 ---
 
@@ -274,42 +246,7 @@ Die Musik pausiert solange. Sie läuft mit einigen Sekunden Puffer, die Durchsag
 
 ---
 
-## Build
+## Lizenz
 
-Firmware mit ESP-IDF 5.4.x:
-
-```bash
-idf.py set-target esp32s3
-idf.py build
-idf.py -p PORT flash monitor
-```
-
-Die Konfiguration steht in `sdkconfig.defaults`, Änderungen aus `menuconfig` gehören dort hinein.
-
-App mit Gradle 8.13 und JDK 21 oder in Android Studio:
-
-```bash
-cd android/SnapAnnounce
-gradle assembleDebug
-```
-
----
-
-## Status
-
-Stabil laufen Streaming und Synchronisation über das Mesh, die Weiche, der Rollenwechsel, die Web-Oberfläche und
-die Durchsagen. Offene Punkte stehen in [TODO.md](TODO.md).
-
----
-
-## Haftungsausschluss
-
-Dies ist ein privates Bastelprojekt. Firmware, App und Anleitungen gibt es kostenlos und **ohne jede Gewähr**
-([MIT-Lizenz](LICENSE)), die Nutzung erfolgt **auf eigene Verantwortung**. Soweit gesetzlich zulässig, hafte ich
-nicht für Schäden durch Nachbau, Installation oder Betrieb, etwa an Boards, Lautsprechern, Verstärkern oder anderen
-Geräten, für Datenverlust oder Folgeschäden.
-
-## Abhängigkeiten und Lizenz
-
-ESP-IDF, ESP-Mesh-Lite, ESP-IoT-Bridge, ESP-Modem, ESP-mDNS und CMake Utilities stehen unter Apache 2.0, esp-opus
-unter MIT. Drittkomponenten unterliegen ihren eigenen Lizenzen. Dieses Projekt steht unter der MIT License.
+MIT, siehe [LICENSE](LICENSE). Die Lizenzen der Fremdkomponenten liegen jedem Release als
+`THIRD_PARTY_LICENSES.txt` bei.
