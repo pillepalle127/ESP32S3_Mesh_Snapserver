@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <title>SnapMesh</title>
+  <rect width="32" height="32" rx="7" fill="#0e1110"/>
+  <path d="M4 17 Q10 7 16 17 T28 17" fill="none" stroke="#e6e9e3" stroke-width="3" stroke-linecap="round"/>
+  <line x1="10" y1="5" x2="10" y2="27" stroke="#d6a847" stroke-width="2.2" stroke-linecap="round"/>
+  <circle cx="10" cy="12" r="2.6" fill="#d6a847"/>
+</svg>

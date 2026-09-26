@@ -4,18 +4,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Snapmesh installieren</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230e1110'/%3E%3Cpath d='M4 17 Q10 7 16 17 T28 17' fill='none' stroke='%23e6e9e3' stroke-width='3' stroke-linecap='round'/%3E%3Cline x1='10' y1='5' x2='10' y2='27' stroke='%23d6a847' stroke-width='2.2' stroke-linecap='round'/%3E%3Ccircle cx='10' cy='12' r='2.6' fill='%23d6a847'/%3E%3C/svg%3E">
 <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
 <style>
   :root { --fg: #1f2328; --muted: #59636e; --bg: #ffffff; --box: #f6f8fa; --line: #d1d9e0;
-          --accent: #2b6cb0; --warn-bg: #fff8c5; --warn-line: #d4a72c; }
+          --accent: #2b6cb0; --warn-bg: #fff8c5; --warn-line: #d4a72c;
+          --mark-ink: #1b1f1d; --mark-gold: #b0801f; }
   @media (prefers-color-scheme: dark) {
     :root { --fg: #e6edf3; --muted: #9198a1; --bg: #0d1117; --box: #151b23; --line: #3d444d;
-            --accent: #4493f8; --warn-bg: #2e2a1a; --warn-line: #9e6a03; }
+            --accent: #4493f8; --warn-bg: #2e2a1a; --warn-line: #9e6a03;
+            --mark-ink: #e6e9e3; --mark-gold: #d6a847; }
   }
   body { margin: 0; background: var(--bg); color: var(--fg);
          font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
   main { max-width: 40rem; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
   h1 { font-size: 1.5rem; margin: 0 0 0.25rem; }
+  .brand { display: flex; align-items: center; gap: 0.75rem; }
+  .brand svg { flex: none; width: 3rem; height: 3rem; }
+  .brand .wave { fill: none; stroke: var(--mark-ink); stroke-width: 4; stroke-linecap: round; }
+  .brand .sync { stroke: var(--mark-gold); stroke-width: 2.5; stroke-linecap: round; }
+  .brand .dot { fill: var(--mark-gold); }
   h2 { font-size: 1.1rem; margin: 2rem 0 0.5rem; }
   .version { color: var(--muted); margin: 0 0 1.5rem; }
   .install { background: var(--box); border: 1px solid var(--line); border-radius: 8px;
@@ -34,7 +42,16 @@
 </head>
 <body>
 <main>
-  <h1>ESP32-S3 Mesh Snapserver</h1>
+  <div class="brand">
+    <svg viewBox="0 0 120 120" aria-hidden="true">
+      <path class="wave" d="M10 38 Q22.5 24 35 38 T60 38 T85 38 T110 38"/>
+      <path class="wave" d="M10 60 Q22.5 46 35 60 T60 60 T85 60 T110 60" stroke-opacity="0.72"/>
+      <path class="wave" d="M10 82 Q22.5 68 35 82 T60 82 T85 82 T110 82" stroke-opacity="0.48"/>
+      <line class="sync" x1="72.5" y1="22" x2="72.5" y2="98"/>
+      <circle class="dot" cx="72.5" cy="31" r="3.4"/><circle class="dot" cx="72.5" cy="53" r="3.4"/><circle class="dot" cx="72.5" cy="75" r="3.4"/>
+    </svg>
+    <h1>ESP32-S3 Mesh Snapserver</h1>
+  </div>
   <p class="version">Firmware __VERSION__ &middot; für Server und Clients</p>
 
   <div class="install">

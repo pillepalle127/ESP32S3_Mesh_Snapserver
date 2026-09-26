@@ -1,3 +1,8 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/logo/snapmesh-logo-dark.svg">
+  <img src="docs/logo/snapmesh-logo.svg" alt="SnapMesh" width="300">
+</picture>
+
 # ESP32-S3 Mesh Snapserver
 
 **Stand:** 2026-09-23
