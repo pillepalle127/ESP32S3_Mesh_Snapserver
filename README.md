@@ -7,20 +7,20 @@
 
 **Stand:** 2026-09-26
 
-Das Projekt verteilt Musik über ein eigenes Funknetz synchron auf mehrere Lautsprecher. Die Geräte vernetzen sich
-selbst (ESP-Mesh-Lite) und reichen das Signal weiter, ein Router oder PC ist dafür nicht nötig. Möglich sind zum
-Beispiel:
+Mehrere Lautsprecher spielen synchron dieselbe Musik, ohne Router, PC oder Kabel dazwischen. Die ESP32-S3 bauen sich
+ihr eigenes Funknetz (ESP-Mesh-Lite) und reichen das Signal von Gerät zu Gerät weiter.
 
-* eine Musikquelle an einem Gerät einspeisen und an allen Standorten hören,
-* Lautstärke und Verzögerung je Lautsprecher einstellen,
-* Durchsagen vom Handy,
-* Lautsprecher und Subwoofer über die eingebaute Weiche,
-* vorhandene Snapcast-Clients (PC, Android, iOS) und Snapcast-Control-Apps mit einbinden.
+Damit könnt ihr:
 
-Alle Geräte laufen mit derselben Firmware. Eines ist **Server**: Es nimmt die Musik per I2S auf, kodiert sie mit Opus
-und schickt sie nach dem Snapcast-Protokoll an die anderen. Sein eigener Lautsprecher spielt zeitversetzt mit. Alle
-anderen sind **Clients**: Sie gleichen ihre Uhr mit dem Server ab, geben das Signal aus und leiten das Netz weiter.
-Ein Client kann zusätzlich einen eigenen I2S-Eingang als zweite Quelle nutzen.
+* eine Quelle einspeisen und überall hören,
+* Lautstärke und Verzögerung für jeden Lautsprecher einzeln einstellen,
+* Durchsagen vom Handy machen,
+* einen Subwoofer über die eingebaute Weiche anschließen,
+* vorhandene Snapcast-Clients (PC, Android, iOS) und Snapcast-Apps mitnutzen.
+
+Alle Geräte haben dieselbe Firmware. Eins ist der **Server**: Er nimmt die Musik per I2S auf, packt sie in Opus und
+verteilt sie per Snapcast. Alle anderen sind **Clients**: Sie spielen ab und reichen das Netz weiter. Ein Client kann
+auch einen eigenen I2S-Eingang haben, zum Beispiel Bluetooth.
 
 ---
 
@@ -96,16 +96,16 @@ esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 
 
 ## Hardware
 
-Zwei Aufbauten sind vorgesehen:
+Zwei Aufbauten laufen bei mir:
 
 * **Komplettsystem** im Verstärker: PCM5102A als Ausgang, TinySine AudioB I2S V2r0 als Bluetooth-Eingang, der über
   einen Pegelwandler TXB0104 am ESP hängt (siehe [Module an den Schnittstellen](#module-an-den-schnittstellen)).
 * **[SnapStreamer](#bauvorschlag-snapstreamer):** ein Bauvorschlag für einen reinen Empfänger mit PCM5102A.
 
-Geeignet ist ein ESP32-S3 mit mindestens 4 MB Flash, Octal-PSRAM und USB-Serial/JTAG, zum Beispiel das YD-ESP32-S3
+Geeignet ist jeder ESP32-S3 mit mindestens 4 MB Flash, Octal-PSRAM und USB-Serial/JTAG. Ich nehme das YD-ESP32-S3
 N16R8 von VCC-GND Studio
 ([Schaltplan V1.4](https://github.com/vcc-gnd/YD-ESP32-S3/blob/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf)).
-Zwei 10-kΩ-Potis und eine WS2812-LED sind optional. Die Standardbelegung lässt sich ändern (siehe [Pins](#pins)):
+Zwei 10-kΩ-Potis und eine WS2812-LED sind optional. Die Standardbelegung könnt ihr ändern (siehe [Pins](#pins)):
 
 | GPIO | Funktion |
 |---|---|
@@ -121,9 +121,9 @@ Zwei 10-kΩ-Potis und eine WS2812-LED sind optional. Die Standardbelegung lässt
 
 ## Bauvorschlag: SnapStreamer
 
-Der SnapStreamer ist eine Idee, wie sich ein vorhandener Verstärker oder Aktivlautsprecher ins Mesh einbinden
-lässt. ESP32-S3, DAC und Akku sind hier möglichst kompakt in einem kleinen Gehäuse untergebracht. Die Teile lassen
-sich ebenso in Schrumpfschlauch packen oder in ein vorhandenes Gehäuse einbauen.
+Ihr habt einen Verstärker oder Aktivlautsprecher und wollt ihn ins Mesh holen? Der SnapStreamer ist meine Idee
+dazu: ESP32-S3, DAC und Akku so dicht wie möglich in einem kleinen Gehäuse. Schrumpfschlauch oder ein vorhandenes
+Gehäuse tun es natürlich auch.
 
 <img src="docs/IMG_1684_copy.jpg" alt="Platine von oben: ESP32-S3-Board mit dem PCM5102A darunter" width="220">
 <img src="docs/IMG_1687_copy.jpg" alt="Von unten: PCM5102A-Modul unter dem ESP32-S3-Board" width="220">
@@ -135,13 +135,14 @@ gekreuzt werden (in der Seitenansicht als X zu sehen).
 
 Die rote und die grüne Leitung sind optional. Sie führen die 5 V der USB-Buchse am ESP zum Lademodul TP4056. So
 lässt sich über diese eine Buchse programmieren und der Akku laden, auch bei ausgeschaltetem ESP. Die Buchse des
-Lademoduls wird nicht gebraucht. Der Ladestrom des TP4056 ist auf 500 mA gesenkt, um die Verlustleistung zu
-begrenzen. Ein **Poti mit Schalter** schaltet den ESP und regelt die Lautstärke (siehe [Potis](#potis)).
+Lademoduls wird nicht gebraucht. Den Ladestrom des TP4056 habe ich auf 500 mA gesenkt,
+um die Verlustleistung zu begrenzen. Ein **Poti mit Schalter** schaltet den ESP und regelt die Lautstärke (siehe
+[Potis](#potis)).
 
 > [!WARNING]
-> Li-Ionen-Akkus können bei Kurzschluss, Beschädigung oder falschem Laden brennen. Nur Zellen und Lademodule mit
-> Schutzschaltung verwenden, offene Kontakte isolieren, die Zelle im Gehäuse nicht quetschen und nicht unbeaufsichtigt
-> laden.
+> Li-Ionen-Akkus können brennen, wenn sie kurzgeschlossen, beschädigt oder falsch geladen werden. Nehmt nur Zellen
+> und Lademodule mit Schutzschaltung, isoliert offene Kontakte, quetscht die Zelle nicht ins Gehäuse und ladet nicht
+> unbeaufsichtigt.
 
 ### Stückliste
 
@@ -179,9 +180,9 @@ parallel. Am Modul FMT auf GND und XSMT auf High legen; SCK bleibt frei, der Tak
 
 ### Eingang: TinySine AudioB I2S
 
-Bluetooth-Empfänger mit aptX, hier als I2S-Slave am Takt des ESP. Seine I2S-Pegel liegen bei 1,8 V. Direkt am
-ESP32-S3 führt das zu Rauschen und Knacksen, deshalb gehört dort ein Pegelwandler TXB0104 dazwischen (VCCA 1,8 V vom
-TinySine, VCCB 3,3 V vom ESP). An einem ADAU1701 läuft der TinySine auch ohne Wandler.
+Bluetooth-Empfänger mit aptX, klingt gut. Er läuft als I2S-Slave am Takt des ESP. Seine I2S-Pegel liegen
+bei 1,8 V, direkt am ESP32-S3 rauscht und knackst es deshalb. Abhilfe schafft ein TXB0104 dazwischen (VCCA 1,8 V vom
+TinySine, VCCB 3,3 V vom ESP). Am ADAU1701 läuft er auch ohne.
 
 ---
 
@@ -274,9 +275,11 @@ Eine WS2812 blitzt beim Start rot, grün und blau und zeigt danach den Zustand:
 
 ## Sprachdurchsagen
 
-Mit der App **SnapAnnounce** lassen sich Durchsagen vom Handy auf die Lautsprecher sprechen, die Musik pausiert
-solange. Die Verzögerung liegt bei etwa 90 ms. Durchsagen reichen zwei Mesh-Ebenen tief. Außerdem zeigt die App die
-Geräteliste.
+Mit **SnapAnnounce** startet ihr Durchsagen direkt im Mesh. Ohne extra Hardware und ohne Kabel, alles übers Handy.
+Leider nur für Android, ich habe keinen Mac und kaufe mir auch keinen.
+
+Die Musik pausiert solange. Sie läuft mit einigen Sekunden Puffer, die Durchsage umgeht ihn und ist nach **etwa
+90 ms** zu hören. Dafür ist sie empfindlicher gegen Funkaussetzer und reicht deshalb **nur zwei Mesh-Ebenen** tief.
 
 <img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce, Durchsage" width="280">
 <img src="docs/Screenshot_20260923_215400_SnapAnnounce_copy.jpg" alt="SnapAnnounce, Geräte" width="280">
