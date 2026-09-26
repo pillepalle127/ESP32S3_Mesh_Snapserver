@@ -225,58 +225,24 @@ WLAN `ESP32_provisioning_<MAC>` zum Einrichten. Nach 3 Minuten ohne Speichern sc
 
 <img src="docs/webui-server.png" alt="Einstellungsseite des Servers mit Geräteliste" width="300" align="right">
 
-Jedes Gerät hat eine Einstellungsseite, erreichbar über seine IP-Adresse oder den mDNS-Namen. Die Werte bleiben bei
-Updates erhalten. Die Seite ist von oben nach unten so aufgebaut:
-
-### Statusfeld
-
-Zeigt den Verbindungszustand, die Firmware-Version, die Laufzeit und die Stellung der Potis. Am Server steht dazu die
-Zahl der verbundenen Clients, getrennt nach SnapMesh-Geräten und fremden Snapcast-Clients.
+Jedes Gerät hat eine Einstellungsseite unter seiner IP-Adresse oder seinem mDNS-Namen. Die Werte bleiben bei
+Updates erhalten, **Factory Reset** setzt alles zurück.
 
 ### Geräteliste (Server)
 
-Hier lassen sich Name, Lautstärke, Stumm und Delay jedes Lautsprechers einstellen, auch aus Snapcast-Control-Apps.
-Die Hops zeigen, über wie viele Stationen ein Gerät am Server hängt. Der Server merkt sich die Werte je Gerät und
-setzt sie bei jeder Anmeldung wieder.
+Name, Lautstärke, Stumm und Delay jedes Lautsprechers, auch aus Snapcast-Control-Apps. Der Server merkt sich die
+Werte je Gerät. **Settings** lädt die Einstellungen eines Clients, egal wie tief er im Mesh hängt.
 
-**Settings** lädt die Einstellungen eines Clients in die Seite, egal wie tief er im Mesh hängt. Gespeichert wird
-dann direkt auf diesem Client. Fremde Snapcast-Clients bieten nur Lautstärke, Stumm und Delay.
+### Einstellungen
 
-### Rolle
+* **Rolle:** Server oder Client.
+* **Wiedergabe (Client):** Quelle, Puffer (Vorgabe 3000 ms), Delay-Trim.
+* **Mesh / WLAN:** Name, Passwort und Kanal, auf allen Geräten gleich.
+* **Weiche:** Trennfrequenz und Verstärkung für Sub und Breitband.
+* **Pins:** siehe [Pins](#pins).
+* **Opus:** Bitrate und Rechenaufwand des Encoders.
 
-Server oder Client. Ein Wechsel startet das Gerät neu.
-
-### Wiedergabe (Client)
-
-* **Quelle:** *Auto* spielt den eigenen I2S-Eingang, sobald dort ein Signal über der Schwelle anliegt, sonst den
-  Stream. Alternativ nur Netz oder nur lokal.
-* **Puffer:** Vorgabe 3000 ms. Mehr Puffer übersteht längere Funkaussetzer, verzögert aber den Start.
-* **Delay-Trim:** gleicht Laufzeiten einzelner Lautsprecher aus, etwa bei unterschiedlichen Abständen.
-* **Server-Adresse:** bleibt normalerweise leer, der Client findet den Server im Mesh selbst.
-
-### Mesh / WLAN
-
-Name, Passwort, Kanal und maximale Zahl der Hops. Die Werte müssen auf allen Geräten gleich sein. Das Passwort ist
-leer (offenes Netz) oder mindestens 8 Zeichen lang.
-
-### Weiche
-
-Teilt das Signal in Sub und Breitband auf, mit eigener Verstärkung je Zweig. Der Sub liegt auf dem gewählten Kanal,
-das Breitband auf dem anderen. Änderungen sind sofort hörbar.
-
-### Pin-Belegung
-
-I2S, LED und Potis, siehe [Pins](#pins).
-
-### Opus
-
-Bitrate und Rechenaufwand des Encoders am Server. Die Vorgabe von 96 kbit/s reicht für Musik, höhere Werte belasten
-das Funknetz stärker.
-
-### Speichern und Factory Reset
-
-**Save** übernimmt die Werte. Braucht eine Änderung einen Neustart, startet das Gerät von selbst neu. **Factory
-Reset** setzt alles auf die Vorgaben zurück, auch Mesh-Zugang, Pins und die gespeicherten Client-Werte.
+Änderungen an Rolle, Mesh oder Pins starten das Gerät neu.
 
 ---
 
