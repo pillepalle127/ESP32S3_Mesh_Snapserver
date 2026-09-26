@@ -18,9 +18,11 @@ Damit könnt ihr:
 * einen Subwoofer über die eingebaute Weiche anschließen,
 * vorhandene Snapcast-Clients (PC, Android, iOS) und Snapcast-Apps mitnutzen.
 
-Alle Geräte haben dieselbe Firmware. Eins ist der **Server**: Er nimmt die Musik per I2S auf, packt sie in Opus und
-verteilt sie per Snapcast. Alle anderen sind **Clients**: Sie spielen ab und reichen das Netz weiter. Ein Client kann
-auch einen eigenen I2S-Eingang haben, zum Beispiel Bluetooth.
+Im Kern stecken zwei Funktionen, die sich eigentlich widersprechen: **Musik** soll ohne Aussetzer laufen und bekommt
+dafür einige Sekunden Puffer. **Durchsagen** sollen sofort zu hören sein (keine Latenz). Ich habe es
+auf ~90 ms runtergeschafft.
+
+Alle Geräte haben dieselbe Firmware. Eins ist der **Server**, alle anderen sind **Clients**.
 
 ---
 
@@ -234,8 +236,8 @@ Eine WS2812 blitzt beim Start rot, grün und blau und zeigt danach den Zustand:
 Mit **SnapAnnounce** startet ihr Durchsagen direkt im Mesh. Ohne extra Hardware und ohne Kabel, alles übers Handy.
 Leider nur für Android, ich habe keinen Mac und kaufe mir auch keinen.
 
-Die Musik pausiert solange. Sie läuft mit einigen Sekunden Puffer, die Durchsage umgeht ihn und ist nach **etwa
-90 ms** zu hören. Dafür ist sie empfindlicher gegen Funkaussetzer und reicht deshalb **nur zwei Mesh-Ebenen** tief.
+Die Musik pausiert solange. Weil Durchsagen ohne Puffer laufen, sind sie empfindlicher gegen Funkaussetzer und
+reichen deshalb **nur zwei Mesh-Ebenen** tief.
 
 <table>
   <tr>
