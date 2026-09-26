@@ -257,8 +257,12 @@ Leider nur für Android, ich habe keinen Mac und kaufe mir auch keinen.
 Die Musik pausiert solange. Sie läuft mit einigen Sekunden Puffer, die Durchsage umgeht ihn und ist nach **etwa
 90 ms** zu hören. Dafür ist sie empfindlicher gegen Funkaussetzer und reicht deshalb **nur zwei Mesh-Ebenen** tief.
 
-<img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce, Durchsage" width="250">
-<img src="docs/Screenshot_20260923_215400_SnapAnnounce_copy.jpg" alt="SnapAnnounce, Geräte" width="250">
+<table>
+  <tr>
+    <td valign="top"><img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce, Durchsage" width="250"></td>
+    <td valign="top"><img src="docs/Screenshot_20260923_215400_SnapAnnounce_copy.jpg" alt="SnapAnnounce, Geräte" width="250"></td>
+  </tr>
+</table>
 
 ---
 
