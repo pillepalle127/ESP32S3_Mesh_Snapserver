@@ -92,7 +92,7 @@ esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 
 Zwei Aufbauten laufen bei mir:
 
 * **Komplettsystem** im Verstärker: PCM5102A als Ausgang, TinySine AudioB I2S V2r0 als Bluetooth-Eingang, der über
-  einen Pegelwandler TXB0104 am ESP hängt (siehe [Module an den Schnittstellen](#module-an-den-schnittstellen)).
+  einen Pegelwandler TXB0104 am ESP hängt.
 * **[SnapStreamer](#bauvorschlag-snapstreamer):** ein Bauvorschlag für einen reinen Empfänger mit PCM5102A.
 
 Geeignet ist jeder ESP32-S3 mit mindestens 4 MB Flash, Octal-PSRAM und USB-Serial/JTAG, zum Beispiel ein
@@ -133,6 +133,10 @@ Lademoduls wird nicht gebraucht. Den Ladestrom des TP4056 habe ich auf 500 mA ge
 um die Verlustleistung zu begrenzen. Ein **Poti mit Schalter** schaltet den ESP und regelt die Lautstärke (siehe
 [Potis](#potis)).
 
+Der Akku hängt an VIN (5 V) und nicht direkt an 3V3: Eine volle Zelle hat 4,2 V, der ESP32-S3 verträgt höchstens
+3,6 V. Der LDO des Boards macht daraus 3,3 V. Gegen Ende der Ladung sinkt die Versorgung mit der Zelle, bis der ESP
+abschaltet. Viele Alternativen gibt es nicht, sauberer wäre nur ein Buck-Boost-Wandler auf 3,3 V, und der kostet Platz.
+
 > [!WARNING]
 > Li-Ionen-Akkus können brennen, wenn sie kurzgeschlossen, beschädigt oder falsch geladen werden. Nehmt nur Zellen
 > und Lademodule mit Schutzschaltung, isoliert offene Kontakte, quetscht die Zelle nicht ins Gehäuse und ladet nicht
@@ -152,7 +156,6 @@ um die Verlustleistung zu begrenzen. Ein **Poti mit Schalter** schaltet den ESP 
 
 ### Gehäuse
 
-<img src="docs/3d_Streamer.png" alt="FreeCAD-Modell des Gehäuseunterteils" width="300">
 <img src="docs/IMG_1689_copy.jpg" alt="Gehäuseunterteil mit 18650-Zelle und TP4056, daneben die Platine" width="220">
 
 <img src="docs/IMG_1695.jpeg" alt="Offenes Gehäuse mit Platine, USB und Klinke angesteckt" width="340">
@@ -162,21 +165,6 @@ Unten im Gehäuse liegen Akku und Lademodul, darüber die Platine. USB-C und Kli
 zugänglich, die Status-LED scheint durch den Deckel. Die Konstruktionsdaten liegen in
 [`mechanics/housing/`](mechanics/housing/): das FreeCAD-Modell `Snapstreamer2.FCStd` sowie Unterteil
 (`Snapstreamer2-SStreamer GuT.3mf`) und Deckel (`Snapstreamer2-SStreamer GoT.3mf`) druckfertig als 3MF.
-
----
-
-## Module an den Schnittstellen
-
-### Ausgang: PCM5102A
-
-Der Line-Ausgang (2,1 V<sub>eff</sub>) passt direkt an übliche Endstufen, etwa den TPA3255, auch an mehrere
-parallel. Am Modul FMT auf GND und XSMT auf High legen; SCK bleibt frei, der Takt entsteht intern aus BCK.
-
-### Eingang: TinySine AudioB I2S
-
-Bluetooth-Empfänger mit aptX, klingt gut. Er läuft als I2S-Slave am Takt des ESP. Seine I2S-Pegel liegen
-bei 1,8 V, direkt am ESP32-S3 rauscht und knackst es deshalb. Abhilfe schafft ein TXB0104 dazwischen (VCCA 1,8 V vom
-TinySine, VCCB 3,3 V vom ESP). Am ADAU1701 läuft er auch ohne.
 
 ---
 
@@ -201,15 +189,9 @@ Abweichungen gleicht ein Resampler aus, große ein harter Sprung. Der Regelfehle
 
 ## Netzwerk
 
-| Port | Proto | Zweck |
-|---|---|---|
-| 80 | TCP | Web-UI, JSON-API |
-| 1704 | TCP | Snapcast-Stream und Konfiguration der Clients |
-| 1705 | TCP | Snapcast JSON-RPC |
-| 1706 | UDP | Durchsagen |
-
-Die Clients bauen alle Verbindungen selbst auf, so erreichen sie den Server aus jeder Mesh-Ebene. Per mDNS heißen die
-Geräte `snapserver-<MAC>.local` bzw. `snapclient-<MAC>.local`.
+Die Geräte nutzen die Ports 80, 1704, 1705 und 1706 (UDP). Die Clients bauen alle Verbindungen selbst auf, so
+erreichen sie den Server aus jeder Mesh-Ebene. Per mDNS heißen die Geräte `snapserver-<MAC>.local` bzw.
+`snapclient-<MAC>.local`.
 
 Ohne Konfiguration, nach einem Factory Reset oder wenn das Mesh wiederholt nicht zustande kommt, öffnet das Gerät das
 WLAN `ESP32_provisioning_<MAC>` zum Einrichten. Nach 3 Minuten ohne Speichern schaltet es den Funk ab.
@@ -275,8 +257,8 @@ Leider nur für Android, ich habe keinen Mac und kaufe mir auch keinen.
 Die Musik pausiert solange. Sie läuft mit einigen Sekunden Puffer, die Durchsage umgeht ihn und ist nach **etwa
 90 ms** zu hören. Dafür ist sie empfindlicher gegen Funkaussetzer und reicht deshalb **nur zwei Mesh-Ebenen** tief.
 
-<img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce, Durchsage" width="280">
-<img src="docs/Screenshot_20260923_215400_SnapAnnounce_copy.jpg" alt="SnapAnnounce, Geräte" width="280">
+<img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce, Durchsage" width="250">
+<img src="docs/Screenshot_20260923_215400_SnapAnnounce_copy.jpg" alt="SnapAnnounce, Geräte" width="250">
 
 ---
 
