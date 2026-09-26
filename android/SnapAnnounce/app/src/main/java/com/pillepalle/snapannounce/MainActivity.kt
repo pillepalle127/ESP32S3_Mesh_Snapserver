@@ -62,6 +62,7 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import androidx.compose.ui.res.stringResource
 
 /**
  * Two tabs: the announcement (server address, a latching button, and what
@@ -128,13 +129,13 @@ class MainActivity : ComponentActivity() {
                                     selected = tab == TAB_ANNOUNCE,
                                     onClick = { tab = TAB_ANNOUNCE },
                                     icon = { Icon(Icons.Filled.Phone, contentDescription = null) },
-                                    label = { Text("Durchsage") },
+                                    label = { Text(stringResource(R.string.tab_announce)) },
                                 )
                                 NavigationBarItem(
                                     selected = tab == TAB_DEVICES,
                                     onClick = { tab = TAB_DEVICES },
                                     icon = { Icon(Icons.AutoMirrored.Filled.List, contentDescription = null) },
-                                    label = { Text("Geräte") },
+                                    label = { Text(stringResource(R.string.tab_devices)) },
                                 )
                             }
                         },
@@ -250,7 +251,7 @@ private fun AnnounceScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            Text("Durchsage", style = MaterialTheme.typography.headlineMedium)
+            Text(stringResource(R.string.tab_announce), style = MaterialTheme.typography.headlineMedium)
 
             OutlinedTextField(
                 value = host,
@@ -258,7 +259,7 @@ private fun AnnounceScreen(
                     host = it
                     onHostChange(it)
                 },
-                label = { Text("Server-IP") },
+                label = { Text(stringResource(R.string.server_ip)) },
                 singleLine = true,
                 enabled = !armed,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
@@ -299,22 +300,15 @@ private fun AnnounceScreen(
                         modifier = Modifier.height(84.dp),
                     )
                     Text(
-                        text = if (armed) "Durchsage beenden" else "Durchsage starten",
+                        text = stringResource(if (armed) R.string.announce_stop else R.string.announce_start),
                         style = MaterialTheme.typography.titleLarge,
                     )
                 }
             }
 
             TextButton(onClick = { showSettings = true }, enabled = !armed) {
-                Text("Einstellungen")
+                Text(stringResource(R.string.settings))
             }
-
-            Text(
-                "Das Handy muss mit dem Mesh-WLAN verbunden sein, möglichst direkt " +
-                    "am Server. Wenn Android meldet, dass das WLAN keinen " +
-                    "Internetzugang hat: trotzdem verbunden bleiben.",
-                style = MaterialTheme.typography.bodySmall,
-            )
         }
 
         if (showSettings) {
@@ -345,10 +339,10 @@ private const val TAB_DEVICES = 1
 
 /** Selectable microphone sources, see SettingsStore.micSource. */
 private val MIC_SOURCES = listOf(
-    MediaRecorder.AudioSource.MIC to "Standard-Mikrofon",
-    MediaRecorder.AudioSource.UNPROCESSED to "Roh (ohne jede Bearbeitung)",
-    MediaRecorder.AudioSource.VOICE_RECOGNITION to "Spracherkennung (unbearbeitet)",
-    MediaRecorder.AudioSource.VOICE_COMMUNICATION to "Telefonat (leise, Rauschunterdrückung)",
+    MediaRecorder.AudioSource.MIC to R.string.mic_default,
+    MediaRecorder.AudioSource.UNPROCESSED to R.string.mic_unprocessed,
+    MediaRecorder.AudioSource.VOICE_RECOGNITION to R.string.mic_voice_recognition,
+    MediaRecorder.AudioSource.VOICE_COMMUNICATION to R.string.mic_voice_communication,
 )
 
 /*
@@ -370,14 +364,14 @@ private fun SettingsDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Fertig") } },
-        title = { Text("Einstellungen") },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.done)) } },
+        title = { Text(stringResource(R.string.settings)) },
         text = {
             Column(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Mikrofon", style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.microphone), style = MaterialTheme.typography.titleMedium)
                 for ((source, label) in MIC_SOURCES) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -390,12 +384,12 @@ private fun SettingsDialog(
                             ),
                     ) {
                         RadioButton(selected = micSource == source, onClick = null)
-                        Text(label, style = MaterialTheme.typography.bodyMedium,
+                        Text(stringResource(label), style = MaterialTheme.typography.bodyMedium,
                              modifier = Modifier.padding(start = 8.dp))
                     }
                 }
 
-                Text("Max. Verstärkung: $gain dB",
+                Text(stringResource(R.string.max_gain, gain),
                      style = MaterialTheme.typography.titleMedium)
                 Slider(
                     value = gain.toFloat(),
@@ -406,13 +400,11 @@ private fun SettingsDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "Mehr Verstärkung = lauter, aber auch mehr Hall und " +
-                        "Rückkopplung. Handy nah an den Mund halten, von den " +
-                        "Lautsprechern weg.",
+                    stringResource(R.string.max_gain_hint),
                     style = MaterialTheme.typography.bodySmall,
                 )
 
-                Text("Durchsage-Pegel: $target dBFS",
+                Text(stringResource(R.string.announce_level, target),
                      style = MaterialTheme.typography.titleMedium)
                 Slider(
                     value = target.toFloat(),
@@ -425,9 +417,7 @@ private fun SettingsDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "So laut soll die Durchsage sein. Die Musik kommt bei den " +
-                        "Clients mit etwa -24 bis -28 dBFS an. Höher heißt lauter, " +
-                        "aber auch stärker zusammengedrückt.",
+                    stringResource(R.string.announce_level_hint),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -443,14 +433,24 @@ private fun StatusLine(uiState: UiState) {
             color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.headlineSmall,
         )
-        AnnounceState.CONNECTING -> Text("Verbinde…", style = MaterialTheme.typography.titleMedium)
-        AnnounceState.ERROR -> Text(
-            text = uiState.message ?: "Fehler",
-            color = MaterialTheme.colorScheme.error,
-            style = MaterialTheme.typography.titleMedium,
-        )
+        AnnounceState.CONNECTING -> Text(stringResource(R.string.connecting), style = MaterialTheme.typography.titleMedium)
+        AnnounceState.ERROR -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = uiState.message ?: stringResource(R.string.error),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.titleMedium,
+            )
+            // Only when it matters: the usual cause is a phone that is not
+            // (or no longer) on the mesh Wi-Fi.
+            if (uiState.serverNotFound) {
+                Text(
+                    stringResource(R.string.hint_mesh_wifi),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
         AnnounceState.IDLE -> Text(
-            text = uiState.message ?: "Bereit",
+            text = uiState.message ?: stringResource(R.string.ready),
             style = MaterialTheme.typography.titleMedium,
         )
     }

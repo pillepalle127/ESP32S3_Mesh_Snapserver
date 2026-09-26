@@ -41,7 +41,12 @@ data class DeviceList(
  * a client's settings can hold it for up to 3 s -- so callers should poll
  * gently and never in parallel with themselves.
  */
-class MeshApi(private val host: String, private val network: Network?) {
+class MeshApi(
+    private val host: String,
+    private val network: Network?,
+    /** Name for the server's own row; %1$s is its ID. */
+    private val serverNameFormat: String = "This server (%1\$s)",
+) {
 
     /** Null when the device at host is a client (it has no device list). */
     @Throws(IOException::class)
@@ -54,7 +59,7 @@ class MeshApi(private val host: String, private val network: Network?) {
         val list = mutableListOf(
             MeshDevice(
                 id = null,
-                name = "Dieser Server ($serverId)",
+                name = serverNameFormat.format(serverId),
                 hops = 0,
                 own = true,
                 volumePercent = server.optIntOrNull("volume_percent"),

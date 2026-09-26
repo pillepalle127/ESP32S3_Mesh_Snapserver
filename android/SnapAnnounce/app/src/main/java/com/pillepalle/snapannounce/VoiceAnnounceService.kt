@@ -49,6 +49,8 @@ data class UiState(
     val state: AnnounceState = AnnounceState.IDLE,
     val elapsedSeconds: Int = 0,
     val message: String? = null,
+    /** The announcement failed because the server could not be reached. */
+    val serverNotFound: Boolean = false,
 )
 
 /**
@@ -143,7 +145,7 @@ class VoiceAnnounceService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> startAnnouncement()
-            ACTION_STOP -> requestStop("Durchsage beendet")
+            ACTION_STOP -> requestStop(getString(R.string.announce_ended))
         }
         return START_NOT_STICKY
     }
@@ -163,9 +165,9 @@ class VoiceAnnounceService : Service() {
         // Text matches the current state so a repeated START doesn't reset
         // an "on air" notification back to "connecting".
         val text = if (running && _uiState.value.state == AnnounceState.ON_AIR) {
-            "Durchsage läuft"
+            getString(R.string.announce_running)
         } else {
-            "Verbinde…"
+            getString(R.string.connecting)
         }
         ServiceCompat.startForeground(
             this,
@@ -198,7 +200,7 @@ class VoiceAnnounceService : Service() {
 
         val network = wifiNetworkOrNull(connectivity)
         if (network == null) {
-            finish(UiState(state = AnnounceState.ERROR, message = "Kein WLAN verbunden"))
+            finish(UiState(state = AnnounceState.ERROR, message = getString(R.string.no_wifi), serverNotFound = true))
             return
         }
 
@@ -213,7 +215,7 @@ class VoiceAnnounceService : Service() {
                 )
             }
         } catch (e: IOException) {
-            finish(UiState(state = AnnounceState.ERROR, message = "Server $host nicht erreichbar"))
+            finish(UiState(state = AnnounceState.ERROR, message = getString(R.string.server_unreachable, host), serverNotFound = true))
             return
         }
 
@@ -228,14 +230,14 @@ class VoiceAnnounceService : Service() {
             val result = response.optJSONObject("result")
             when {
                 result?.optBoolean("active") == true -> null
-                result?.optBoolean("busy") == true -> "Es läuft bereits eine andere Durchsage"
-                response.has("error") -> "Server-Firmware kennt keine Durchsagen"
-                else -> "Unerwartete Antwort vom Server"
+                result?.optBoolean("busy") == true -> getString(R.string.announce_busy)
+                response.has("error") -> getString(R.string.no_voice_support)
+                else -> getString(R.string.unexpected_answer)
             }
         } catch (e: IOException) {
-            "Server antwortet nicht"
+            getString(R.string.server_no_answer)
         } catch (e: org.json.JSONException) {
-            "Unerwartete Antwort vom Server"
+            getString(R.string.unexpected_answer)
         }
 
         if (armed != null || stopReason != null) {
@@ -260,7 +262,7 @@ class VoiceAnnounceService : Service() {
         watchNetworkLoss(network)
         capturing = true
         _uiState.value = UiState(state = AnnounceState.ON_AIR)
-        updateNotification("Durchsage läuft", showStop = true)
+        updateNotification(getString(R.string.announce_running), showStop = true)
 
         val ticker = scope.launch {
             var seconds = 0
@@ -303,7 +305,7 @@ class VoiceAnnounceService : Service() {
     private fun captureAndSend(host: String, network: Network, micSource: Int, maxGainDb: Int,
                                targetRmsDbfs: Int): String? {
         val minBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL, ENCODING)
-        if (minBuffer <= 0) return "Mikrofon unterstützt 16 kHz nicht"
+        if (minBuffer <= 0) return getString(R.string.mic_no_16k)
 
         val recorder = try {
             AudioRecord(
@@ -315,19 +317,19 @@ class VoiceAnnounceService : Service() {
                 maxOf(minBuffer, FRAME_BYTES * 4),
             )
         } catch (e: SecurityException) {
-            return "Mikrofon-Berechtigung fehlt"
+            return getString(R.string.mic_permission)
         }
 
         if (recorder.state != AudioRecord.STATE_INITIALIZED) {
             recorder.release()
-            return "Mikrofon konnte nicht geöffnet werden"
+            return getString(R.string.mic_open_failed)
         }
 
         val socket = try {
             DatagramSocket().also { network.bindSocket(it) }
         } catch (e: IOException) {
             recorder.release()
-            return "UDP-Socket konnte nicht geöffnet werden"
+            return getString(R.string.udp_failed)
         }
 
         val address = try {
@@ -335,7 +337,7 @@ class VoiceAnnounceService : Service() {
         } catch (e: IOException) {
             socket.close()
             recorder.release()
-            return "Adresse $host ungültig"
+            return getString(R.string.bad_address, host)
         }
 
         val encoder = try {
@@ -344,7 +346,7 @@ class VoiceAnnounceService : Service() {
             socket.close()
             recorder.release()
             Log.w(TAG, "No Opus encoder", e)
-            return "Kein Opus-Encoder auf diesem Gerät (Android 10 nötig)"
+            return getString(R.string.no_opus)
         }
 
         val samples = ShortArray(FRAME_SAMPLES)
@@ -411,7 +413,7 @@ class VoiceAnnounceService : Service() {
         try {
             recorder.startRecording()
             if (recorder.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
-                return "Aufnahme konnte nicht gestartet werden"
+                return getString(R.string.record_failed)
             }
 
             while (capturing) {
@@ -420,7 +422,7 @@ class VoiceAnnounceService : Service() {
                 var filled = 0
                 while (filled < FRAME_SAMPLES && capturing) {
                     val n = recorder.read(samples, filled, FRAME_SAMPLES - filled, AudioRecord.READ_BLOCKING)
-                    if (n < 0) return "Lesefehler vom Mikrofon ($n)"
+                    if (n < 0) return getString(R.string.mic_read_error, n)
                     filled += n
                 }
                 if (!capturing) break
@@ -549,7 +551,7 @@ class VoiceAnnounceService : Service() {
             .build()
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onLost(lost: Network) {
-                if (lost == network) requestStop("WLAN-Verbindung verloren")
+                if (lost == network) requestStop(getString(R.string.wifi_lost))
             }
         }
         networkCallback = callback
@@ -575,7 +577,7 @@ class VoiceAnnounceService : Service() {
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Durchsage",
+            getString(R.string.tab_announce),
             NotificationManager.IMPORTANCE_LOW,
         )
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
@@ -603,7 +605,7 @@ class VoiceAnnounceService : Service() {
                 Intent(this, VoiceAnnounceService::class.java).setAction(ACTION_STOP),
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
-            builder.addAction(0, "Beenden", stop)
+            builder.addAction(0, getString(R.string.action_stop), stop)
         }
         return builder.build()
     }

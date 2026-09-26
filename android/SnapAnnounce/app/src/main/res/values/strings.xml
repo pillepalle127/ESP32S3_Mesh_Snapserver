@@ -1,3 +1,58 @@
 <resources>
-    <string name="app_name">SnapAnnounce</string>
+    <string name="app_name" translatable="false">SnapAnnounce</string>
+    <string name="tab_announce">Announcement</string>
+    <string name="tab_devices">Devices</string>
+    <string name="server_ip">Server IP</string>
+    <string name="announce_start">Start announcement</string>
+    <string name="announce_stop">End announcement</string>
+    <string name="settings">Settings</string>
+    <string name="hint_mesh_wifi">The phone must be connected to the mesh Wi-Fi, ideally directly to the server. If Android reports that the Wi-Fi has no internet access: stay connected anyway.</string>
+    <string name="mic_default">Default microphone</string>
+    <string name="mic_unprocessed">Raw (no processing at all)</string>
+    <string name="mic_voice_recognition">Speech recognition (unprocessed)</string>
+    <string name="mic_voice_communication">Phone call (quiet, noise suppression)</string>
+    <string name="done">Done</string>
+    <string name="microphone">Microphone</string>
+    <string name="max_gain">Max. gain: %1$d dB</string>
+    <string name="max_gain_hint">More gain means louder, but also more reverb and feedback. Hold the phone close to your mouth, away from the speakers.</string>
+    <string name="announce_level">Announcement level: %1$d dBFS</string>
+    <string name="announce_level_hint">How loud the announcement should be. Music reaches the clients at about -24 to -28 dBFS. Higher means louder, but also more compressed.</string>
+    <string name="connecting">Connecting…</string>
+    <string name="error">Error</string>
+    <string name="ready">Ready</string>
+    <string name="announce_ended">Announcement ended</string>
+    <string name="announce_running">Announcement running</string>
+    <string name="no_wifi">No Wi-Fi connected</string>
+    <string name="server_unreachable">Server %1$s not reachable</string>
+    <string name="announce_busy">Another announcement is already running</string>
+    <string name="no_voice_support">The server firmware does not support announcements</string>
+    <string name="unexpected_answer">Unexpected answer from the server</string>
+    <string name="server_no_answer">Server does not answer</string>
+    <string name="mic_no_16k">Microphone does not support 16 kHz</string>
+    <string name="mic_permission">Microphone permission missing</string>
+    <string name="mic_open_failed">Could not open the microphone</string>
+    <string name="udp_failed">Could not open the UDP socket</string>
+    <string name="bad_address">Address %1$s invalid</string>
+    <string name="no_opus">No Opus encoder on this device (Android 10 required)</string>
+    <string name="record_failed">Could not start recording</string>
+    <string name="mic_read_error">Microphone read error (%1$d)</string>
+    <string name="wifi_lost">Wi-Fi connection lost</string>
+    <string name="action_stop">Stop</string>
+    <string name="not_applied">Not applied: %1$s</string>
+    <string name="server_unreachable_detail">Server not reachable: %1$s</string>
+    <string name="host_is_client">%1$s is a client. The device list only exists on the server; enter the server IP under Announcement.</string>
+    <string name="this_device_settings">Settings of this device</string>
+    <string name="loading">Loading…</string>
+    <string name="knob_line">Volume knob: %1$s   Delay: %2$s ms</string>
+    <string name="knob_none">none</string>
+    <string name="mute">mute</string>
+    <string name="delay_line" translatable="false">Delay: %1$s ms</string>
+    <string name="rename">Rename</string>
+    <string name="cancel">Cancel</string>
+    <string name="back">Back</string>
+    <string name="hops_unknown" translatable="false">Hops ?</string>
+    <string name="hops_server" translatable="false">Server</string>
+    <string name="hops_one">1 hop</string>
+    <string name="hops_many">%1$d hops</string>
+    <string name="this_server">This server (%1$s)</string>
 </resources>

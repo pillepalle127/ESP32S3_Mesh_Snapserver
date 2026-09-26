@@ -53,6 +53,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import androidx.compose.ui.res.stringResource
 
 /* The web page polls every 3 s as well; the server answers one request at a time. */
 private const val POLL_MS = 3000L
@@ -78,7 +79,7 @@ fun DevicesScreen(host: String, onOpenSettings: (MeshDevice) -> Unit) {
     var refresh by remember { mutableIntStateOf(0) }
     var renaming by remember { mutableStateOf<MeshDevice?>(null) }
 
-    fun api() = MeshApi(host, wifiNetworkOrNull(connectivity))
+    fun api() = MeshApi(host, wifiNetworkOrNull(connectivity), context.getString(R.string.this_server))
 
     /* Applies a change locally right away, so the next poll does not flip
      * the control back while the request is still under way. */
@@ -89,7 +90,7 @@ fun DevicesScreen(host: String, onOpenSettings: (MeshDevice) -> Unit) {
                 withContext(Dispatchers.IO) { api().send() }
                 error = null
             } catch (e: Exception) {
-                error = "Nicht übernommen: ${e.message}"
+                error = context.getString(R.string.not_applied, e.message)
                 refresh++
             }
         }
@@ -104,7 +105,7 @@ fun DevicesScreen(host: String, onOpenSettings: (MeshDevice) -> Unit) {
                 list = result
                 error = null
             } catch (e: Exception) {
-                error = "Server nicht erreichbar: ${e.message}"
+                error = context.getString(R.string.server_unreachable_detail, e.message)
             }
             delay(POLL_MS)
         }
@@ -116,7 +117,7 @@ fun DevicesScreen(host: String, onOpenSettings: (MeshDevice) -> Unit) {
             .padding(horizontal = 16.dp),
     ) {
         Text(
-            "Geräte",
+            stringResource(R.string.tab_devices),
             style = MaterialTheme.typography.headlineMedium,
             modifier = Modifier.padding(vertical = 16.dp),
         )
@@ -125,8 +126,7 @@ fun DevicesScreen(host: String, onOpenSettings: (MeshDevice) -> Unit) {
         }
         if (isClient) {
             Text(
-                "$host ist ein Client. Die Geräteliste gibt es nur auf dem Server; " +
-                    "unter Durchsage die Server-IP eintragen.",
+                stringResource(R.string.host_is_client, host),
                 style = MaterialTheme.typography.bodyMedium,
                 modifier = Modifier.padding(vertical = 8.dp),
             )
@@ -135,7 +135,7 @@ fun DevicesScreen(host: String, onOpenSettings: (MeshDevice) -> Unit) {
                     MeshDevice(id = null, name = host, hops = null, own = true,
                                volumePercent = null, muted = false, delayMs = 0)
                 )
-            }) { Text("Einstellungen dieses Geräts") }
+            }) { Text(stringResource(R.string.this_device_settings)) }
         }
 
         val current = list
@@ -167,7 +167,7 @@ fun DevicesScreen(host: String, onOpenSettings: (MeshDevice) -> Unit) {
                 }
             }
         } else if (error == null && !isClient) {
-            Text("Lade…", style = MaterialTheme.typography.bodyMedium)
+            Text(stringResource(R.string.loading), style = MaterialTheme.typography.bodyMedium)
         }
     }
 
@@ -214,8 +214,11 @@ private fun DeviceCard(
                 // its delay (trim or knob) is set in the settings.
                 VolumeRow(dev, onVolume, onMute)
                 Text(
-                    "Lautstärke-Poti: " + (dev.knobPercent?.let { "$it %" } ?: "keins") +
-                        "   Delay: ${signed(dev.delayMs)} ms",
+                    stringResource(
+                        R.string.knob_line,
+                        dev.knobPercent?.let { "$it %" } ?: stringResource(R.string.knob_none),
+                        signed(dev.delayMs),
+                    ),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             } else {
@@ -224,7 +227,7 @@ private fun DeviceCard(
             }
 
             if (dev.own) {
-                TextButton(onClick = onOpenSettings) { Text("Einstellungen") }
+                TextButton(onClick = onOpenSettings) { Text(stringResource(R.string.settings)) }
             }
         }
     }
@@ -248,7 +251,7 @@ private fun VolumeRow(dev: MeshDevice, onVolume: (Int) -> Unit, onMute: (Boolean
         )
         Text("${shown.roundToInt()} %", maxLines = 1, modifier = Modifier.width(60.dp))
         Switch(checked = dev.muted, onCheckedChange = onMute)
-        Text("stumm", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 4.dp))
+        Text(stringResource(R.string.mute), style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 4.dp))
     }
 }
 
@@ -272,7 +275,7 @@ private fun DelayRow(id: String, delayMs: Int, delayMaxMs: Int, onDelay: (Int) -
         pending = (shown + by).coerceIn(-delayMaxMs, delayMaxMs)
     }
 
-    Text("Delay: ${signed(shown)} ms", style = MaterialTheme.typography.bodyMedium)
+    Text(stringResource(R.string.delay_line, signed(shown)), style = MaterialTheme.typography.bodyMedium)
     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         for (by in listOf(-100, -10, 10, 100)) {
             OutlinedButton(
@@ -289,14 +292,14 @@ private fun RenameDialog(initial: String, onDismiss: () -> Unit, onConfirm: (Str
     var name by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Umbenennen") },
+        title = { Text(stringResource(R.string.rename)) },
         text = {
             OutlinedTextField(value = name, onValueChange = { name = it.take(63) }, singleLine = true)
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(name.trim()) }, enabled = name.isNotBlank()) { Text("OK") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Abbrechen") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.cancel)) } },
     )
 }
 
@@ -341,7 +344,7 @@ fun DeviceSettingsScreen(url: String, title: String, onBack: () -> Unit) {
                 title = { Text(title) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Zurück")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.back))
                     }
                 },
             )
@@ -356,11 +359,12 @@ fun DeviceSettingsScreen(url: String, title: String, onBack: () -> Unit) {
     }
 }
 
+@Composable
 private fun hopsLabel(hops: Int?): String = when (hops) {
-    null -> "Hops ?"
-    0 -> "Server"
-    1 -> "1 Hop"
-    else -> "$hops Hops"
+    null -> stringResource(R.string.hops_unknown)
+    0 -> stringResource(R.string.hops_server)
+    1 -> stringResource(R.string.hops_one)
+    else -> stringResource(R.string.hops_many, hops)
 }
 
 private fun signed(ms: Int): String = if (ms > 0) "+$ms" else "$ms"
