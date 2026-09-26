@@ -52,18 +52,11 @@ gedrückt halten, kurz **RST** drücken und BOOT loslassen. Unter Linux muss der
 
 ### 2. Neues Gerät einrichten
 
-Ein frisch installiertes Board öffnet ein offenes WLAN **`ESP32_provisioning_…`**.
+1. Mit dem offenen WLAN **`ESP32_provisioning_…`** verbinden, auch wenn das Handy „kein Internet“ meldet.
+2. **http://192.168.5.1/** öffnen, Rolle, Mesh-Name und Passwort eintragen (auf allen Geräten gleich), **Save**.
 
-1. Damit verbinden, auch wenn das Handy „kein Internet“ meldet, und **http://192.168.5.1/** öffnen.
-2. **Rolle:** Server für das Gerät mit der Musikquelle, Client für alle anderen.
-3. **Mesh-Name und Passwort:** auf allen Geräten gleich.
-4. **Pins:** nur ändern, wenn die Verdrahtung von der [Standardbelegung](#hardware) abweicht. Die Vorlage
-   „Alternative“ setzt die zweite übliche Belegung.
-5. **Save:** Das Gerät startet neu und verbindet sich mit dem Mesh.
-
-Sinnvoll ist, zuerst den Server einzurichten und dann die Clients. Jeder Client erscheint in der Geräteliste des
-Servers, erreichbar im Mesh-WLAN unter **http://192.168.5.1/**. Dort lassen sich Lautstärke, Stummschaltung und
-Verzögerung je Gerät einstellen, **Settings** öffnet die Einstellungen eines Clients.
+Am besten erst den Server einrichten, dann die Clients. Die tauchen danach in der Geräteliste des Servers auf. Was die
+Seite sonst noch kann, steht unter [Web-UI](#web-ui).
 
 ### 3. Updates
 
@@ -102,10 +95,11 @@ Zwei Aufbauten laufen bei mir:
   einen Pegelwandler TXB0104 am ESP hängt (siehe [Module an den Schnittstellen](#module-an-den-schnittstellen)).
 * **[SnapStreamer](#bauvorschlag-snapstreamer):** ein Bauvorschlag für einen reinen Empfänger mit PCM5102A.
 
-Geeignet ist jeder ESP32-S3 mit mindestens 4 MB Flash, Octal-PSRAM und USB-Serial/JTAG. Ich nehme das YD-ESP32-S3
-N16R8 von VCC-GND Studio
+Geeignet ist jeder ESP32-S3 mit mindestens 4 MB Flash, Octal-PSRAM und USB-Serial/JTAG, zum Beispiel ein
+YD-ESP32-S3 N16R8
 ([Schaltplan V1.4](https://github.com/vcc-gnd/YD-ESP32-S3/blob/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf)).
-Zwei 10-kΩ-Potis und eine WS2812-LED sind optional. Die Standardbelegung könnt ihr ändern (siehe [Pins](#pins)):
+Zwei 10-kΩ-Potis sind optional. Als Status-LED dient die WS2812, die auf vielen Boards schon sitzt. Die
+Standardbelegung könnt ihr ändern (siehe [Pins](#pins)):
 
 | GPIO | Funktion |
 |---|---|
@@ -148,7 +142,7 @@ um die Verlustleistung zu begrenzen. Ein **Poti mit Schalter** schaltet den ESP 
 
 | Teil | Typ / Hinweis | Anzahl |
 |---|---|---|
-| ESP32-S3-Board | YD-ESP32-S3 N16R8 (≥ 4 MB Flash, Octal-PSRAM), mit U.FL-Anschluss | 1 |
+| ESP32-S3-Board | ≥ 4 MB Flash, Octal-PSRAM, mit U.FL-Anschluss, z. B. YD-ESP32-S3 N16R8 | 1 |
 | WLAN-Antenne | 2,4 GHz mit U.FL-(IPEX-)Kabel | 1 |
 | DAC-Modul | PCM5102A mit 3,5-mm-Klinkenbuchse | 1 |
 | Lademodul | TP4056 mit Schutzschaltung (DW01), USB-C | 1 |
