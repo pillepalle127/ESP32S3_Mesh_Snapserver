@@ -33,7 +33,9 @@ jobs:
       # The merged image fills 0x9000-0xFFFF (NVS, PHY data) with 0xFF, so
       # it is for fresh installs only; updates write the four parts.
       # The action runs `command` inside single quotes (and sets git's
-      # safe.directory itself), so it must not contain any.
+      # safe.directory itself), so it must not contain any. ESP-IDF's own
+      # licence files only exist inside that container, so they are copied
+      # out here for the third-party notice.
       - name: Build
         uses: espressif/esp-idf-ci-action@v1
         with:
@@ -42,7 +44,10 @@ jobs:
           command: >-
             idf.py build &&
             cd build &&
-            esptool.py --chip esp32s3 merge_bin -o snapmesh-full.bin @flash_args
+            esptool.py --chip esp32s3 merge_bin -o snapmesh-full.bin @flash_args &&
+            mkdir -p licenses &&
+            cp "$IDF_PATH/LICENSE" licenses/esp-idf-LICENSE &&
+            cp "$IDF_PATH/docs/en/COPYRIGHT.rst" licenses/esp-idf-COPYRIGHT.rst
 
       - name: Collect
         run: |
@@ -52,6 +57,7 @@ jobs:
           cp build/ota_data_initial.bin dist/
           cp build/esp32_s3_mini_snapserver.bin dist/snapmesh-app.bin
           cp build/snapmesh-full.bin dist/
+          tools/collect_licenses.sh > dist/THIRD_PARTY_LICENSES.txt
           ls -l dist
 
       - uses: actions/upload-artifact@v4
