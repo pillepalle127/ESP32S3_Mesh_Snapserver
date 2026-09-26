@@ -5,7 +5,7 @@
 
 # ESP32-S3 Mesh Snapserver
 
-**Stand:** 2026-09-26
+**Stand:** 2026-09-26 · **English:** [README.en.md](README.en.md)
 
 Mehrere Lautsprecher spielen synchron dieselbe Musik, ohne Router, PC oder Kabel dazwischen. Die ESP32-S3 bauen sich
 ihr eigenes Funknetz (ESP-Mesh-Lite) und reichen das Signal von Gerät zu Gerät weiter.
