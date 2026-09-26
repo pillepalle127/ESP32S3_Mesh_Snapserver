@@ -95,7 +95,8 @@ Zwei Bauformen:
 
 * **Komplettsystem** (im Verstärker integriert): Ausgang PCM5102A, Eingang TinySine AudioB I2S V2r0 (Bluetooth)
   über Pegelwandler TXB0104 ([Module an den Schnittstellen](#module-an-den-schnittstellen)).
-* **[SnapStreamer](#aufbau-der-snapstreamer)**: nur PCM5102A, als zusätzliche Quelle an einem vorhandenen Verstärker.
+* **[SnapStreamer](#bauvorschlag-snapstreamer)** (Bauvorschlag): nur PCM5102A, als zusätzliche Quelle an einem
+  vorhandenen Verstärker.
 
 ESP32-S3 mit ≥ 4 MB Flash und Octal-PSRAM (N16R8, N8R8; USB-Serial/JTAG), z. B. YD-ESP32-S3 N16R8 von VCC-GND
 Studio ([Schaltplan V1.4](https://github.com/vcc-gnd/YD-ESP32-S3/blob/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf)).
@@ -113,10 +114,11 @@ Optional 2 × 10-kΩ-Poti und WS2812-LED. Standardbelegung (änderbar, siehe [Pi
 
 ---
 
-## Aufbau: der SnapStreamer
+## Bauvorschlag: SnapStreamer
 
-Der **SnapStreamer** ist ein Client im eigenen Gehäuse mit Akku: ESP32-S3-Board mit PCM5102A darunter, als
-weitere Quelle per Klinke (Line-Out) an einem vorhandenen Verstärker, ohne eigenen Eingang.
+**SnapStreamer** ist ein Konzept zum Selbstbauen, kein fertiges Gerät: ein Client aus ESP32-S3-Board mit
+PCM5102A darunter, mit Akku im gedruckten Gehäuse, als weitere Quelle per Klinke (Line-Out) an einem vorhandenen
+Verstärker, ohne eigenen Eingang.
 
 <img src="docs/IMG_1684_copy.jpg" alt="SnapStreamer-Platine von oben: ESP32-S3-Board mit dem PCM5102A darunter" width="220">
 <img src="docs/IMG_1687_copy.jpg" alt="Von unten: PCM5102A-Modul unter dem ESP32-S3-Board" width="220">
