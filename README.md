@@ -124,10 +124,10 @@ abschaltet. Viele Alternativen gibt es nicht, sauberer wäre nur ein Buck-Boost-
 
 | Teil | Typ / Hinweis | Anzahl |
 |---|---|---|
-| ESP32-S3-Board | ≥ 4 MB Flash, Octal-PSRAM, mit U.FL-Anschluss, z. B. YD-ESP32-S3 N16R8 | 1 |
-| WLAN-Antenne | 2,4 GHz mit U.FL-(IPEX-)Kabel | 1 |
+| ESP32-S3-Board | ≥ 4 MB Flash, Octal-PSRAM, z. B. YD-ESP32-S3 N16R8 | 1 |
+| WLAN-Antenne | optional, 2,4 GHz mit U.FL-Kabel; nur für Boards mit U.FL-Anschluss, verbessert mit guter Antenne den Empfang | 1 |
 | DAC-Modul | PCM5102A mit 3,5-mm-Klinkenbuchse | 1 |
-| Lademodul | TP4056 mit Schutzschaltung (DW01), USB-C | 1 |
+| Lademodul | TP4056 mit Schutzschaltung (DW01) | 1 |
 | Akku | 18650 Li-Ion mit Zellkontakten | 1 |
 | Poti mit Schalter | 10 kΩ linear (B10K), Schalter für die Versorgung, mit Drehknopf | 1 |
 | Gehäuse | 3D-Druck: Unterteil (PETG), Deckel (PETG transparent) | 1 |
