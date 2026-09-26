@@ -303,20 +303,8 @@ Snapcast-Verbindung (`snapserver_remote_request()` → `webconfig_handle_remote_
 „not connected“, Neuladen bei Rückkehr; Factory Reset nur lokal. Fremde Clients: Badge „Snapcast“, nur
 Lautstärke/Mute/Delay, Hops = 1 bei MAC direkt am Server-AP, sonst unbekannt.
 
-### Endpunkte
-
-| Methode | Pfad | Inhalt |
-|---|---|---|
-| GET/POST | `/api/config` | Konfiguration; POST antwortet `{"reboot":bool}` |
-| GET | `/api/status` | Provisioning-Grund, Uptime, Poti-Werte, Pin-Probestatus, Server-Verbindung (Client) |
-| POST | `/api/factory-reset` | Reset + Neustart |
-| GET | `/api/devices` | Geräteliste (nur Server) |
-| POST | `/api/devices` | `{"id", "volume_percent"\|"muted"\|"delay_ms"\|"name"}` |
-| GET/POST | `/api/devices/config?id=` | `/api/config` eines Clients über den Server |
-| GET | `/api/devices/status?id=` | `/api/status` eines Clients über den Server |
-
-Fehler bei `?id=`: 404 = nicht verbunden bzw. kein eigener Client, 504 = keine Antwort (3 s, Status 2 s),
-400 = vom Client abgelehnt.
+Die Seite arbeitet über eine JSON-API (`/api/config`, `/api/status`, `/api/devices` u. a., siehe
+`main/webconfig.c`).
 
 ---
 
@@ -331,14 +319,7 @@ Belegung zur Laufzeit unter *Pins*, ohne Neu-Flashen:
   (`device_config_confirm_pins()`); nach 3 unbestätigten Boots gilt wieder die Standardbelegung, gemeldet im
   Status. Falsch verdrahtete, aber zulässige Belegungen erkennt die Firmware nicht.
 
-| Gesperrte GPIOs (`pinmap.c`) | Grund |
-|---|---|
-| 0, 3, 45, 46 | Strapping |
-| 19, 20 | USB |
-| 22–25 | nicht vorhanden |
-| 26–32 | SPI-Flash, PSRAM-CS |
-| 33–37 | Octal-PSRAM (`CONFIG_SPIRAM_MODE_OCT`) |
-| 43, 44 | UART0-Konsole (falls aktiv) |
+Nicht wählbar sind Strapping-, USB-, Flash-/PSRAM- und Konsolen-Pins (`pinmap.c`).
 
 ### Potis
 
@@ -419,70 +400,11 @@ Timeout): `esptool.py --before usb_reset … write_flash @flash_args` aus `build
 
 ### ESP-IDF-Konfiguration
 
-**`sdkconfig.defaults` ist die vollständige Konfiguration** (`sdkconfig` nicht im Repository): Ein frischer Build
-ergibt exakt den Gerätestand (mit leerem Klon geprüft), CI baut nur daraus. `menuconfig`-Änderungen dort
-nachtragen; `idf.py save-defconfig` zeigt Abweichungen.
-
-**Versionen:** ESP-IDF **5.4.3** (in CI fest); Komponenten laut `main/idf_component.yml`, aufgelöst in
-`dependencies.lock`:
-
-| Komponente | Version | Zweck |
-|---|---|---|
-| `espressif/mesh_lite` | 1.0.2 | Mesh (zieht `iot_bridge` 1.0.1, `esp_modem`, `tinyusb` u. a. nach) |
-| `esphome/micro-opus` | 0.4.1 | Opus-Encoder und -Decoder |
-| `espressif/mdns` | 1.13.1 | `snapserver-<MAC>.local` / `snapclient-<MAC>.local` |
-
-**`sdkconfig.defaults`** (Begründungen als Kommentar in der Datei):
-
-| Bereich | Option | Wert | Grund |
-|---|---|---|---|
-| Flash | `ESPTOOLPY_FLASHSIZE_4MB` | y | Mindestgröße: läuft auf 4-, 8-, 16-MB-Boards (IDF bricht nur bei kleinerem Chip ab) |
-| | `PARTITION_TABLE_CUSTOM` | `partitions.csv` | siehe unten |
-| CPU | `ESP32S3_DEFAULT_CPU_FREQ_240` | y | Opus-Encoder, DSP |
-| PSRAM | `SPIRAM`, `SPIRAM_MODE_OCT`, `SPIRAM_SPEED_80M` | y | Octal-PSRAM (N16R8, N8R8); Quad bräuchte `SPIRAM_MODE_QUAD` |
-| | `SPIRAM_USE_CAPS_ALLOC` | y | PSRAM gezielt (Puffer, Stacks), `malloc()` intern |
-| | `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` | y | WLAN-/lwIP-Puffer ins PSRAM (Sendestau fraß internen RAM) |
-| WLAN | `ESP_WIFI_STATIC_RX_BUFFER_NUM` | 10 | getestet (IDF sonst 16) |
-| | `ESP_WIFI_RX_BA_WIN` | 6 | getestet (IDF 16) |
-| lwIP | `LWIP_TCP_SND_BUF_DEFAULT`, `LWIP_TCP_WND_DEFAULT` | 2880 | 2 × MSS; mehr puffert nur Audio im knappen RAM |
-| | `LWIP_TCP_OOSEQ_MAX_PBUFS` | 4 | getestet (IDF mit PSRAM unbegrenzt) |
-| | `LWIP_MAX_SOCKETS` | 24 | 10 Snapcast-Clients, JSON-RPC, Web, Mesh, Durchsagen |
-| | `LWIP_TCPIP_TASK_AFFINITY_CPU0` | y | lwIP (Prio 18) verdrängte den Audio-Task auf Kern 1 |
-| HTTP | `HTTPD_MAX_REQ_HDR_LEN` | 1024 | WebView-Header > 512 (Fehler 431) |
-| System | `ESP_SYSTEM_EVENT_TASK_STACK_SIZE` | 4096 | `sys_evt`-Überlauf nach Mesh-IP-Ereignis (Boot-Schleife) |
-| | `FREERTOS_TIMER_TASK_STACK_DEPTH` | 4096 | IDF 2048; seit dem ersten Commit, Grund nicht dokumentiert |
-| | `FREERTOS_HZ` | 1000 | 1-ms-Tick (IDF 100); dito |
-| Diagnose | `FREERTOS_USE_TRACE_FACILITY`, `…_RUN_TIME_STATS` u. a. | y | CPU-Last je Task (`cpu_stats.c`) |
-| | `LOG_DEFAULT_LEVEL_INFO` | y | |
-| Mesh | `SNAPSERVER_ENABLE_MESH_LITE`, `MESH_LITE_ENABLE` | y | Mesh an (Projekt-Kconfig: aus) |
-
-**Projektoptionen** (`idf.py menuconfig` → *Snapserver Mesh Project Configuration*, `main/Kconfig.projbuild`):
-Schalter wirken beim Bauen, Werte nur als Vorgaben für ersten Start und Factory Reset (danach gilt der NVS).
-
-| Option | Vorgabe | Bedeutung |
-|---|---|---|
-| `SNAPSERVER_STATUS_LED_ENABLE` | y | WS2812-Status-LED; `n` nimmt den Code heraus |
-| `SNAPSERVER_STATUS_LED_GPIO` | 48 | LED-Pin (0 = keine LED) |
-| `SNAPSERVER_POTS_ENABLE` | y | Potis; `n` nimmt den Code heraus |
-| `MESH_SOFTAP_SSID_PREFIX` | `SnapMesh` | Mesh-SSID |
-| `MESH_SOFTAP_PASSWORD` | `criticalmass` | Mesh-Passwort |
-| `MESH_CHANNEL` | 6 | WLAN-Kanal (1–13) |
-| `SNAPSERVER_OPUS_BITRATE` | 96000 | Opus-Bitrate (16000–192000) |
-| `SNAPSERVER_OPUS_COMPLEXITY` | 5 | Opus-Complexity (0–10) |
-| `SNAPSERVER_CROSSOVER_HZ` | 120 | Trennfrequenz (40–500 Hz) |
-
-**Partitionstabelle** (`partitions.csv`, passt in 4 MB):
-
-| Name | Typ | Offset | Größe | Inhalt |
-|---|---|---|---|---|
-| `nvs` | data/nvs | `0x9000` | 24 KB | Konfiguration, Pins, Potis, Client-Werte, DHCP-Bereich |
-| `phy_init` | data/phy | `0xF000` | 4 KB | WLAN-Kalibrierung |
-| `ota_0` | app | `0x10000` | 1,875 MB | Firmware (~1,3 MB belegt, 30 % frei) |
-| `ota_1` | app | `0x1F0000` | 1,875 MB | zweiter App-Bereich für spätere OTA-Updates |
-| `otadata` | data/ota | `0x3D0000` | 8 KB | startender App-Bereich; beim Flashen leer → `ota_0` |
-
-`nvs` und `phy_init` liegen wie in der früheren 16-MB-Tabelle: Ältere Boards lassen sich ohne „Erase device“
-aktualisieren und behalten ihre Einstellungen. OTA über die Web-Seite fehlt noch (TODO.md); keine Coredump-Partition.
+Die vollständige Konfiguration steht in `sdkconfig.defaults` (Begründungen als Kommentar); `sdkconfig` ist nicht
+im Repository, CI baut nur daraus. Änderungen per `menuconfig` dort nachtragen (`idf.py save-defconfig` zeigt
+Abweichungen). Komponenten: `main/idf_component.yml` / `dependencies.lock`. Projektoptionen:
+`main/Kconfig.projbuild` (nur Vorgaben für ersten Start und Factory Reset). Partitionen: `partitions.csv`
+(4 MB, zwei OTA-Bereiche; NVS an der alten Adresse, Updates behalten die Einstellungen).
 
 ### Android-App bauen
 
