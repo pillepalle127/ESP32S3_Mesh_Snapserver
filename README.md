@@ -164,11 +164,14 @@ Standardbelegung (änderbar, siehe [Pins](#pins)):
 
 ---
 
-## Aufbau der Streamer
+## Aufbau: der SnapStreamer
 
-<img src="docs/IMG_1684.JPG" alt="Streamer von oben: ESP32-S3-Board mit dem PCM5102A darunter" width="280">
-<img src="docs/IMG_1687.JPG" alt="Streamer von unten: PCM5102A-Modul unter dem ESP32-S3-Board" width="280">
-<img src="docs/IMG_1688.JPG" alt="Streamer von der Seite: GND und VIN gekreuzt" width="280">
+Ein fertiges Gerät heißt **SnapStreamer**: ESP32-S3-Board mit PCM5102A darunter, auf Wunsch mit Akku im
+eigenen Gehäuse.
+
+<img src="docs/IMG_1684_copy.jpg" alt="SnapStreamer-Platine von oben: ESP32-S3-Board mit dem PCM5102A darunter" width="220">
+<img src="docs/IMG_1687_copy.jpg" alt="Von unten: PCM5102A-Modul unter dem ESP32-S3-Board" width="220">
+<img src="docs/IMG_1688_copy.jpg" alt="Von der Seite: GND und VIN gekreuzt" width="220">
 
 Der Aufbau spart Platz und Lötarbeit: Das PCM5102A-Modul sitzt direkt unter dem ESP32-S3-Board, über kurze
 Stiftleisten verbunden. Die LEDs bleiben von oben sichtbar, RST- und BOOT-Taster zugänglich. Klinkenbuchse und
@@ -179,6 +182,25 @@ GND und VIN müssen dabei gekreuzt werden (in der Seitenansicht als X zu sehen).
 Die rote und die grüne Leitung auf den Fotos gehören nicht zwingend zum Aufbau. Sie sind hier nur nötig, weil der
 Strompfad von der USB-Buchse des ESP aufgetrennt wurde, um eine 18650-Zelle gezielt über einen TP4056 laden zu
 können (Details folgen noch).
+
+### Gehäuse
+
+<img src="docs/IMG_1697.jpeg" alt="SnapStreamer im geschlossenen Gehäuse, Status-LED leuchtet durch den Deckel" width="340">
+<img src="docs/IMG_1695.jpeg" alt="SnapStreamer offen: Platine im Gehäuse, USB und Klinke angesteckt" width="340">
+
+<img src="docs/IMG_1689_copy.jpg" alt="Gehäuseunterteil mit 18650-Zelle und TP4056-Lademodul, daneben die Platine" width="220">
+<img src="docs/IMG_1690_copy.jpg" alt="Platine eingesetzt, darunter die Zelle" width="300">
+<img src="docs/3d_Streamer.png" alt="FreeCAD-Modell des Gehäuseunterteils" width="300">
+
+3D-gedrucktes Gehäuse: Im Unterteil liegt unten eine 18650-Zelle mit TP4056-Lademodul (eigene USB-C-Buchse),
+darüber sitzt die Platine. USB-C und Klinke sind von der Stirnseite zugänglich, durch den lichtdurchlässigen
+Deckel scheint die Status-LED. Die Dateien liegen in [`mechanics/housing/`](mechanics/housing/):
+
+| Datei | Inhalt |
+|---|---|
+| `Snapstreamer2.FCStd` | FreeCAD-Modell |
+| `Snapstreamer2-SStreamer GuT.3mf` | Unterteil, druckfertig |
+| `Snapstreamer2-SStreamer GoT.3mf` | Deckel, druckfertig |
 
 ---
 
@@ -298,7 +320,7 @@ Fremde Clients bekommen während einer Durchsage `muted:true`, weil sie den UDP-
 
 Jedes Gerät bietet die Seite auf Port 80 an. Alle Werte liegen im NVS und überleben Updates.
 
-<img src="docs/Screenshot_20260923_220820_Firefox.jpg" alt="Konfigurationsseite des Servers: Geräteliste und Einstellungen eines Clients" width="280">
+<img src="docs/Screenshot_20260923_220820_Firefox_copy.jpg" alt="Konfigurationsseite des Servers: Geräteliste und Einstellungen eines Clients" width="280">
 
 | Gruppe | Felder | Übernahme |
 |---|---|---|
@@ -444,7 +466,7 @@ Eigener Kanal neben dem Stream: niedrige Latenz statt Lückenlosigkeit.
   erlaubt, weil die Server-Adresse frei einstellbar ist.
 
 <img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce, Durchsage" width="280">
-<img src="docs/Screenshot_20260923_215400_SnapAnnounce.jpg" alt="SnapAnnounce, Geräte" width="280">
+<img src="docs/Screenshot_20260923_215400_SnapAnnounce_copy.jpg" alt="SnapAnnounce, Geräte" width="280">
 
 ---
 
@@ -570,7 +592,11 @@ main/
 ├── status_led.c       WS2812
 └── cpu_stats.c        CPU-Last je Task
 android/SnapAnnounce/  Durchsage-App
-docs/, tools/          Verdrahtung, Screenshots, Testskripte
+mechanics/housing/     Gehäuse: FreeCAD-Modell, 3MF zum Drucken
+flasher/               Flash-Seite (GitHub Pages)
+docs/                  Fotos, Screenshots, Logo (docs/logo/), Board-Schaltplan
+tools/                 Testskript für Durchsagen
+.github/workflows/     Release: Firmware, App, Flash-Seite
 ```
 
 ---
