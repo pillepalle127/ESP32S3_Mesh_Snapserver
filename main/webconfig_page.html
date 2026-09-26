@@ -152,6 +152,136 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+
+/* German when the browser (or the phone, inside the app) asks for it,
+ * English otherwise. The page is written in English; DE maps each English
+ * text to German, and anything missing stays English. {0}, {1} are filled
+ * in by t(). */
+const LANG = ((navigator.languages && navigator.languages[0]) || navigator.language || 'en')
+  .toLowerCase().startsWith('de') ? 'de' : 'en';
+const DE = {
+  'Loading...': 'Lädt …',
+  'Devices': 'Geräte',
+  'Role': 'Rolle',
+  'Device role': 'Geräterolle',
+  'Playback source': 'Wiedergabequelle',
+  'Auto': 'Automatisch',
+  'Network': 'Netzwerk',
+  'Local I2S input': 'Lokaler I2S-Eingang',
+  'Local input threshold (dBFS)': 'Schwelle lokaler Eingang (dBFS)',
+  'Buffer (ms)': 'Puffer (ms)',
+  'Delay trim (ms)': 'Delay-Trim (ms)',
+  'Server address override': 'Feste Server-Adresse',
+  'auto (mesh root)': 'automatisch (Mesh-Root)',
+  'Mesh / Wi-Fi': 'Mesh / WLAN',
+  'Mesh enabled': 'Mesh aktiv',
+  'Password': 'Passwort',
+  'Show': 'Anzeigen',
+  'Hide': 'Verbergen',
+  'Wi-Fi channel (1-13)': 'WLAN-Kanal (1–13)',
+  'Max mesh hops (1-15)': 'Max. Mesh-Hops (1–15)',
+  'DSP / Crossover': 'DSP / Weiche',
+  'Crossover enabled': 'Weiche aktiv',
+  'Crossover frequency (40-500 Hz)': 'Trennfrequenz (40–500 Hz)',
+  'Sub gain (dB)': 'Verstärkung Sub (dB)',
+  'Wideband gain (dB)': 'Verstärkung Breitband (dB)',
+  'Sub output channel': 'Ausgangskanal Sub',
+  'Left': 'Links',
+  'Right': 'Rechts',
+  'Load wiring preset': 'Vorlage für die Verdrahtung',
+  'I2S DIN (from ADC)': 'I2S DIN (vom ADC)',
+  'I2S DOUT (to DAC)': 'I2S DOUT (zum DAC)',
+  'Status LED (WS2812 data)': 'Status-LED (WS2812-Daten)',
+  'Volume knob': 'Lautstärke-Poti',
+  'Delay knob': 'Delay-Poti',
+  'Delay knob range (\u00b1 ms)': 'Bereich Delay-Poti (\u00b1 ms)',
+  'Complexity (0-10)': 'Komplexität (0–10)',
+  'Save': 'Speichern',
+  'Factory Reset': 'Werkseinstellungen',
+  'Toggle sign': 'Vorzeichen wechseln',
+  'Mesh active': 'Mesh aktiv',
+  'Provisioning mode (no config saved yet)': 'Einrichtungsmodus (noch keine Konfiguration gespeichert)',
+  'Provisioning mode (no station joined the mesh AP for 7 boots)':
+    'Einrichtungsmodus (7 Starts lang hat sich keine Station am Mesh-AP angemeldet)',
+  'Provisioning mode (mesh disabled)': 'Einrichtungsmodus (Mesh deaktiviert)',
+  'Settings: {0}': 'Einstellungen: {0}',
+  ' (not connected)': ' (nicht verbunden)',
+  'Settings unavailable': 'Einstellungen nicht verfügbar',
+  'Settings unavailable: {0}': 'Einstellungen nicht verfügbar: {0}',
+  'none': 'keiner',
+  'GPIO {0} (not usable)': 'GPIO {0} (nicht nutzbar)',
+  'Server not known yet': 'Server noch unbekannt',
+  'connected': 'verbunden',
+  'not connected': 'nicht verbunden',
+  'server': 'Server',
+  '1 hop': '1 Hop',
+  '{0} hops': '{0} Hops',
+  'hops unknown': 'Hops unbekannt',
+  '1 child': '1 Station',
+  '{0} children': '{0} Stationen',
+  'Stations on this device\'s access point: mesh nodes relaying through it, and any phone joined to it directly':
+    'Stationen am Access Point dieses Geräts: Mesh-Knoten, die darüber laufen, und direkt verbundene Handys',
+  'Device not connected': 'Gerät nicht verbunden',
+  'Device not responding': 'Gerät antwortet nicht',
+  'volume knob': 'Lautstärke-Poti',
+  'delay knob': 'Delay-Poti',
+  'The saved pin assignment did not start three times; back to the standard pins.':
+    'Die gespeicherte Pinbelegung ist dreimal nicht gestartet; zurück auf der Standardbelegung.',
+  'New pin assignment on trial until this start completes.':
+    'Neue Pinbelegung auf Probe, bis dieser Start abgeschlossen ist.',
+  'connected clients': 'verbundene Clients',
+  'boot-fail streak': 'Fehlstarts in Folge',
+  'uptime': 'Laufzeit',
+  'Status unavailable': 'Status nicht verfügbar',
+  'Password must be empty (open network) or at least 8 characters.':
+    'Das Passwort muss leer sein (offenes Netz) oder mindestens 8 Zeichen haben.',
+  'device': 'das Gerät',
+  'Saving...': 'Speichert …',
+  'Save failed: server unreachable': 'Speichern fehlgeschlagen: Server nicht erreichbar',
+  'Save failed: {0}': 'Speichern fehlgeschlagen: {0}',
+  'Saved. A setting that needs a restart changed, {0} is rebooting...':
+    'Gespeichert. Eine Änderung braucht einen Neustart, {0} startet neu …',
+  'Saved.': 'Gespeichert.',
+  'Reset all settings to defaults and reboot?': 'Alle Einstellungen zurücksetzen und neu starten?',
+  'Resetting...': 'Setzt zurück …',
+  'Factory reset done, device is rebooting...': 'Zurückgesetzt, das Gerät startet neu …',
+  'Not applied: {0}': 'Nicht übernommen: {0}',
+  'Not applied: server unreachable': 'Nicht übernommen: Server nicht erreichbar',
+  'Not one of ours: only volume, mute and delay can be set':
+    'Fremder Snapcast-Client: nur Lautstärke, Stumm und Delay einstellbar',
+  'Settings': 'Einstellungen',
+  'Volume': 'Lautstärke',
+  'mute': 'stumm',
+  'delay': 'Delay',
+  'knob {0} %': 'Poti {0} %',
+  'no volume knob': 'ohne Lautstärke',
+  'This server ({0})': 'Dieser Server ({0})',
+};
+
+function t(text, ...args) {
+  let out = LANG === 'de' && text in DE ? DE[text] : text;
+  args.forEach((a, i) => { out = out.replace('{' + i + '}', a); });
+  return out;
+}
+
+/* Translates the fixed texts of the page, and of each device row as it is
+ * built: text nodes plus placeholder, title and aria-label. */
+function translateTree(root) {
+  if (LANG !== 'de') return;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.parentNode.closest('script, style')) continue;
+    const key = n.nodeValue.trim();
+    if (key && key in DE) n.nodeValue = n.nodeValue.replace(key, DE[key]);
+  }
+  for (const el of root.querySelectorAll('[placeholder], [title], [aria-label]')) {
+    for (const attr of ['placeholder', 'title', 'aria-label']) {
+      const v = el.getAttribute(attr);
+      if (v && v in DE) el.setAttribute(attr, DE[v]);
+    }
+  }
+}
+
 const REASON_LABEL = {
   none: 'Mesh active',
   no_config: 'Provisioning mode (no config saved yet)',
@@ -172,7 +302,7 @@ function addSignToggle(input) {
   btn.type = 'button';
   btn.className = 'sign';
   btn.textContent = '\u00b1';
-  btn.setAttribute('aria-label', 'Toggle sign');
+  btn.setAttribute('aria-label', t('Toggle sign'));
   wrap.append(input, btn);
   btn.addEventListener('click', () => {
     if (input.disabled || input.value === '') return;
@@ -212,8 +342,8 @@ function updateSettingsHead() {
   const title = $('settings_title');
   title.hidden = !hasDeviceList;
   const name = selectedId === null ? serverName : selectedName;
-  title.textContent = 'Settings: ' + name +
-    (selectedId !== null && !selectedConnected ? ' (not connected)' : '');
+  title.textContent = t('Settings: {0}', name) +
+    (selectedId !== null && !selectedConnected ? t(' (not connected)') : '');
   $('save').disabled = !configLoaded || (selectedId !== null && !selectedConnected);
   // A client reset to defaults loses the mesh it would need to come back.
   $('factoryReset').hidden = selectedId !== null;
@@ -236,7 +366,7 @@ function selectDevice(id, name) {
     row.el.classList.toggle('selected', (key === '\u0000server' ? null : key) === id);
   }
   updateSettingsHead();
-  $('status').textContent = 'Loading...';
+  $('status').textContent = t('Loading...');
   statusBusy = false;
   loadConfig();
   loadStatus();
@@ -261,12 +391,12 @@ async function loadConfig() {
     const res = await fetch(configUrl());
     if (token !== selectionToken) return;
     if (!res.ok) {
-      $('status').textContent = 'Settings unavailable: ' + (await res.text());
+      $('status').textContent = t('Settings unavailable: {0}', await res.text());
       return;
     }
     cfg = await res.json();
   } catch (e) {
-    if (token === selectionToken) $('status').textContent = 'Settings unavailable';
+    if (token === selectionToken) $('status').textContent = t('Settings unavailable');
     return;
   } finally {
     if (token === selectionToken) configBusy = false;
@@ -292,7 +422,7 @@ async function loadConfig() {
   const hasRealPassword = typeof cfg.mesh_password === 'string';
   passwordField.value = hasRealPassword ? cfg.mesh_password : '';
   passwordField.type = 'password';
-  toggleButton.textContent = 'Show';
+  toggleButton.textContent = t('Show');
   // Always enabled: this only reveals what's currently typed into the
   // field, which is safe regardless of whether the server echoed a stored
   // password -- the person typing it already knows what they typed.
@@ -365,12 +495,12 @@ function fillPinSelects(values) {
     const selected = values[f.id] || 0;
     const taken = new Set(PIN_FIELDS.filter((o) => o !== f).map((o) => values[o.id]).filter((g) => g));
     sel.innerHTML = '';
-    if (f.optional) sel.add(new Option('none', '0'));
+    if (f.optional) sel.add(new Option(t('none'), '0'));
     for (const gpio of usablePins(f.adc)) {
       if (!taken.has(gpio)) sel.add(new Option(`GPIO ${gpio}`, String(gpio)));
     }
     if (selected && ![...sel.options].some((o) => Number(o.value) === selected)) {
-      sel.add(new Option(`GPIO ${selected} (not usable)`, String(selected)));
+      sel.add(new Option(t('GPIO {0} (not usable)', selected), String(selected)));
     }
     sel.value = String(selected);
   }
@@ -419,7 +549,7 @@ function updateServerNav(s) {
   if (nav.hidden) return;
   nav.textContent = '';
   if (!s.server_host) {
-    nav.append('Server not known yet');
+    nav.append(t('Server not known yet'));
     return;
   }
   const link = document.createElement('a');
@@ -427,16 +557,16 @@ function updateServerNav(s) {
   link.textContent = `\u2190 Server ${s.server_host}`;
   nav.append(link, ' \u00b7 ');
   const state = document.createElement('span');
-  state.textContent = s.server_connected ? 'connected' : 'not connected';
+  state.textContent = t(s.server_connected ? 'connected' : 'not connected');
   if (!s.server_connected) state.className = 'off';
   nav.append(state);
   if (s.server_hops !== null && s.server_hops !== undefined) {
-    nav.append(' \u00b7 ' + (s.server_hops === 1 ? '1 hop' : `${s.server_hops} hops`));
+    nav.append(' \u00b7 ' + (s.server_hops === 1 ? t('1 hop') : t('{0} hops', s.server_hops)));
   }
   if (s.children !== null && s.children !== undefined) {
     const children = document.createElement('span');
-    children.textContent = s.children === 1 ? '1 child' : `${s.children} children`;
-    children.title = 'Stations on this device\'s access point: mesh nodes relaying through it, and any phone joined to it directly';
+    children.textContent = s.children === 1 ? t('1 child') : t('{0} children', s.children);
+    children.title = t('Stations on this device\'s access point: mesh nodes relaying through it, and any phone joined to it directly');
     nav.append(' \u00b7 ', children);
   }
 }
@@ -451,7 +581,7 @@ async function loadStatus() {
     const res = await fetch(statusUrl());
     if (token !== selectionToken) return;
     if (!res.ok) {
-      $('status').textContent = res.status === 404 ? 'Device not connected' : 'Device not responding';
+      $('status').textContent = t(res.status === 404 ? 'Device not connected' : 'Device not responding');
       return;
     }
     const s = await res.json();
@@ -460,31 +590,31 @@ async function loadStatus() {
     updatePageTitle();
     let knobs = '';
     if (s.pot_volume_percent !== null && s.pot_volume_percent !== undefined) {
-      knobs += '\nvolume knob: ' + s.pot_volume_percent + ' %';
+      knobs += '\n' + t('volume knob') + ': ' + s.pot_volume_percent + ' %';
     }
     if (s.pot_delay_ms !== null && s.pot_delay_ms !== undefined) {
-      knobs += '\ndelay knob: ' + (s.pot_delay_ms > 0 ? '+' : '') + s.pot_delay_ms + ' ms';
+      knobs += '\n' + t('delay knob') + ': ' + (s.pot_delay_ms > 0 ? '+' : '') + s.pot_delay_ms + ' ms';
     }
     let pins = '';
     if (s.pins_reverted) {
-      pins = '\nThe saved pin assignment did not start three times; back to the standard pins.';
+      pins = '\n' + t('The saved pin assignment did not start three times; back to the standard pins.');
     } else if (s.pins_on_trial) {
-      pins = '\nNew pin assignment on trial until this start completes.';
+      pins = '\n' + t('New pin assignment on trial until this start completes.');
     }
     if (selectedId === null) updateServerNav(s);
     let clients = '';
     if (s.clients) {
       const foreign = s.clients.total - s.clients.own;
-      clients = '\nconnected clients: ' + s.clients.total +
+      clients = '\n' + t('connected clients') + ': ' + s.clients.total +
         (s.clients.total ? ` (${s.clients.own} SnapMesh, ${foreign} Snapcast)` : '');
     }
     $('status').textContent =
-      (REASON_LABEL[s.reason] || s.reason) + pins + clients +
+      (REASON_LABEL[s.reason] ? t(REASON_LABEL[s.reason]) : s.reason) + pins + clients +
       (s.version ? '\nfirmware: ' + s.version : '') +
-      '\nboot-fail streak: ' + s.boot_fail_count +
-      '\nuptime: ' + s.uptime_s + ' s' + knobs;
+      '\n' + t('boot-fail streak') + ': ' + s.boot_fail_count +
+      '\n' + t('uptime') + ': ' + s.uptime_s + ' s' + knobs;
   } catch (e) {
-    if (token === selectionToken) $('status').textContent = 'Status unavailable';
+    if (token === selectionToken) $('status').textContent = t('Status unavailable');
   } finally {
     if (token === selectionToken) statusBusy = false;
   }
@@ -518,13 +648,13 @@ $('togglePassword').addEventListener('click', () => {
   const field = $('mesh_password');
   const revealed = field.type === 'text';
   field.type = revealed ? 'password' : 'text';
-  $('togglePassword').textContent = revealed ? 'Show' : 'Hide';
+  $('togglePassword').textContent = t(revealed ? 'Show' : 'Hide');
 });
 
 $('save').addEventListener('click', async () => {
   const passwordInput = $('mesh_password').value;
   if (passwordInput.length > 0 && passwordInput.length < 8) {
-    $('status').textContent = 'Password must be empty (open network) or at least 8 characters.';
+    $('status').textContent = t('Password must be empty (open network) or at least 8 characters.');
     return;
   }
 
@@ -561,8 +691,8 @@ $('save').addEventListener('click', async () => {
   };
 
   const token = selectionToken;
-  const who = selectedId === null ? 'device' : selectedName;
-  $('status').textContent = 'Saving...';
+  const who = selectedId === null ? t('device') : selectedName;
+  $('status').textContent = t('Saving...');
   let res;
   try {
     res = await fetch(configUrl(), {
@@ -571,18 +701,18 @@ $('save').addEventListener('click', async () => {
       body: JSON.stringify(payload),
     });
   } catch (e) {
-    $('status').textContent = 'Save failed: server unreachable';
+    $('status').textContent = t('Save failed: server unreachable');
     return;
   }
 
   if (!res.ok) {
-    $('status').textContent = 'Save failed: ' + res.status + ' ' + (await res.text());
+    $('status').textContent = t('Save failed: {0}', res.status + ' ' + (await res.text()));
     return;
   }
   const result = await res.json();
   $('status').textContent = result.reboot
-    ? `Saved. A setting that needs a restart changed, ${who} is rebooting...`
-    : 'Saved.';
+    ? t('Saved. A setting that needs a restart changed, {0} is rebooting...', who)
+    : t('Saved.');
   if (!result.reboot && token === selectionToken) {
     loadConfig();
     loadStatus();
@@ -590,12 +720,12 @@ $('save').addEventListener('click', async () => {
 });
 
 $('factoryReset').addEventListener('click', async () => {
-  if (!confirm('Reset all settings to defaults and reboot?')) {
+  if (!confirm(t('Reset all settings to defaults and reboot?'))) {
     return;
   }
-  $('status').textContent = 'Resetting...';
+  $('status').textContent = t('Resetting...');
   await fetch('/api/factory-reset', { method: 'POST' });
-  $('status').textContent = 'Factory reset done, device is rebooting...';
+  $('status').textContent = t('Factory reset done, device is rebooting...');
 });
 
 /* ---- Device list (server only) ---- */
@@ -604,9 +734,9 @@ let delayMax = 2000;
 const deviceRows = new Map();
 
 function hopsLabel(hops) {
-  if (hops === null || hops === undefined) return 'hops unknown';
-  if (hops === 0) return 'server';
-  return hops === 1 ? '1 hop' : `${hops} hops`;
+  if (hops === null || hops === undefined) return t('hops unknown');
+  if (hops === 0) return t('server');
+  return hops === 1 ? t('1 hop') : t('{0} hops', hops);
 }
 
 async function postDevice(id, change, row) {
@@ -617,9 +747,9 @@ async function postDevice(id, change, row) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(Object.assign({ id }, change)),
     });
-    if (!res.ok) row.err.textContent = 'Not applied: ' + (await res.text());
+    if (!res.ok) row.err.textContent = t('Not applied: {0}', await res.text());
   } catch (e) {
-    row.err.textContent = 'Not applied: server unreachable';
+    row.err.textContent = t('Not applied: server unreachable');
   }
 }
 
@@ -641,6 +771,7 @@ function makeDeviceRow(dev) {
       <label>delay <input type="number" class="dev-delay" step="10"> ms</label>
     </div>
     <div class="dev-err"></div>`;
+  translateTree(el);
   const row = {
     el,
     name: el.querySelector('.dev-name'),
@@ -694,10 +825,10 @@ function updateDeviceRow(row, dev) {
   row.el.classList.toggle('selected', (dev.server ? null : dev.id) === selectedId);
   // The server's own knob multiplies with the volume set here.
   row.knob.textContent = (dev.server && dev.knob_percent !== null && dev.knob_percent !== undefined)
-    ? `knob ${dev.knob_percent} %` : '';
+    ? t('knob {0} %', dev.knob_percent) : '';
   if (dev.volume_percent === null) {
     row.vol.hidden = true;
-    row.volval.textContent = 'no volume knob';
+    row.volval.textContent = t('no volume knob');
   } else {
     row.vol.hidden = false;
     if (!busy(row.vol)) {
@@ -726,7 +857,7 @@ async function loadDevices() {
   $('devices_section').hidden = !hasDeviceList || embedded;
   if (!d.clients) return;
   delayMax = d.delay_max_ms;
-  serverName = `This server (${d.server.id})`;
+  serverName = t('This server ({0})', d.server.id);
 
   const clients = d.clients.slice().sort((a, b) => {
     const ha = a.hops === null ? 99 : a.hops;
@@ -773,6 +904,8 @@ async function loadDevices() {
   updateSettingsHead();
 }
 
+document.documentElement.lang = LANG;
+translateTree(document.body);
 if (embedded) {
   $('pageTitle').hidden = true;
   document.querySelector('footer').hidden = true;
