@@ -135,8 +135,13 @@ gekreuzt werden (in der Seitenansicht als X zu sehen).
 
 Die rote und die grüne Leitung sind optional. Sie führen die 5 V der USB-Buchse am ESP zum Lademodul TP4056. So
 lässt sich über diese eine Buchse programmieren und der Akku laden, auch bei ausgeschaltetem ESP. Die Buchse des
-Lademoduls wird nicht gebraucht. Ein **Poti mit Schalter** schaltet den ESP und regelt die Lautstärke (siehe
-[Potis](#potis)).
+Lademoduls wird nicht gebraucht. Der Ladestrom des TP4056 ist auf 500 mA gesenkt, um die Verlustleistung zu
+begrenzen. Ein **Poti mit Schalter** schaltet den ESP und regelt die Lautstärke (siehe [Potis](#potis)).
+
+> [!WARNING]
+> Li-Ionen-Akkus können bei Kurzschluss, Beschädigung oder falschem Laden brennen. Nur Zellen und Lademodule mit
+> Schutzschaltung verwenden, offene Kontakte isolieren, die Zelle im Gehäuse nicht quetschen und nicht unbeaufsichtigt
+> laden.
 
 ### Stückliste
 
@@ -218,16 +223,60 @@ WLAN `ESP32_provisioning_<MAC>` zum Einrichten. Nach 3 Minuten ohne Speichern sc
 
 ## Web-UI
 
-<img src="docs/Screenshot_20260923_220820_Firefox_copy.jpg" alt="Konfigurationsseite des Servers: Geräteliste und Einstellungen eines Clients" width="280" align="right">
+<img src="docs/webui-server.png" alt="Einstellungsseite des Servers mit Geräteliste" width="300" align="right">
 
-Jedes Gerät hat eine Einstellungsseite: Rolle, Mesh, Wiedergabe, Weiche, Pins und Opus. Die Werte bleiben bei
-Updates erhalten, ein Factory Reset setzt sie zurück.
+Jedes Gerät hat eine Einstellungsseite, erreichbar über seine IP-Adresse oder den mDNS-Namen. Die Werte bleiben bei
+Updates erhalten. Die Seite ist von oben nach unten so aufgebaut:
+
+### Statusfeld
+
+Zeigt den Verbindungszustand, die Firmware-Version, die Laufzeit und die Stellung der Potis. Am Server steht dazu die
+Zahl der verbundenen Clients, getrennt nach SnapMesh-Geräten und fremden Snapcast-Clients.
 
 ### Geräteliste (Server)
 
 Hier lassen sich Name, Lautstärke, Stumm und Delay jedes Lautsprechers einstellen, auch aus Snapcast-Control-Apps.
-Der Server merkt sich die Werte je Gerät. **Settings** öffnet die Einstellungen eines Clients, egal wie tief er im
-Mesh hängt.
+Die Hops zeigen, über wie viele Stationen ein Gerät am Server hängt. Der Server merkt sich die Werte je Gerät und
+setzt sie bei jeder Anmeldung wieder.
+
+**Settings** lädt die Einstellungen eines Clients in die Seite, egal wie tief er im Mesh hängt. Gespeichert wird
+dann direkt auf diesem Client. Fremde Snapcast-Clients bieten nur Lautstärke, Stumm und Delay.
+
+### Rolle
+
+Server oder Client. Ein Wechsel startet das Gerät neu.
+
+### Wiedergabe (Client)
+
+* **Quelle:** *Auto* spielt den eigenen I2S-Eingang, sobald dort ein Signal über der Schwelle anliegt, sonst den
+  Stream. Alternativ nur Netz oder nur lokal.
+* **Puffer:** Vorgabe 3000 ms. Mehr Puffer übersteht längere Funkaussetzer, verzögert aber den Start.
+* **Delay-Trim:** gleicht Laufzeiten einzelner Lautsprecher aus, etwa bei unterschiedlichen Abständen.
+* **Server-Adresse:** bleibt normalerweise leer, der Client findet den Server im Mesh selbst.
+
+### Mesh / WLAN
+
+Name, Passwort, Kanal und maximale Zahl der Hops. Die Werte müssen auf allen Geräten gleich sein. Das Passwort ist
+leer (offenes Netz) oder mindestens 8 Zeichen lang.
+
+### Weiche
+
+Teilt das Signal in Sub und Breitband auf, mit eigener Verstärkung je Zweig. Der Sub liegt auf dem gewählten Kanal,
+das Breitband auf dem anderen. Änderungen sind sofort hörbar.
+
+### Pin-Belegung
+
+I2S, LED und Potis, siehe [Pins](#pins).
+
+### Opus
+
+Bitrate und Rechenaufwand des Encoders am Server. Die Vorgabe von 96 kbit/s reicht für Musik, höhere Werte belasten
+das Funknetz stärker.
+
+### Speichern und Factory Reset
+
+**Save** übernimmt die Werte. Braucht eine Änderung einen Neustart, startet das Gerät von selbst neu. **Factory
+Reset** setzt alles auf die Vorgaben zurück, auch Mesh-Zugang, Pins und die gespeicherten Client-Werte.
 
 ---
 
