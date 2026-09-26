@@ -105,15 +105,10 @@ Der PCM5102A sitzt über kurze Stiftleisten direkt unter dem ESP32-S3-Board. Die
 BOOT erreichbar, Klinke und USB-Buchsen liegen auf einer Ebene an einer Stirnseite. GND und VIN müssen dabei
 gekreuzt werden (in der Seitenansicht als X zu sehen).
 
-Die rote und die grüne Leitung sind optional. Sie führen die 5 V der USB-Buchse am ESP zum Lademodul TP4056. So
-lässt sich über diese eine Buchse programmieren und der Akku laden, auch bei ausgeschaltetem ESP. Die Buchse des
-Lademoduls wird nicht gebraucht. Den Ladestrom des TP4056 habe ich auf 500 mA gesenkt,
-um die Verlustleistung zu begrenzen. Ein **Poti mit Schalter** schaltet den ESP und regelt die Lautstärke (siehe
-[Potis](#potis)).
-
-Der Akku hängt an VIN (5 V) und nicht direkt an 3V3: Eine volle Zelle hat 4,2 V, der ESP32-S3 verträgt höchstens
-3,6 V. Der LDO des Boards macht daraus 3,3 V. Gegen Ende der Ladung sinkt die Versorgung mit der Zelle, bis der ESP
-abschaltet. Viele Alternativen gibt es nicht, sauberer wäre nur ein Buck-Boost-Wandler auf 3,3 V, und der kostet Platz.
+Die rote und grüne Leitung (optional) führen die 5 V der ESP-Buchse zum TP4056: eine Buchse zum Programmieren und
+Laden. Ladestrom auf 500 mA gesenkt (Verlustleistung). Der Akku hängt an VIN, nicht an 3V3: Die Zelle hat bis 4,2 V,
+der ESP verträgt max. 3,6 V. Die Alternative wäre ein Buck-Boost-Wandler. Ein Poti mit Schalter schaltet ein und
+regelt die Lautstärke.
 
 > [!WARNING]
 > Li-Ionen-Akkus können brennen, wenn sie kurzgeschlossen, beschädigt oder falsch geladen werden. Nehmt nur Zellen
@@ -143,9 +138,9 @@ abschaltet. Viele Alternativen gibt es nicht, sauberer wäre nur ein Buck-Boost-
   </tr>
 </table>
 
-Unten im Gehäuse liegen Akku und Lademodul, darüber die Platine. USB-C und Klinke sind von der Stirnseite
-zugänglich, die Status-LED scheint durch den Deckel. Die Konstruktionsdaten liegen in
-[`mechanics/housing/`](mechanics/housing/): das FreeCAD-Modell `Snapstreamer2.FCStd` sowie Unterteil
+Unten im Gehäuse liegen Akku und Lademodul, darüber die Platine. USB-C und Klinke sind von der Stirnseite zugänglich,
+die Steckkräfte werden ins Gehäuse geführt. Die Status-LED scheint durch den Deckel. Die Konstruktionsdaten
+liegen in [`mechanics/housing/`](mechanics/housing/): das FreeCAD-Modell `Snapstreamer2.FCStd` sowie Unterteil
 (`Snapstreamer2-SStreamer GuT.3mf`) und Deckel (`Snapstreamer2-SStreamer GoT.3mf`) druckfertig als 3MF.
 
 ---
