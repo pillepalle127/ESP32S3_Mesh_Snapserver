@@ -5,15 +5,15 @@
 
 # ESP32-S3 Mesh Snapserver
 
-**Stand:** 2026-09-23
+**Stand:** 2026-09-26
 
 Snapcast-kompatibles Mehrraum-Audiosystem auf ESP32-S3. Eine Firmware, zwei Rollen, zur Laufzeit per
 Web-Konfiguration umschaltbar:
 
-* **Server:** ESP-Mesh-Lite-Root. Nimmt I2S-Stereo auf, mischt zu Mono, encodiert Opus und streamt per
-  Snapcast-Protokoll an alle Clients. Spielt zeitversetzt synchron auf dem eigenen Lautsprecher mit.
-* **Client:** Mesh-Relay (nie Leaf). Empfängt den Stream, synchronisiert auf die Serveruhr und gibt ihn
-  über dieselbe DSP/I2S-Kette aus. Wahlweise mit lokalem I2S-Eingang als Alternativquelle.
+* **Server:** ESP-Mesh-Lite-Root. Nimmt I2S-Stereo auf, mischt zu Mono, encodiert Opus, streamt per Snapcast an
+  alle Clients und spielt zeitversetzt synchron auf dem eigenen Lautsprecher mit.
+* **Client:** Mesh-Relay (nie Leaf). Empfängt den Stream, synchronisiert auf die Serveruhr, gibt ihn über dieselbe
+  DSP/I2S-Kette aus; wahlweise mit lokalem I2S-Eingang als Alternativquelle.
 
 Offizielle Snapclients (PC, Android, iOS) und Snapcast-Control-Apps funktionieren ebenfalls.
 
@@ -21,108 +21,70 @@ Offizielle Snapclients (PC, Android, iOS) und Snapcast-Control-Apps funktioniere
 
 ## Installation
 
-Firmware und App lassen sich **ohne Programmierkenntnisse** installieren. Es muss **keine Entwicklungsumgebung
-und keine Toolchain** eingerichtet werden: Die Firmware wird direkt aus dem Browser auf das Board geschrieben,
-die App ist eine normale Android-Installationsdatei. Beides wird automatisch aus diesem Repository gebaut und
-bei jeder neuen Version unter [Releases](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases)
-bereitgestellt.
+Ohne Toolchain: Firmware per Browser, App als APK, beide automatisch gebaut unter
+[Releases](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases).
 
-### Was du brauchst
+**Du brauchst:**
 
-* **Ein ESP32-S3-Board je Standort** (ein Board versorgt dort z. B. Lautsprecher und Subwoofer über die
-  eingebaute Frequenzweiche) mit **mindestens 4 MB Flash und Octal-PSRAM**, z. B. die Varianten
-  „N16R8“ oder „N8R8“ (etwa das YD-ESP32-S3 N16R8). Auf Boards mit Quad-PSRAM (z. B. N8R2, N16R2) oder ganz
-  ohne PSRAM (z. B. N16) startet diese Firmware nicht. Die Bezeichnung steht in der Produktbeschreibung oder
-  auf dem Modul.
-* **Ein USB-Kabel, das Daten überträgt.** Viele Kabel, die bei Geräten liegen, können nur laden; dann taucht
-  das Board am PC nicht auf.
-* **Einen PC oder Laptop mit Chrome oder Edge** (Windows, macOS oder Linux). Firefox, Safari und Handys können
-  nicht flashen.
-* Für die App: ein **Android-Handy** (ab Android 8). Für iPhones gibt es keine App; die Einstellungen gehen dort
-  im Browser.
+* **Ein ESP32-S3-Board je Standort** (z. B. Lautsprecher plus Subwoofer über die Weiche) mit **≥ 4 MB Flash und
+  Octal-PSRAM**, etwa „N16R8“/„N8R8“ (YD-ESP32-S3 N16R8). Mit Quad-PSRAM (N8R2, N16R2) oder ohne PSRAM (N16)
+  startet die Firmware nicht; die Bezeichnung steht beim Produkt oder auf dem Modul.
+* **USB-Datenkabel** (reine Ladekabel gehen nicht), **PC mit Chrome oder Edge**
+  (Windows, macOS, Linux; nicht Firefox, Safari, Handy).
+* Für die App **Android** ab 8; iPhones nutzen die Einstellungen im Browser.
 
 ### 1. Firmware aufspielen
 
-1. Die **[Flash-Seite](https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/)** in Chrome oder Edge öffnen.
-2. Das Board per USB an den PC anschließen. Hat es zwei USB-Buchsen, die nehmen, die direkt zum ESP32-S3 führt
-   (oft mit „USB“ beschriftet, nicht „COM“ oder „UART“).
-3. Auf **Installieren** klicken. Im Fenster, das der Browser öffnet, den Eintrag **„USB JTAG/serial debug
-   unit“** wählen und **Verbinden**.
-4. Im nächsten Dialog die Installation bestätigen:
-   * **Neues Board:** Das Häkchen **„Erase device“** darf gesetzt werden, es löscht alte Inhalte.
-   * **Update eines Boards, das schon läuft:** **„Erase device“ nicht anhaken.** Dann bleiben alle
-     Einstellungen erhalten.
-5. Etwa eine Minute warten und das Kabel währenddessen nicht abziehen. Wenn die Seite „Installation complete“
-   meldet, ist das Board fertig und startet neu.
+1. **[Flash-Seite](https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/)** in Chrome/Edge öffnen.
+2. Board anschließen, bei zwei Buchsen die am ESP32-S3 (meist „USB“, nicht „COM“/„UART“).
+3. **Installieren** → **„USB JTAG/serial debug unit“** → **Verbinden**.
+4. Neues Board: „Erase device“ erlaubt. **Update: „Erase device“ nicht anhaken**, dann bleiben alle Einstellungen.
+5. Etwa eine Minute warten, Kabel stecken lassen; nach „Installation complete“ startet das Board neu.
 
-**Wenn das Board nicht in der Liste erscheint:** anderes Kabel oder andere Buchse probieren. Hilft das nicht,
-den Knopf **BOOT** gedrückt halten, kurz **RESET** (RST) drücken, BOOT loslassen und es erneut versuchen. Unter
-Linux muss dein Benutzer in der Gruppe `dialout` sein.
+Board fehlt: anderes Kabel/andere Buchse, sonst **BOOT** halten, **RST** tippen, BOOT loslassen; unter Linux
+Gruppe `dialout`.
 
 ### 2. Neues Gerät einrichten
 
-Nach der ersten Installation weiß das Board noch nicht, welche Aufgabe es hat. Es öffnet deshalb ein eigenes,
-offenes WLAN namens **`ESP32_provisioning_…`**.
+Ein frisch installiertes Board öffnet das offene WLAN **`ESP32_provisioning_…`**.
 
-1. Handy oder Laptop mit diesem WLAN verbinden. Meldet das Handy „kein Internet“: trotzdem verbunden bleiben.
-2. Im Browser **http://192.168.5.1/** öffnen.
-3. Einstellen:
-   * **Rolle:** **Server** für genau ein Gerät, nämlich das, an dem die Musikquelle hängt (TinySine-Eingang).
-     **Client** für alle weiteren Lautsprecher.
-   * **Mesh:** Name (SSID) und Passwort des Lautsprecher-Netzes. **Auf allen Geräten dieselben Werte** eintragen;
-     der Server baut das Netz damit auf, die Clients verbinden sich damit.
-   * **Pins:** nur ändern, wenn die Verdrahtung von der [Standardbelegung](#hardware) abweicht. Die Vorlage
-     „Alternative“ setzt die zweite übliche Belegung.
-4. **Save** drücken. Das Gerät startet neu und verbindet sich mit dem Mesh.
+1. Verbinden (auch bei „kein Internet“), **http://192.168.5.1/** öffnen.
+2. **Rolle:** **Server** für genau das Gerät mit der Musikquelle (TinySine-Eingang), **Client** für alle anderen.
+   **Mesh:** Name und Passwort, **auf allen Geräten gleich**. **Pins:** nur bei abweichender Verdrahtung
+   ([Standardbelegung](#hardware)); Vorlage „Alternative“ = zweite übliche Belegung.
+3. **Save**: Neustart, das Gerät verbindet sich mit dem Mesh.
 
-Am besten zuerst den Server einrichten, danach die Clients nacheinander. Jeder Client erscheint anschließend in
-der Geräteliste des Servers.
-
-**Danach:** Mit dem Mesh-WLAN verbinden (der Name und das Passwort von eben) und **http://192.168.5.1/**
-öffnen. Dort ist die Seite des Servers mit allen Lautsprechern: Lautstärke, Stummschaltung und Verzögerung je
-Gerät, und über **Settings** die Einstellungen jedes Clients.
+Erst Server, dann Clients (jeder erscheint in der Geräteliste); danach im Mesh-WLAN **http://192.168.5.1/**: Lautstärke, Mute, Verzögerung je Gerät,
+über **Settings** die Einstellungen jedes Clients.
 
 ### 3. Updates
 
-Ein Update geht genauso wie die Installation (Schritt 1), nur **ohne „Erase device“**. Rolle, Mesh, Pins und
-alle anderen Einstellungen bleiben erhalten. Jedes Gerät wird einzeln per USB aktualisiert, der Server und
-jeder Client. Welche Version ein Gerät hat, steht in seinem Statusfeld (`firmware: v…`).
+Wie Schritt 1 **ohne „Erase device“**, jedes Gerät einzeln per USB; Einstellungen bleiben. Version im Statusfeld
+(`firmware: v…`).
 
 ### 4. App installieren (Android)
 
-1. Auf dem Handy die [Release-Seite](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases) öffnen
-   und die Datei **`SnapAnnounce-….apk`** herunterladen.
-2. Die Datei öffnen. Android fragt, ob der Browser Apps installieren darf: **erlauben**, dann **Installieren**.
-3. Das Handy mit dem Mesh-WLAN verbinden und die App öffnen. Die Server-Adresse `192.168.5.1` ist voreingestellt.
-   * **Durchsage:** Knopf drücken und sprechen, noch einmal drücken zum Beenden.
-   * **Geräte:** alle Lautsprecher mit Lautstärke, Stummschaltung und Verzögerung; **Einstellungen** öffnet die
-     Konfiguration eines Geräts.
+1. Auf dem Handy **`SnapAnnounce-….apk`** von der [Release-Seite](https://github.com/pillepalle127/ESP32S3_Mesh_Snapserver/releases)
+   laden, öffnen, Installieren aus dem Browser **erlauben**.
+2. Im Mesh-WLAN die App öffnen (Server `192.168.5.1` voreingestellt). **Durchsage:** Knopf drücken, sprechen,
+   erneut drücken. **Geräte:** Lautstärke, Mute, Verzögerung aller Lautsprecher; **Einstellungen** öffnet die
+   Konfiguration eines Geräts.
 
-**Berechtigungen:** Beim ersten Druck auf den Durchsage-Knopf fragt Android nach zwei Rechten:
-
-| Recht | Wozu | Was wählen |
-|---|---|---|
-| **Mikrofon** | Die Durchsage aufnehmen. Ohne dieses Recht gehen keine Durchsagen, die Geräteliste funktioniert trotzdem. | „Während der Nutzung der App“ genügt |
-| **Benachrichtigungen** (ab Android 13) | Solange eine Durchsage läuft, zeigt eine Benachrichtigung, dass das Mikrofon offen ist, auch bei gesperrtem Bildschirm. Dort lässt sich die Durchsage auch beenden. | **Zulassen** |
-
-Alle weiteren Rechte (WLAN- und Netzwerkzugriff, WLAN wach halten während einer Durchsage, Vordergrunddienst)
-erteilt Android bei der Installation ohne Nachfrage. Standort, Kontakte, Speicher oder Kamera braucht die App
-nicht. Wurde ein Recht versehentlich abgelehnt: Android-Einstellungen → Apps → SnapAnnounce → Berechtigungen.
-
-Eine selbst gebaute Version der App vorher deinstallieren, sonst verweigert Android das Update (andere Signatur).
-Neue Versionen der App lassen sich danach einfach darüber installieren.
+Rechte: **Mikrofon** („Während der Nutzung“; ohne keine Durchsagen, Geräteliste geht trotzdem) und ab Android 13 **Benachrichtigungen**
+(**Zulassen**: zeigt das offene Mikrofon auch gesperrt, mit Beenden). Netzwerk, WLAN-Lock und Vordergrunddienst
+gibt es ohne Nachfrage; Standort, Kontakte, Speicher, Kamera nicht nötig. Nachholen: Einstellungen → Apps →
+SnapAnnounce → Berechtigungen. Selbst gebaute App vorher deinstallieren (andere Signatur); danach installieren
+sich neue Versionen darüber.
 
 ### Alternativ: Flashen mit esptool
 
-Statt über die Flash-Seite geht es auch mit dem eigenständigen
-[esptool](https://github.com/espressif/esptool/releases) (kein Python nötig, auch ohne Chrome oder Edge) und den
-vier Dateien aus dem Release:
+Auch ohne Chrome/Edge, mit dem eigenständigen [esptool](https://github.com/espressif/esptool/releases) (ohne
+Python) und den vier Release-Dateien:
 ```bash
 esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin 0x3d0000 ota_data_initial.bin
 ```
-`ota_data_initial.bin` setzt den OTA-Datenbereich zurück, damit das Board die gerade geschriebene App startet.
-`snapmesh-full.bin` ist ein Gesamt-Image ab `0x0` für eine Neuinstallation. Es füllt NVS und PHY-Daten
-(`0x9000–0xFFFF`) mit `0xFF` und löscht damit alle Einstellungen, für Updates also nicht verwenden.
+`ota_data_initial.bin` setzt den OTA-Bereich zurück, damit die neue App startet. `snapmesh-full.bin` (Gesamt-Image
+ab `0x0`) überschreibt NVS und PHY-Daten (`0x9000–0xFFFF`) mit `0xFF`: nur für Neuinstallationen.
 
 ---
 
@@ -130,7 +92,7 @@ esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 
 
 | Bereich | Umsetzung |
 |---|---|
-| Betrieb | Eigenständig: Auch der Server läuft auf einem ESP32-S3, im Betrieb ist kein PC oder Raspberry Pi nötig |
+| Betrieb | Eigenständig: Auch der Server läuft auf einem ESP32-S3, kein PC oder Raspberry Pi nötig |
 | Audio | I2S-Vollduplex 48 kHz, L+R → Mono, Opus (Vorgabe 96 kbit/s, Complexity 5) |
 | DSP | LR4-Frequenzweiche (2 × Biquad je Zweig), Gain je Zweig, Kanalzuordnung, live änderbar |
 | Sync | Vierzeiten-Zeitabgleich (Minimum-RTT aus 12 Messungen), Drift-Regelung per Resampling |
@@ -144,13 +106,15 @@ esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 
 
 ## Hardware
 
-* ESP32-S3 mit mindestens 4 MB Flash und Octal-PSRAM (N16R8, N8R8; USB-Serial/JTAG), z. B. YD-ESP32-S3 N16R8
-  von VCC-GND Studio ([Schaltplan V1.4](https://github.com/vcc-gnd/YD-ESP32-S3/blob/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf))
-* Eingang: TinySine AudioB I2S V2r0 mit Pegelwandler TXB0104 (siehe [Module an den Schnittstellen](#module-an-den-schnittstellen))
-* Ausgang: PCM5102A
-* optional: 2 × 10-kΩ-Poti, WS2812-LED
+Zwei Bauformen:
 
-Standardbelegung (änderbar, siehe [Pins](#pins)):
+* **Komplettsystem** (im Verstärker integriert): Ausgang PCM5102A, Eingang TinySine AudioB I2S V2r0 (Bluetooth)
+  über Pegelwandler TXB0104 ([Module an den Schnittstellen](#module-an-den-schnittstellen)).
+* **[SnapStreamer](#aufbau-der-snapstreamer)**: nur PCM5102A, als zusätzliche Quelle an einem vorhandenen Verstärker.
+
+ESP32-S3 mit ≥ 4 MB Flash und Octal-PSRAM (N16R8, N8R8; USB-Serial/JTAG), z. B. YD-ESP32-S3 N16R8 von VCC-GND
+Studio ([Schaltplan V1.4](https://github.com/vcc-gnd/YD-ESP32-S3/blob/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf)).
+Optional 2 × 10-kΩ-Poti und WS2812-LED. Standardbelegung (änderbar, siehe [Pins](#pins)):
 
 | GPIO | Funktion |
 |---|---|
@@ -166,24 +130,35 @@ Standardbelegung (änderbar, siehe [Pins](#pins)):
 
 ## Aufbau: der SnapStreamer
 
-Ein fertiges Gerät heißt **SnapStreamer**: ESP32-S3-Board mit PCM5102A darunter, auf Wunsch mit Akku im
-eigenen Gehäuse.
+Der **SnapStreamer** ist ein Client im eigenen Gehäuse mit Akku: ESP32-S3-Board mit PCM5102A darunter, als
+weitere Quelle per Klinke (Line-Out) an einem vorhandenen Verstärker, ohne eigenen Eingang.
 
 <img src="docs/IMG_1684_copy.jpg" alt="SnapStreamer-Platine von oben: ESP32-S3-Board mit dem PCM5102A darunter" width="220">
 <img src="docs/IMG_1687_copy.jpg" alt="Von unten: PCM5102A-Modul unter dem ESP32-S3-Board" width="220">
 <img src="docs/IMG_1688_copy.jpg" alt="Von der Seite: GND und VIN gekreuzt" width="220">
 
-Der Aufbau spart Platz und Lötarbeit: Das PCM5102A-Modul sitzt direkt unter dem ESP32-S3-Board, über kurze
-Stiftleisten verbunden. Die LEDs bleiben von oben sichtbar, RST- und BOOT-Taster zugänglich. Klinkenbuchse und
-USB-Buchsen liegen an derselben Stirnseite auf einer Ebene, das vereinfacht den Bau des Gehäuses.
+Der PCM5102A sitzt über kurze Stiftleisten direkt unter dem Board (wenig Platz und Lötarbeit); LEDs bleiben sichtbar,
+RST und BOOT zugänglich, Klinke und USB liegen auf einer Ebene an einer Stirnseite (vereinfacht das Gehäuse). GND und VIN werden gekreuzt
+(Seitenansicht: X).
 
-GND und VIN müssen dabei gekreuzt werden (in der Seitenansicht als X zu sehen).
+Rote und grüne Leitung (optional) führen den aufgetrennten Strompfad der ESP-USB-Buchse zum TP4056: Über diese
+eine Buchse wird kommuniziert und die 18650 geladen, auch bei ausgeschaltetem ESP; die Buchse des Lademoduls
+bleibt ungenutzt. Ein **Poti mit Schalter** schaltet den ESP und regelt die Lautstärke ([Potis](#potis)).
 
-Die rote und die grüne Leitung auf den Fotos gehören nicht zwingend zum Aufbau. Mit ihnen ist der Strompfad von
-der USB-Buchse des ESP aufgetrennt und zum TP4056-Lademodul geführt: Über die eine Buchse am ESP wird
-kommuniziert und die 18650-Zelle geladen, auch wenn der ESP ausgeschaltet ist. Die eigene Buchse des Lademoduls
-wird dafür nicht gebraucht. Ein- und ausgeschaltet wird mit einem **Poti mit Schalter**: Der Schalter trennt den
-Strompfad zum ESP, das Poti regelt die Lautstärke (siehe [Potis](#potis)).
+### Stückliste
+
+| Teil | Typ / Hinweis | Anzahl |
+|---|---|---|
+| ESP32-S3-Board | YD-ESP32-S3 N16R8 (≥ 4 MB Flash, Octal-PSRAM), mit U.FL-Anschluss | 1 |
+| WLAN-Antenne | 2,4 GHz mit U.FL-(IPEX-)Kabel | 1 |
+| DAC-Modul | PCM5102A mit 3,5-mm-Klinkenbuchse | 1 |
+| Stiftleisten | 2,54 mm, DAC ↔ ESP-Board | 1 Satz |
+| Lademodul | TP4056 mit Schutzschaltung (DW01), USB-C | 1 |
+| Akku | 18650 Li-Ion mit Zellkontakten | 1 |
+| Poti mit Schalter | 10 kΩ linear (B10K), Schalter für den Strompfad; Drehknopf | 1 |
+| Widerstand | 1 kΩ, Schleifer → GPIO (Schutz, siehe [Potis](#potis)) | 1 |
+| Litze | USB → TP4056, Akku, Schalter, Poti | – |
+| Gehäuse | 3D-Druck: Unterteil (PETG), Deckel (PETG transparent) | 1 |
 
 ### Gehäuse
 
@@ -194,16 +169,10 @@ Strompfad zum ESP, das Poti regelt die Lautstärke (siehe [Potis](#potis)).
 <img src="docs/IMG_1690_copy.jpg" alt="Platine eingesetzt, darunter die Zelle" width="300">
 <img src="docs/3d_Streamer.png" alt="FreeCAD-Modell des Gehäuseunterteils" width="300">
 
-3D-gedrucktes Gehäuse: Im Unterteil liegt unten eine 18650-Zelle mit TP4056-Lademodul, darüber sitzt die Platine.
-Die USB-C-Buchsen des ESP-Boards und die Klinke sind von der Stirnseite zugänglich; geladen wird über die Buchse am
-ESP (siehe oben). Durch den lichtdurchlässigen Deckel scheint die
-Status-LED. Die Dateien liegen in [`mechanics/housing/`](mechanics/housing/):
-
-| Datei | Inhalt |
-|---|---|
-| `Snapstreamer2.FCStd` | FreeCAD-Modell |
-| `Snapstreamer2-SStreamer GuT.3mf` | Unterteil, druckfertig |
-| `Snapstreamer2-SStreamer GoT.3mf` | Deckel, druckfertig |
+Unten Zelle und TP4056, darüber die Platine; USB-C und Klinke an der Stirnseite, die LED scheint durch den
+Deckel. Konstruktionsdaten in
+[`mechanics/housing/`](mechanics/housing/): `Snapstreamer2.FCStd` (FreeCAD-Modell),
+`Snapstreamer2-SStreamer GuT.3mf` (Unterteil) und `Snapstreamer2-SStreamer GoT.3mf` (Deckel), beide druckfertig.
 
 ---
 
@@ -211,27 +180,19 @@ Status-LED. Die Dateien liegen in [`mechanics/housing/`](mechanics/housing/):
 
 ### Ausgang: PCM5102A
 
-Stereo-DAC von TI mit Line-Ausgang. Er erzeugt seine negative Versorgung selbst (Ladungspumpe), der Ausgang
-liegt deshalb symmetrisch um Masse und braucht keine Koppelkondensatoren. Aus 3,3 V liefert er bei Vollaussteuerung
-**2,1 V<sub>eff</sub>** und ist damit direkt zu gängigen Endstufen kompatibel, z. B. zum **TPA3255**. Der Ausgang
-verträgt Lasten ab etwa 1 kΩ. Bei den üblichen rund 10 kΩ Eingangsimpedanz lassen sich also **etwa 8
-Verstärkereingänge parallel** betreiben.
-
-Der ESP liefert kein MCLK. Der PCM5102A erkennt, dass an SCK kein Takt anliegt, und erzeugt seinen Systemtakt
-dann selbst per PLL aus BCK. SCK bleibt also frei; auf GND gelegt (auf den Modulen meist eine Lötbrücke) ist die
-Erkennung robuster gegen Störungen, nötig ist es in der Regel nicht. Außerdem: FMT auf GND (I2S-Format), XSMT
-auf High (nicht stummgeschaltet).
+TI-DAC mit Ladungspumpe: Line-Ausgang um Masse, ohne Koppelkondensatoren, **2,1 V<sub>eff</sub>** aus 3,3 V
+(passt z. B. zum **TPA3255**), Last ab ~1 kΩ = **etwa 8 Verstärkereingänge** à ~10 kΩ. Ohne MCLK erzeugt er den
+Takt per PLL aus BCK; SCK frei (auf GND per Lötbrücke störfester, meist unnötig), FMT auf GND (I2S), XSMT High.
 
 ### Eingang: TinySine AudioB I2S
 
-Bluetooth-Empfänger mit I2S-Ausgang (48 kHz, 16 Bit), unterstützt u. a. **aptX**. Klang, Reichweite (eigene
-Antenne) und Verbindungsverhalten sind sehr gut. Er muss hier als **I2S-Slave** konfiguriert sein; der ESP
-liefert BCLK und LRCLK.
+Bluetooth-Empfänger (48 kHz, 16 Bit, u. a. **aptX**; Klang, Reichweite dank eigener Antenne und Verbindung sehr
+gut), hier **I2S-Slave** am Takt des ESP.
 
-Einen Haken hat er: Seine I2S-Leitungen arbeiten mit **1,8 V**. Der ESP32-S3 erkennt „High“ laut Datenblatt erst
-ab etwa 2,5 V. Direkt angeschlossen kippen deshalb je nach Start einzelne oder sehr viele Bits, hörbar als
-Rauschen und Knacksen, das von selbst kommt und geht. Abhilfe ist ein **Pegelwandler** wie der **TXB0104**
-zwischen Modul und ESP:
+Seine **1,8-V-Pegel** reichen dem ESP32-S3 nicht sicher („High“ laut Datenblatt ab ~2,5 V, Abtastung knapp an
+der Flanke): Direkt an DIN kippen je nach Start Bits, hörbar als Rauschen/Knacksen, das kommt und geht (ohne
+Wandler 3 von 9 Starts gestört, mit 0 von 24). Am **ADAU1701** läuft er erfahrungsgemäß ohne Wandler. Am ESP
+hilft ein **TXB0104** (PCM5102A bleibt direkt am ESP):
 
 | TXB0104 | anschließen an |
 |---|---|
@@ -243,9 +204,8 @@ zwischen Modul und ESP:
 | A3 ↔ B3 | TinySine SD ↔ ESP DIN |
 | A4 | GND |
 
-Der PCM5102A bleibt direkt am ESP. Ein I2C-Isolator wie der ISO1540 eignet sich nicht (Open-Drain, zu langsam
-für 3 MHz). Nach dem Ende einer Wiedergabe treibt der TinySine SD einige Sekunden nicht; die Firmware hält DIN
-deshalb mit einem Pull-down fest (Details in `TODO.md`, Fehler A und C).
+Nach einer Wiedergabe treibt der TinySine SD einige Sekunden nicht; ein Pull-down der Firmware hält DIN fest
+(`TODO.md`, Fehler A und C).
 
 ---
 
@@ -257,25 +217,22 @@ I2S in (Stereo) ─► L+R → Mono ─┬─► Opus ─► Snapcast TCP 1704 �
                                └─► Delay-Line (bufferMs + trim) ─► LR4 ─► Low/High ─► Gain/Vol ─► I2S out
 ```
 
-Die Weiche arbeitet auf dem Monosignal. Die lokale Ausgabe des Servers wird um `bufferMs + delay_trim_ms`
-verzögert, damit sie mit den Clients zusammen spielt. Der Netzwerk-Stream bleibt unverzögert. Die
-Poti-Lautstärke greift am Ende der Ausgabestufe und beeinflusst den Stream nicht.
+Weiche mono; die lokale Ausgabe des Servers läuft um `bufferMs + delay_trim_ms` verzögert synchron zu den
+Clients, der Stream unverzögert; die Poti-Lautstärke wirkt nur am Ausgang.
 
 ---
 
 ## Synchronisation (Client)
 
-* Zeitabgleich über `SNAP_MSG_TIME`. Aus einem Fenster von 12 Messungen zählt die mit der kleinsten RTT;
-  Mitteln würde verzögerte Pakete einrechnen.
-* Soll-Abspielzeit je Chunk: `ts − offset + bufferMs − latency + delay_trim_ms`, verglichen mit
-  `esp_timer` + 40 ms DMA-Latenz.
-* Fehler > 100 ms: harter Resync (Überspringen bzw. Stille). Darunter PI-Regler auf das Resampling-Verhältnis,
-  begrenzt auf ±500 ppm, Slew 5 ppm pro 20-ms-Frame. Resampler mit 32.32-Phasenakkumulator.
-* Ringpuffer = 2 × `bufferMs` (PSRAM), Wiedergabe startet ab 80 % Soll-Füllung.
-* Gemessen: Regelfehler wenige ms. Synchronität mehrerer Clients über Stunden ist noch nicht nachgemessen.
+* Zeitabgleich über `SNAP_MSG_TIME`, gültig ist die kleinste RTT aus 12 Messungen (Mitteln zählte verzögerte mit).
+* Soll-Zeit je Chunk `ts − offset + bufferMs − latency + delay_trim_ms` gegen `esp_timer` + 40 ms DMA-Latenz.
+* Fehler > 100 ms: harter Resync (Überspringen bzw. Stille); darunter PI-Regler aufs Resampling-Verhältnis,
+  ±500 ppm, Slew 5 ppm je 20-ms-Frame, Resampler mit 32.32-Phasenakkumulator.
+* Ringpuffer 2 × `bufferMs` (PSRAM), Start ab 80 % Soll-Füllung.
+* Gemessen: Regelfehler wenige ms; Synchronität mehrerer Clients über Stunden noch nicht nachgemessen.
 
-Ohne RTC/SNTP nutzt der Server `esp_timer` plus Offset als Zeitbasis. Eine plausible Wanduhr (> 2024) übernimmt
-er einmalig vom ersten PC-/Android-Client. ESP-Clients melden nur ihre Uptime und werden dafür ignoriert.
+Ohne RTC/SNTP nutzt der Server `esp_timer` plus Offset; eine plausible Wanduhr (> 2024) übernimmt er einmalig vom
+ersten PC-/Android-Client (ESP-Clients melden nur Uptime und werden ignoriert).
 
 ---
 
@@ -288,40 +245,37 @@ er einmalig vom ersten PC-/Android-Client. ESP-Clients melden nur ihre Uptime un
 | 1705 | TCP | Snapcast JSON-RPC, `Voice.Start`/`Voice.Stop` |
 | 1706 | UDP | Durchsagen (Handy → Server → Clients) |
 
-* Mesh-Ebenen sind durch NAPT getrennt: Ab Ebene 3 (2 Hops) ist ein Client vom Server aus nicht adressierbar.
-  Deshalb laufen alle Wege zum Client über Verbindungen, die der Client selbst aufbaut.
-* Clients finden den Server über `esp_mesh_lite_get_root_ip()` (funktioniert über alle Ebenen, anders als
-  DHCP-Gateway oder mDNS). Eine feste Server-Adresse ist konfigurierbar.
-* mDNS-Name pro Gerät: `snapserver-<MAC>.local` bzw. `snapclient-<MAC>.local` (letzte 3 Bytes der SoftAP-MAC).
-* WLAN-Powersave ist in beiden Rollen aus (`WIFI_PS_NONE`).
-* Fusion-Intervall 20 s, damit eine Mesh-Insel nach einem Root-Ausfall wieder zusammenfindet.
+* NAPT trennt die Ebenen: ab Ebene 3 (2 Hops) ist ein Client nicht adressierbar, alle Wege zu ihm laufen über
+  von ihm aufgebaute Verbindungen.
+* Server-Suche über `esp_mesh_lite_get_root_ip()` (alle Ebenen, anders als DHCP-Gateway oder mDNS), feste Adresse
+  einstellbar.
+* mDNS: `snapserver-<MAC>.local` / `snapclient-<MAC>.local` (letzte 3 Bytes der Grund-MAC, wie bei esptool).
+* WLAN-Powersave aus (`WIFI_PS_NONE`); Fusion-Intervall 20 s, damit eine Mesh-Insel nach Root-Ausfall zurückfindet.
 
 ### Provisioning-AP
 
-Offener AP `ESP32_provisioning_<MAC>` mit derselben Web-UI. Er startet bei fehlender Konfiguration, nach
-Factory Reset, bei deaktiviertem Mesh oder nach 7 Boots in Folge ohne Station am Mesh-AP. Nach 3 Minuten ohne
-Speichern schaltet er den Funk ab; ein neues Fenster gibt es erst nach einem Power-Cycle. Speichern startet das
-Gerät neu.
+Offener AP `ESP32_provisioning_<MAC>` mit derselben Web-UI, bei fehlender Konfiguration, nach Factory Reset,
+bei deaktiviertem Mesh oder nach 7 Boots ohne Station am Mesh-AP. Nach 3 min ohne Speichern Funk aus (neu erst nach
+Power-Cycle); Speichern startet neu.
 
 ### Snapcast-Erweiterungen
 
-Alle Felder sind optional; fremde Clients und Server ignorieren sie.
+Alle Felder optional; fremde Clients und Server ignorieren sie. Fremde Clients bekommen während einer Durchsage
+`muted:true`, da sie den UDP-Kanal nicht empfangen.
 
 | Wo | Feld | Bedeutung |
 |---|---|---|
 | Hello | `"SnapMesh":1` | eigener Client: versteht `announcement` und Nachrichtentyp 100 |
-| Hello | `"MeshLevel":n` | Mesh-Ebene (Root = 1), ergibt die Hops in der Geräteliste |
+| Hello | `"MeshLevel":n` | Mesh-Ebene (Root = 1), ergibt die Hops |
 | ServerSettings | `"announcement":bool` | Durchsage läuft, Musik pausieren |
 | Nachrichtentyp 100 | JSON-Request/Antwort | Konfig-Anfrage Server → Client, `refersTo` = Request-ID |
 | `Server.GetStatus` | `"snapmesh":{"hops","own"}` | Hops und Herkunft je Client |
-
-Fremde Clients bekommen während einer Durchsage `muted:true`, weil sie den UDP-Kanal nicht empfangen.
 
 ---
 
 ## Web-UI und API
 
-Jedes Gerät bietet die Seite auf Port 80 an. Alle Werte liegen im NVS und überleben Updates.
+Port 80 auf jedem Gerät; alle Werte im NVS, sie überleben Updates.
 
 <img src="docs/Screenshot_20260923_220820_Firefox_copy.jpg" alt="Konfigurationsseite des Servers: Geräteliste und Einstellungen eines Clients" width="280">
 
@@ -334,31 +288,26 @@ Jedes Gerät bietet die Seite auf Port 80 an. Alle Werte liegen im NVS und über
 | Pins | I2S, LED, Potis, Delay-Poti-Bereich | Neustart; Bereich sofort |
 | Opus | Bitrate (16–192 kbit/s), Complexity (0–10) | sofort, nur Server |
 
-Kconfig (`idf.py menuconfig`) liefert nur die Vorgaben für den ersten Start und den Factory Reset;
-`SNAPSERVER_STATUS_LED_ENABLE` und `SNAPSERVER_POTS_ENABLE` nehmen LED- bzw. Poti-Code ganz heraus. Factory Reset
-setzt Konfiguration, Pins, Potis und die gespeicherten Client-Werte zurück.
+Kconfig liefert nur Vorgaben für ersten Start und Factory Reset (siehe [Build](#build)). Factory Reset setzt
+Konfiguration, Pins, Potis und gespeicherte Client-Werte zurück.
 
 ### Geräteliste (Server)
 
-Oben auf der Server-Seite, ein Eintrag je belieferten Lautsprecher:
+Je Lautsprecher (oben auf der Server-Seite) **Name** (inline umbenennbar), **Hops**, **Lautstärke**, **Mute**, **Delay** (ms, positiv =
+später; intern Snapcast-`latency` negiert), sofort wirksam; je Client-ID (MAC) im NVS (`client_store.c`, max. 24,
+LRU), bei jedem Hello wieder eingespielt, auch Werte aus Control-Apps.
 
-* **Name** (inline umbenennbar), **Hops**, **Lautstärke**, **Mute**, **Delay** (ms, positiv = später;
-  intern Snapcast-`latency` mit umgekehrtem Vorzeichen). Änderungen wirken sofort.
-* Pro Client-ID (MAC) im NVS gespeichert (`client_store.c`, max. 24, LRU) und bei jedem Hello wieder eingespielt.
-  Das gilt auch für Werte aus Control-Apps.
-* **Settings** lädt die Einstellungen des Geräts in das Formular darunter. Die Überschrift zeigt den Namen,
-  Speichern geht an dieses Gerät. Das funktioniert für eigene Clients in jeder Tiefe: Der Server sendet die
-  Anfrage als Nachrichtentyp 100 über die Snapcast-Verbindung des Clients (`snapserver_remote_request()` →
-  `webconfig_handle_remote_request()`). Nach einem Neustart zeigt die Seite „not connected“ und lädt neu,
-  sobald der Client wieder verbunden ist. Factory Reset ist nur lokal möglich.
-* Fremde Snapcast-Clients: Badge „Snapcast“, nur Lautstärke/Mute/Delay. Hops = 1, wenn ihre MAC direkt am
-  Server-AP hängt, sonst unbekannt.
+**Settings** lädt die Einstellungen eines Geräts ins Formular (Überschrift zeigt den Namen), Speichern geht an
+dieses Gerät, in jeder Mesh-Tiefe: Nachrichtentyp 100 über dessen
+Snapcast-Verbindung (`snapserver_remote_request()` → `webconfig_handle_remote_request()`); nach einem Neustart
+„not connected“, Neuladen bei Rückkehr; Factory Reset nur lokal. Fremde Clients: Badge „Snapcast“, nur
+Lautstärke/Mute/Delay, Hops = 1 bei MAC direkt am Server-AP, sonst unbekannt.
 
 ### Endpunkte
 
 | Methode | Pfad | Inhalt |
 |---|---|---|
-| GET/POST | `/api/config` | Konfiguration des Geräts; POST antwortet `{"reboot":bool}` |
+| GET/POST | `/api/config` | Konfiguration; POST antwortet `{"reboot":bool}` |
 | GET | `/api/status` | Provisioning-Grund, Uptime, Poti-Werte, Pin-Probestatus, Server-Verbindung (Client) |
 | POST | `/api/factory-reset` | Reset + Neustart |
 | GET | `/api/devices` | Geräteliste (nur Server) |
@@ -373,18 +322,16 @@ Fehler bei `?id=`: 404 = nicht verbunden bzw. kein eigener Client, 504 = keine A
 
 ## Pins
 
-Alle Funktionen werden zur Laufzeit im Abschnitt *Pins* belegt; Neu-Flashen ist nicht nötig.
+Belegung zur Laufzeit unter *Pins*, ohne Neu-Flashen:
 
-* I2S BCLK/LRCLK/DIN/DOUT sind immer belegt. LED, Lautstärke- und Delay-Poti können „none“ sein.
-* Vorlagen: *Standard* 4/6/5/7, *Alternative* 17/8/5/18. Kollidiert die LED oder ein Poti mit der Vorlage,
-  wird es auf „none“ gesetzt.
-* Jeder Pin trägt eine Funktion. Die Firmware prüft die gesamte Belegung beim Speichern erneut, auch per API.
-* **Probestart:** Eine geänderte Belegung zählt bei jedem Boot hoch und wird nach vollständigem Start bestätigt
-  (`device_config_confirm_pins()`). Nach 3 unbestätigten Boots fällt das Gerät auf die Standardbelegung zurück
-  und meldet das im Status. Eine falsch verdrahtete, aber zulässige Belegung erkennt die Firmware nicht.
-* Gesperrte GPIOs (`pinmap.c`):
+* I2S BCLK/LRCLK/DIN/DOUT immer belegt; LED und Potis dürfen „none“ sein.
+* Vorlagen *Standard* 4/6/5/7, *Alternative* 17/8/5/18; kollidierende LED/Potis werden „none“.
+* Ein Pin je Funktion; die Firmware prüft die Belegung beim Speichern erneut, auch per API.
+* **Probestart:** Eine geänderte Belegung zählt je Boot hoch und wird nach vollständigem Start bestätigt
+  (`device_config_confirm_pins()`); nach 3 unbestätigten Boots gilt wieder die Standardbelegung, gemeldet im
+  Status. Falsch verdrahtete, aber zulässige Belegungen erkennt die Firmware nicht.
 
-| GPIO | Grund |
+| Gesperrte GPIOs (`pinmap.c`) | Grund |
 |---|---|
 | 0, 3, 45, 46 | Strapping |
 | 19, 20 | USB |
@@ -395,30 +342,23 @@ Alle Funktionen werden zur Laufzeit im Abschnitt *Pins* belegt; Neu-Flashen ist 
 
 ### Potis
 
-10 kΩ, Enden an 3V3/GND, Schleifer an GPIO. **Nur ADC1 (GPIO 1–10)**, weil ADC2 bei aktivem WLAN nicht lesbar
-ist. Bei Standardbelegung sind 1, 2, 8, 9 und 10 frei.
+10 kΩ zwischen 3V3 und GND, Schleifer an **ADC1 (GPIO 1–10)**, da ADC2 bei WLAN nicht lesbar ist (frei bei
+Standardbelegung: 1, 2, 8, 9, 10). **1 kΩ vor dem GPIO** empfohlen, nicht nötig (0,33 mA, hochohmig): Er schützt
+vor Kurzschluss am Anschlag, falls der Pin versehentlich Ausgang wird, und verschiebt mit dem internen
+Pull-up/-down (~45 kΩ) einen Anschlag um ~2 %.
 
-Ein Vorwiderstand ist für den Betrieb nicht nötig: Durch das Poti fließen 0,33 mA, und der ADC-Eingang ist
-hochohmig. Empfohlen sind trotzdem **1 kΩ zwischen Schleifer und GPIO** als Schutz. Die Pins sind zur Laufzeit
-umbelegbar, und wird ein Poti-Pin versehentlich als Ausgang vergeben, schließt der Schleifer am Anschlag den
-Ausgang sonst direkt gegen 3V3 oder GND kurz. Zusammen mit dem internen Pull-up bzw. Pull-down (~45 kΩ)
-verschiebt der Widerstand einen der beiden Anschläge um etwa 2 %, sonst ändert er an der Messung nichts.
-
-* **Lautstärke** (Vorgabe GPIO 10): Pull-up, ohne Poti also 100 %. Kubische Kennlinie, multipliziert mit der
-  Snapcast-Lautstärke. Wirkt nur auf den lokalen Lautsprecher.
-* **Delay** (Vorgabe: keiner): ersetzt das Feld Delay-Trim. Mitte = 0 ms, Anschläge = ±Bereich (Vorgabe 200 ms,
-  max. 2000 ms), linear. Pull-down, ein offener Pin steht also am negativen Anschlag.
-* Abtastung alle 50 ms, Mittel aus 16 Messungen, ~1 % Totband (Endanschläge ausgenommen). Die Lautstärke wird
-  über 20 ms eingeblendet.
-* Fehler durch Pull-up/Pull-down: ±2,6 % in Mittelstellung, an den Enden exakt.
-* Delay-Sprünge > 100 ms lösen auf Clients einen harten Resync aus. Kleinere Änderungen gleicht die
-  Drift-Regelung aus (≤ 0,5 ms/s).
-* Kein ADC: Lautstärke bleibt bei 100 %, Delay beim Feldwert.
+* **Lautstärke** (Vorgabe GPIO 10): Pull-up (ohne Poti 100 %), kubisch, mal Snapcast-Lautstärke, nur lokal.
+* **Delay** (Vorgabe: keiner): ersetzt Delay-Trim, linear, Mitte 0 ms, Anschläge ±Bereich (Vorgabe 200 ms, max.
+  2000 ms); Pull-down, offener Pin = negativer Anschlag.
+* Abtastung alle 50 ms, Mittel aus 16, ~1 % Totband (außer an den Anschlägen), Lautstärke über 20 ms
+  eingeblendet; Fehler durch Pull-up/-down ±2,6 % mittig, an den Enden exakt.
+* Delay-Sprünge > 100 ms: harter Resync auf Clients, kleinere regelt die Drift aus (≤ 0,5 ms/s). Ohne ADC:
+  Lautstärke 100 %, Delay = Feldwert.
 
 ### Status-LED
 
-Eine WS2812 (Vorgabe GPIO 48) zeigt Zustand und Pegel. Beim Start blitzt sie kurz rot, grün, blau (Selbsttest;
-fehlt er, stimmt der LED-Pin nicht).
+WS2812 (Vorgabe GPIO 48) für Zustand und Pegel. Beim Start blitzt sie rot, grün, blau (Selbsttest; fehlt er,
+stimmt der LED-Pin nicht).
 
 | Anzeige | Bedeutung |
 |---|---|
@@ -430,43 +370,34 @@ fehlt er, stimmt der LED-Pin nicht).
 | Pegelanzeige, alle ~3 s kurz dunkel | lokaler Eingang (A2DP) ohne Serververbindung |
 | Pegelanzeige, pulsiert schnell (~0,5 s) | Sprachdurchsage |
 
-Vorrang: Provisionierung vor Durchsage vor lokalem Eingang vor Verbindungszustand. Spielt ein Client den lokalen
-Eingang ohne Server, zeigt er also den Pegel statt des orangen Blinkens.
-
-**Pegelanzeige:** Die Farbe ist der Pegel, von Grün über Gelb nach Rot, die Helligkeit steigt mit (Grundhelligkeit
-30 %). Gemessen wird der RMS-Pegel je 20 ms **vor** der Lautstärke, auf dem Client vor der Snapcast-Lautstärke,
-auf dem Server vor Frequenzweiche, Poti und lokaler Lautstärke. Die LED zeigt also das Signal, nicht wie laut
-der Lautsprecher gestellt ist, und bewegt sich auch bei leiser oder stummer Box. Skala −35 dBFS (grün) bis
-−6 dBFS (rot), sofortiger Anstieg, Abklingen in ~100 ms (`LED_LEVEL_FLOOR_DB`/`LED_LEVEL_CEIL_DB` in
-`status_led.c`).
+Vorrang: Provisionierung > Durchsage > lokaler Eingang > Verbindung (lokaler Eingang ohne Server zeigt also
+Pegel statt Orange). **Pegel:** Farbe Grün → Gelb → Rot, Helligkeit ab 30 %; RMS je 20 ms **vor** der Lautstärke
+(Client: vor Snapcast-Lautstärke, Server: vor Weiche, Poti, lokaler Lautstärke), also auch bei leiser oder
+stummer Box. Skala −35 dBFS bis −6 dBFS, sofortiger Anstieg, Abklingen ~100 ms (`LED_LEVEL_FLOOR_DB`/
+`LED_LEVEL_CEIL_DB` in `status_led.c`).
 
 ---
 
 ## Sprachdurchsagen
 
-Eigener Kanal neben dem Stream: niedrige Latenz statt Lückenlosigkeit.
-
-1. App → `Voice.Start` über JSON-RPC 1705 (TCP, damit Start/Stopp sicher ankommen).
-2. Opus 16 kHz Mono (~25 kbit/s) per UDP an Port 1706 des Servers.
-3. Der Server spielt die Durchsage selbst und sendet sie an seine direkten Clients. Diese leiten sie einen Hop
-   weiter, tiefere Knoten bekommen sie nicht.
-4. Ende durch `Voice.Stop`, 1 s Stille, 3 min Maximaldauer oder Abbruch der Steuerverbindung.
+Eigener Kanal, Latenz vor Lückenlosigkeit: `Voice.Start` über JSON-RPC 1705 (TCP, sicherer Start/Stopp), dann
+Opus 16 kHz mono (~25 kbit/s) per UDP an Port 1706. Der Server spielt selbst und sendet an seine direkten Clients,
+diese einen Hop weiter; tiefere Knoten nicht. Ende: `Voice.Stop`, 1 s Stille, 3 min Maximaldauer oder Abbruch der
+Steuerverbindung.
 
 * Latenz Mund → Lautsprecher ≈ 90 ms (Aufnahme/Encoder 30 ms, WLAN 6 ms, Puffer 10–20 ms, I2S 40 ms).
-* Während der Durchsage pausieren alle eigenen Clients die Musik (`announcement`). Stream und Zeitachse laufen
-  weiter, danach geht es ohne Neupuffern weiter. Lautstärke und Mute gelten auch für die Durchsage.
-* Grenzen: keine Echounterdrückung gegenüber den Lautsprechern; eine Durchsage zur Zeit (sonst `busy`);
-  das Handy muss im Mesh-WLAN sein.
+* Eigene Clients pausieren die Musik (`announcement`), Stream und Zeitachse laufen weiter (kein Neupuffern);
+  Lautstärke und Mute gelten auch für Durchsagen.
+* Grenzen: keine Echounterdrückung, eine Durchsage zur Zeit (sonst `busy`), Handy muss im Mesh-WLAN sein.
 
-**App** `android/SnapAnnounce` (Kotlin, Compose, ab Android 8), zwei Tabs:
+**App** `android/SnapAnnounce` (Kotlin, Compose, ab Android 8):
 
-* **Durchsage:** verriegelnder Sprechknopf, Foreground-Service mit WLAN-Lock. Einstellungen: Mikrofonquelle,
-  max. Verstärkung, Durchsage-Pegel (AGC mit Limiter; Musik liegt bei etwa −24 bis −28 dBFS).
-* **Geräte:** native Geräteliste über `/api/devices` (Poll 3 s): Lautstärke, Mute, Delay (±10/±100 ms, 0,7 s
-  gesammelt), Umbenennen. **Einstellungen** öffnet die Firmware-Seite eines Geräts in einer WebView
-  (`/?device=<id>&embed=1`: Gerät vorausgewählt, ohne eigene Liste). Solange sie offen ist, ist der Prozess an das
-  Mesh-WLAN gebunden (`bindProcessToNetwork`), sonst ginge der Traffic über mobile Daten. Cleartext-HTTP ist
-  erlaubt, weil die Server-Adresse frei einstellbar ist.
+* **Durchsage:** verriegelnder Sprechknopf, Foreground-Service mit WLAN-Lock; einstellbar Mikrofonquelle, max.
+  Verstärkung, Durchsage-Pegel (AGC mit Limiter; Musik liegt bei ~−24 bis −28 dBFS).
+* **Geräte:** Liste über `/api/devices` (Poll 3 s): Lautstärke, Mute, Delay (±10/±100 ms, 0,7 s gesammelt),
+  Umbenennen. **Einstellungen** zeigt die Firmware-Seite in einer WebView (`/?device=<id>&embed=1`: Gerät
+  vorausgewählt, ohne Liste); währenddessen ist der Prozess ans Mesh-WLAN gebunden (`bindProcessToNetwork`),
+  sonst ginge der Traffic über mobile Daten. Cleartext-HTTP ist erlaubt, da die Server-Adresse frei einstellbar ist.
 
 <img src="docs/snapannounce-screenshot.jpg" alt="SnapAnnounce, Durchsage" width="280">
 <img src="docs/Screenshot_20260923_215400_SnapAnnounce_copy.jpg" alt="SnapAnnounce, Geräte" width="280">
@@ -483,91 +414,86 @@ idf.py build
 idf.py -p PORT flash monitor
 ```
 
-Ein Update ohne `erase_flash` behält Rolle, Pins und alle Einstellungen im NVS. Hängt der Reset über
-USB-Serial/JTAG mit Schreib-Timeout, hilft `esptool.py --before usb_reset … write_flash @flash_args` aus `build/`.
+Ohne `erase_flash` bleiben Rolle, Pins und Einstellungen im NVS. Hängt der Reset über USB-Serial/JTAG (Schreib-
+Timeout): `esptool.py --before usb_reset … write_flash @flash_args` aus `build/`.
 
 ### ESP-IDF-Konfiguration
 
-**`sdkconfig.defaults` ist die vollständige Konfiguration.** `sdkconfig` liegt nicht im Repository; ein frischer
-Build erzeugt es aus `sdkconfig.defaults` und kommt dabei exakt auf den Stand der Geräte (geprüft mit einem
-leeren Klon). Die Release-Pipeline baut nur daraus. Wer eine Option per `idf.py menuconfig` ändert, muss sie
-in `sdkconfig.defaults` nachtragen, sonst baut CI etwas anderes; `idf.py save-defconfig` zeigt die
-Abweichungen.
+**`sdkconfig.defaults` ist die vollständige Konfiguration** (`sdkconfig` nicht im Repository): Ein frischer Build
+ergibt exakt den Gerätestand (mit leerem Klon geprüft), CI baut nur daraus. `menuconfig`-Änderungen dort
+nachtragen; `idf.py save-defconfig` zeigt Abweichungen.
 
-**Versionen:** ESP-IDF **5.4.3** (in CI fest), Komponenten laut `main/idf_component.yml`, aufgelöst in
+**Versionen:** ESP-IDF **5.4.3** (in CI fest); Komponenten laut `main/idf_component.yml`, aufgelöst in
 `dependencies.lock`:
 
 | Komponente | Version | Zweck |
 |---|---|---|
-| `espressif/mesh_lite` | 1.0.2 | Mesh-Netz (zieht `iot_bridge` 1.0.1, `esp_modem`, `tinyusb` u. a. nach) |
+| `espressif/mesh_lite` | 1.0.2 | Mesh (zieht `iot_bridge` 1.0.1, `esp_modem`, `tinyusb` u. a. nach) |
 | `esphome/micro-opus` | 0.4.1 | Opus-Encoder und -Decoder |
 | `espressif/mdns` | 1.13.1 | `snapserver-<MAC>.local` / `snapclient-<MAC>.local` |
 
-**Einstellungen in `sdkconfig.defaults`** (Begründungen als Kommentar in der Datei):
+**`sdkconfig.defaults`** (Begründungen als Kommentar in der Datei):
 
 | Bereich | Option | Wert | Grund |
 |---|---|---|---|
-| Flash | `ESPTOOLPY_FLASHSIZE_4MB` | y | Mindestgröße im Image-Header: läuft auf 4-, 8- und 16-MB-Boards (IDF bricht nur bei kleinerem Chip ab) |
-| | `PARTITION_TABLE_CUSTOM` | `partitions.csv` | 4-MB-App-Partition, siehe unten |
-| CPU | `ESP32S3_DEFAULT_CPU_FREQ_240` | y | Opus-Encoder und DSP |
-| PSRAM | `SPIRAM`, `SPIRAM_MODE_OCT`, `SPIRAM_SPEED_80M` | y | Octal-PSRAM (N16R8, N8R8); Quad-PSRAM bräuchte `SPIRAM_MODE_QUAD` |
-| | `SPIRAM_USE_CAPS_ALLOC` | y | PSRAM nur gezielt (Puffer, Task-Stacks), `malloc()` bleibt intern |
-| | `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` | y | WLAN-/lwIP-Puffer ins PSRAM; ein Sendestau fraß sonst den internen RAM |
-| WLAN | `ESP_WIFI_STATIC_RX_BUFFER_NUM` | 10 | getestete Werte; ohne sie setzt IDF mit der Option oben 16 |
-| | `ESP_WIFI_RX_BA_WIN` | 6 | dito, IDF-Vorgabe wäre 16 |
-| lwIP | `LWIP_TCP_SND_BUF_DEFAULT`, `LWIP_TCP_WND_DEFAULT` | 2880 | 2 × MSS; größere Fenster puffern nur Audio, das keiner braucht, im knappen internen RAM |
-| | `LWIP_TCP_OOSEQ_MAX_PBUFS` | 4 | getesteter Wert, IDF-Vorgabe mit PSRAM wäre unbegrenzt |
-| | `LWIP_MAX_SOCKETS` | 24 | 10 Snapcast-Clients, JSON-RPC, Webserver, Mesh, Durchsagen |
-| | `LWIP_TCPIP_TASK_AFFINITY_CPU0` | y | lwIP-Task (Prio 18) verdrängte sonst den Audio-Task auf Kern 1 |
-| HTTP | `HTTPD_MAX_REQ_HDR_LEN` | 1024 | Header einer Android-WebView passten nicht in 512 (Fehler 431) |
-| System | `ESP_SYSTEM_EVENT_TASK_STACK_SIZE` | 4096 | `sys_evt` lief auf Clients nach dem Mesh-IP-Ereignis über (Boot-Schleife) |
-| | `FREERTOS_TIMER_TASK_STACK_DEPTH` | 4096 | Stack des FreeRTOS-Timer-Tasks (IDF: 2048); seit dem ersten Commit, Grund nicht dokumentiert |
-| | `FREERTOS_HZ` | 1000 | 1-ms-Tick (IDF: 100); seit dem ersten Commit, Grund nicht dokumentiert |
-| Diagnose | `FREERTOS_USE_TRACE_FACILITY`, `…_RUN_TIME_STATS` u. a. | y | CPU-Last je Task im Log (`cpu_stats.c`) |
+| Flash | `ESPTOOLPY_FLASHSIZE_4MB` | y | Mindestgröße: läuft auf 4-, 8-, 16-MB-Boards (IDF bricht nur bei kleinerem Chip ab) |
+| | `PARTITION_TABLE_CUSTOM` | `partitions.csv` | siehe unten |
+| CPU | `ESP32S3_DEFAULT_CPU_FREQ_240` | y | Opus-Encoder, DSP |
+| PSRAM | `SPIRAM`, `SPIRAM_MODE_OCT`, `SPIRAM_SPEED_80M` | y | Octal-PSRAM (N16R8, N8R8); Quad bräuchte `SPIRAM_MODE_QUAD` |
+| | `SPIRAM_USE_CAPS_ALLOC` | y | PSRAM gezielt (Puffer, Stacks), `malloc()` intern |
+| | `SPIRAM_TRY_ALLOCATE_WIFI_LWIP` | y | WLAN-/lwIP-Puffer ins PSRAM (Sendestau fraß internen RAM) |
+| WLAN | `ESP_WIFI_STATIC_RX_BUFFER_NUM` | 10 | getestet (IDF sonst 16) |
+| | `ESP_WIFI_RX_BA_WIN` | 6 | getestet (IDF 16) |
+| lwIP | `LWIP_TCP_SND_BUF_DEFAULT`, `LWIP_TCP_WND_DEFAULT` | 2880 | 2 × MSS; mehr puffert nur Audio im knappen RAM |
+| | `LWIP_TCP_OOSEQ_MAX_PBUFS` | 4 | getestet (IDF mit PSRAM unbegrenzt) |
+| | `LWIP_MAX_SOCKETS` | 24 | 10 Snapcast-Clients, JSON-RPC, Web, Mesh, Durchsagen |
+| | `LWIP_TCPIP_TASK_AFFINITY_CPU0` | y | lwIP (Prio 18) verdrängte den Audio-Task auf Kern 1 |
+| HTTP | `HTTPD_MAX_REQ_HDR_LEN` | 1024 | WebView-Header > 512 (Fehler 431) |
+| System | `ESP_SYSTEM_EVENT_TASK_STACK_SIZE` | 4096 | `sys_evt`-Überlauf nach Mesh-IP-Ereignis (Boot-Schleife) |
+| | `FREERTOS_TIMER_TASK_STACK_DEPTH` | 4096 | IDF 2048; seit dem ersten Commit, Grund nicht dokumentiert |
+| | `FREERTOS_HZ` | 1000 | 1-ms-Tick (IDF 100); dito |
+| Diagnose | `FREERTOS_USE_TRACE_FACILITY`, `…_RUN_TIME_STATS` u. a. | y | CPU-Last je Task (`cpu_stats.c`) |
 | | `LOG_DEFAULT_LEVEL_INFO` | y | |
-| Mesh | `SNAPSERVER_ENABLE_MESH_LITE`, `MESH_LITE_ENABLE` | y | Mesh einschalten (im Projekt-Kconfig standardmäßig aus) |
+| Mesh | `SNAPSERVER_ENABLE_MESH_LITE`, `MESH_LITE_ENABLE` | y | Mesh an (Projekt-Kconfig: aus) |
 
-**Projektoptionen** (`idf.py menuconfig` → *Snapserver Mesh Project Configuration*, `main/Kconfig.projbuild`).
-Die Schalter wirken beim Bauen; alle übrigen Werte sind nur Vorgaben für den ersten Start und den Factory
-Reset, danach gilt, was auf der Web-Seite eingestellt und im NVS gespeichert ist.
+**Projektoptionen** (`idf.py menuconfig` → *Snapserver Mesh Project Configuration*, `main/Kconfig.projbuild`):
+Schalter wirken beim Bauen, Werte nur als Vorgaben für ersten Start und Factory Reset (danach gilt der NVS).
 
 | Option | Vorgabe | Bedeutung |
 |---|---|---|
-| `SNAPSERVER_STATUS_LED_ENABLE` | y | WS2812-Status-LED; `n` nimmt den LED-Code ganz heraus |
+| `SNAPSERVER_STATUS_LED_ENABLE` | y | WS2812-Status-LED; `n` nimmt den Code heraus |
 | `SNAPSERVER_STATUS_LED_GPIO` | 48 | LED-Pin (0 = keine LED) |
-| `SNAPSERVER_POTS_ENABLE` | y | Potis für Lautstärke und Delay; `n` nimmt den Code heraus |
+| `SNAPSERVER_POTS_ENABLE` | y | Potis; `n` nimmt den Code heraus |
 | `MESH_SOFTAP_SSID_PREFIX` | `SnapMesh` | Mesh-SSID |
 | `MESH_SOFTAP_PASSWORD` | `criticalmass` | Mesh-Passwort |
 | `MESH_CHANNEL` | 6 | WLAN-Kanal (1–13) |
 | `SNAPSERVER_OPUS_BITRATE` | 96000 | Opus-Bitrate (16000–192000) |
 | `SNAPSERVER_OPUS_COMPLEXITY` | 5 | Opus-Complexity (0–10) |
-| `SNAPSERVER_CROSSOVER_HZ` | 120 | Trennfrequenz der Weiche (40–500 Hz) |
+| `SNAPSERVER_CROSSOVER_HZ` | 120 | Trennfrequenz (40–500 Hz) |
 
-**Partitionstabelle** (`partitions.csv`, passt in 4 MB Flash):
+**Partitionstabelle** (`partitions.csv`, passt in 4 MB):
 
 | Name | Typ | Offset | Größe | Inhalt |
 |---|---|---|---|---|
 | `nvs` | data/nvs | `0x9000` | 24 KB | Konfiguration, Pins, Potis, Client-Werte, DHCP-Bereich |
 | `phy_init` | data/phy | `0xF000` | 4 KB | WLAN-Kalibrierung |
-| `ota_0` | app | `0x10000` | 1,875 MB | Firmware (belegt ~1,3 MB, 30 % frei) |
+| `ota_0` | app | `0x10000` | 1,875 MB | Firmware (~1,3 MB belegt, 30 % frei) |
 | `ota_1` | app | `0x1F0000` | 1,875 MB | zweiter App-Bereich für spätere OTA-Updates |
-| `otadata` | data/ota | `0x3D0000` | 8 KB | welcher App-Bereich startet; beim Flashen leer → `ota_0` |
+| `otadata` | data/ota | `0x3D0000` | 8 KB | startender App-Bereich; beim Flashen leer → `ota_0` |
 
-`nvs` und `phy_init` liegen an denselben Adressen wie in der früheren 16-MB-Tabelle. Ein Board mit älterer
-Firmware lässt sich deshalb ohne „Erase device“ aktualisieren und behält seine Einstellungen. Die OTA-Bereiche
-sind vorbereitet, Updates über die Web-Seite gibt es noch nicht (siehe TODO.md). Keine Coredump-Partition.
+`nvs` und `phy_init` liegen wie in der früheren 16-MB-Tabelle: Ältere Boards lassen sich ohne „Erase device“
+aktualisieren und behalten ihre Einstellungen. OTA über die Web-Seite fehlt noch (TODO.md); keine Coredump-Partition.
 
 ### Android-App bauen
 
-Android-App: `android/SnapAnnounce` in Android Studio öffnen, oder mit Gradle 8.13 und JDK 21:
+`android/SnapAnnounce` in Android Studio öffnen oder mit Gradle 8.13 und JDK 21 bauen (kein `gradlew` im
+Repository, nur `gradle/wrapper/gradle-wrapper.properties`):
 
 ```bash
 cd android/SnapAnnounce
 JAVA_HOME=/pfad/zu/jdk-21 gradle assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
-
-(`gradlew` ist nicht im Repository, nur `gradle/wrapper/gradle-wrapper.properties`.)
 
 ---
 
@@ -606,40 +532,23 @@ tools/                 Testskript für Durchsagen
 
 ## Status
 
-Stabil im Betrieb: Streaming und Sync über das Mesh, LR4, Rollenwechsel, Web-UI, Durchsagen.
-
-Offen (Details und Messwerte in [TODO.md](TODO.md)):
-
-* Relays mit mehreren Kindern hängen sich gelegentlich auf.
-* Ein blockierter Client belastet den internen Heap des Servers zu lange.
-* Akustische Artefakte, die bereits im aufgenommenen Signal stecken.
-* Messung des Versatzes zwischen Server- und Client-Lautsprechern.
-* Auf Hardware noch ungetestet: Client-Einstellungen über den Server, Rückfall beim Pin-Probestart.
+Stabil: Streaming und Sync über das Mesh, LR4, Rollenwechsel, Web-UI, Durchsagen. Offen (Details in
+[TODO.md](TODO.md)): Relays mit mehreren Kindern hängen sich gelegentlich auf; ein blockierter Client belastet den
+internen Heap des Servers zu lange; Versatz Server- gegen Client-Lautsprecher noch nicht gemessen; auf Hardware
+ungetestet: Client-Einstellungen über den Server, Rückfall beim Pin-Probestart.
 
 ---
 
 ## Haftungsausschluss
 
-Dies ist ein privates Bastelprojekt. Firmware, App und Anleitungen werden kostenlos und **ohne jede Gewähr**
-bereitgestellt; es gilt die [MIT-Lizenz](LICENSE). Die Nutzung erfolgt **auf eigene Verantwortung**. Soweit
-gesetzlich zulässig, übernehme ich keine Haftung für Schäden, die durch Nachbau, Installation oder Betrieb
-entstehen, etwa an Boards, Lautsprechern, Verstärkern oder anderen Geräten, für Datenverlust oder für
-Folgeschäden.
-
-Besonders zu beachten:
-
-* **Stromversorgung und Verstärker:** Netzteile, Verstärker und Verkabelung fachgerecht aufbauen. Arbeiten an
-  Netzspannung (230 V) nur von Fachleuten.
-* **Lautstärke:** Die Durchsage- und Musiklautstärke kann hoch sein. Pegel vorsichtig einstellen, um Gehör und
-  Lautsprecher zu schützen.
-* **Flashen:** Beim Aufspielen der Firmware kann ein Board unbrauchbar werden, etwa bei einer Unterbrechung.
-  Mit „Erase device“ gehen gespeicherte Einstellungen verloren.
-* **Funk:** Das System betreibt ein eigenes WLAN. Es ist für den privaten Einsatz gedacht und ersetzt keine
-  Alarm-, Notruf- oder Sicherheitsanlage.
+Privates Bastelprojekt, kostenlos und **ohne jede Gewähr** ([MIT-Lizenz](LICENSE)), Nutzung **auf eigene
+Verantwortung**; soweit gesetzlich zulässig keine Haftung für Schäden durch Nachbau, Installation oder Betrieb
+(etwa an Boards, Lautsprechern, Verstärkern oder anderen Geräten), Datenverlust oder Folgeschäden. Besonders: **Stromversorgung und Verstärker** fachgerecht aufbauen, Arbeiten an Netzspannung (230 V)
+nur von Fachleuten; **Lautstärke** vorsichtig einstellen (Gehör, Lautsprecher); **Flashen** kann ein Board
+unbrauchbar machen (etwa bei Unterbrechung), „Erase device“ löscht die Einstellungen; **Funk:** eigenes WLAN für
+den privaten Einsatz, kein Ersatz für Alarm-, Notruf- oder Sicherheitsanlagen.
 
 ## Abhängigkeiten und Lizenz
 
 ESP-IDF, ESP-Mesh-Lite, ESP-IoT-Bridge, ESP-Modem, ESP-mDNS, CMake Utilities (Apache 2.0); esp-opus (MIT).
-Drittkomponenten unterliegen ihren eigenen Lizenzen.
-
-Dieses Projekt: MIT License.
+Drittkomponenten unter eigenen Lizenzen. Dieses Projekt: MIT License.
