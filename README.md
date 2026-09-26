@@ -16,6 +16,7 @@ Web-Konfiguration umschaltbar:
   DSP/I2S-Kette aus; wahlweise mit lokalem I2S-Eingang als Alternativquelle.
 
 Offizielle Snapclients (PC, Android, iOS) und Snapcast-Control-Apps funktionieren ebenfalls.
+Das System läuft eigenständig: Auch der Server ist ein ESP32-S3, im Betrieb ist kein PC oder Raspberry Pi nötig.
 
 ---
 
@@ -88,22 +89,6 @@ ab `0x0`) überschreibt NVS und PHY-Daten (`0x9000–0xFFFF`) mit `0xFF`: nur f�
 
 ---
 
-## Funktionen
-
-| Bereich | Umsetzung |
-|---|---|
-| Betrieb | Eigenständig: Auch der Server läuft auf einem ESP32-S3, kein PC oder Raspberry Pi nötig |
-| Audio | I2S-Vollduplex 48 kHz, L+R → Mono, Opus (Vorgabe 96 kbit/s, Complexity 5) |
-| DSP | LR4-Frequenzweiche (2 × Biquad je Zweig), Gain je Zweig, Kanalzuordnung, live änderbar |
-| Sync | Vierzeiten-Zeitabgleich (Minimum-RTT aus 12 Messungen), Drift-Regelung per Resampling |
-| Netz | ESP-Mesh-Lite, NAPT zwischen den Ebenen, Provisioning-AP als Rückfall |
-| Steuerung | Web-UI + JSON-API (Port 80), Snapcast JSON-RPC (Port 1705), mDNS |
-| Geräte | Geräteliste mit Lautstärke, Mute, Delay, Hops; Einstellungen jedes Clients über den Server |
-| Hardware | Pinbelegung (I2S, LED, Potis) zur Laufzeit, Potis für Lautstärke und Delay, WS2812-Status-LED |
-| Durchsagen | Android-App → UDP 1706, ~90 ms Latenz, Musik pausiert währenddessen |
-
----
-
 ## Hardware
 
 Zwei Bauformen:
@@ -152,12 +137,9 @@ bleibt ungenutzt. Ein **Poti mit Schalter** schaltet den ESP und regelt die Laut
 | ESP32-S3-Board | YD-ESP32-S3 N16R8 (≥ 4 MB Flash, Octal-PSRAM), mit U.FL-Anschluss | 1 |
 | WLAN-Antenne | 2,4 GHz mit U.FL-(IPEX-)Kabel | 1 |
 | DAC-Modul | PCM5102A mit 3,5-mm-Klinkenbuchse | 1 |
-| Stiftleisten | 2,54 mm, DAC ↔ ESP-Board | 1 Satz |
 | Lademodul | TP4056 mit Schutzschaltung (DW01), USB-C | 1 |
 | Akku | 18650 Li-Ion mit Zellkontakten | 1 |
 | Poti mit Schalter | 10 kΩ linear (B10K), Schalter für den Strompfad; Drehknopf | 1 |
-| Widerstand | 1 kΩ, Schleifer → GPIO (Schutz, siehe [Potis](#potis)) | 1 |
-| Litze | USB → TP4056, Akku, Schalter, Poti | – |
 | Gehäuse | 3D-Druck: Unterteil (PETG), Deckel (PETG transparent) | 1 |
 
 ### Gehäuse
@@ -166,7 +148,6 @@ bleibt ungenutzt. Ein **Poti mit Schalter** schaltet den ESP und regelt die Laut
 <img src="docs/IMG_1695.jpeg" alt="SnapStreamer offen: Platine im Gehäuse, USB und Klinke angesteckt" width="340">
 
 <img src="docs/IMG_1689_copy.jpg" alt="Gehäuseunterteil mit 18650-Zelle und TP4056-Lademodul, daneben die Platine" width="220">
-<img src="docs/IMG_1690_copy.jpg" alt="Platine eingesetzt, darunter die Zelle" width="300">
 <img src="docs/3d_Streamer.png" alt="FreeCAD-Modell des Gehäuseunterteils" width="300">
 
 Unten Zelle und TP4056, darüber die Platine; USB-C und Klinke an der Stirnseite, die LED scheint durch den
@@ -192,17 +173,7 @@ gut), hier **I2S-Slave** am Takt des ESP.
 Seine **1,8-V-Pegel** reichen dem ESP32-S3 nicht sicher („High“ laut Datenblatt ab ~2,5 V, Abtastung knapp an
 der Flanke): Direkt an DIN kippen je nach Start Bits, hörbar als Rauschen/Knacksen, das kommt und geht (ohne
 Wandler 3 von 9 Starts gestört, mit 0 von 24). Am **ADAU1701** läuft er erfahrungsgemäß ohne Wandler. Am ESP
-hilft ein **TXB0104** (PCM5102A bleibt direkt am ESP):
-
-| TXB0104 | anschließen an |
-|---|---|
-| VCCA | 1,8 V (Seite TinySine) |
-| VCCB | 3,3 V (Seite ESP) |
-| OE | VCCA |
-| A1 ↔ B1 | TinySine BCK ↔ ESP BCLK |
-| A2 ↔ B2 | TinySine LRCK ↔ ESP LRCLK |
-| A3 ↔ B3 | TinySine SD ↔ ESP DIN |
-| A4 | GND |
+hilft ein **TXB0104** (VCCA 1,8 V vom TinySine, VCCB 3,3 V vom ESP; PCM5102A bleibt direkt am ESP).
 
 Nach einer Wiedergabe treibt der TinySine SD einige Sekunden nicht; ein Pull-down der Firmware hält DIN fest
 (`TODO.md`, Fehler A und C).
@@ -257,19 +228,6 @@ ersten PC-/Android-Client (ESP-Clients melden nur Uptime und werden ignoriert).
 Offener AP `ESP32_provisioning_<MAC>` mit derselben Web-UI, bei fehlender Konfiguration, nach Factory Reset,
 bei deaktiviertem Mesh oder nach 7 Boots ohne Station am Mesh-AP. Nach 3 min ohne Speichern Funk aus (neu erst nach
 Power-Cycle); Speichern startet neu.
-
-### Snapcast-Erweiterungen
-
-Alle Felder optional; fremde Clients und Server ignorieren sie. Fremde Clients bekommen während einer Durchsage
-`muted:true`, da sie den UDP-Kanal nicht empfangen.
-
-| Wo | Feld | Bedeutung |
-|---|---|---|
-| Hello | `"SnapMesh":1` | eigener Client: versteht `announcement` und Nachrichtentyp 100 |
-| Hello | `"MeshLevel":n` | Mesh-Ebene (Root = 1), ergibt die Hops |
-| ServerSettings | `"announcement":bool` | Durchsage läuft, Musik pausieren |
-| Nachrichtentyp 100 | JSON-Request/Antwort | Konfig-Anfrage Server → Client, `refersTo` = Request-ID |
-| `Server.GetStatus` | `"snapmesh":{"hops","own"}` | Hops und Herkunft je Client |
 
 ---
 
@@ -415,39 +373,6 @@ Repository, nur `gradle/wrapper/gradle-wrapper.properties`):
 cd android/SnapAnnounce
 JAVA_HOME=/pfad/zu/jdk-21 gradle assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
----
-
-## Struktur
-
-```text
-main/
-├── app_main.c         Rollenwahl, Startreihenfolge
-├── audio_i2s.c        I2S, Mono-Mix, LR4, Delay-Line (Server)
-├── audio_opus.c       Opus-Encoder
-├── audio_sink.c       Wiedergabe, Quellenwahl, Drift-Regelung (Client)
-├── audio_resample.c   Resampler 32.32
-├── snapserver.c       Snapcast-Server 1704, Konfig-Kanal zu Clients
-├── snapclient.c       Snapcast-Client
-├── snapcontrol.c      JSON-RPC 1705
-├── voice_announce.c   Durchsagen, UDP 1706
-├── mesh_root.c        Mesh-Root
-├── mesh_client.c      Mesh-Relay
-├── webconfig.c        Web-UI + API, Port 80
-├── device_config.c    Konfiguration, Pins, Potis im NVS
-├── pinmap.c           nutzbare GPIOs
-├── client_store.c     gespeicherte Client-Werte
-├── pots.c             Potis
-├── provisioning.c     Provisioning-AP
-├── status_led.c       WS2812
-└── cpu_stats.c        CPU-Last je Task
-android/SnapAnnounce/  Durchsage-App
-mechanics/housing/     Gehäuse: FreeCAD-Modell, 3MF zum Drucken
-flasher/               Flash-Seite (GitHub Pages)
-docs/                  Fotos, Screenshots, Logo (docs/logo/), Board-Schaltplan
-tools/                 Testskript für Durchsagen
-.github/workflows/     Release: Firmware, App, Flash-Seite
 ```
 
 ---
