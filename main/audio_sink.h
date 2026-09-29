@@ -52,12 +52,13 @@ typedef enum {
 } audio_sink_source_t;
 
 /*
- * Starts the ring buffer (sized from buffer_ms, PSRAM-backed) and the
- * player task that reads audio_i2s_capture_mono() every frame, arbitrates
- * the source and writes the result via audio_i2s_write_mono(). Requires
- * audio_i2s_start() to already have succeeded. Client role only.
+ * Starts the ring buffer (PSRAM-backed, sized for the largest bufferMs a
+ * server may announce) and the player task that reads
+ * audio_i2s_capture_mono() every frame, arbitrates the source and writes
+ * the result via audio_i2s_write_mono(). Requires audio_i2s_start() to
+ * already have succeeded. Client role only.
  */
-esp_err_t audio_sink_start(uint16_t buffer_ms);
+esp_err_t audio_sink_start(void);
 
 /* Reports whether the Snapcast connection currently has decoded audio to
  * offer. AUDIO_SINK_SOURCE_NETWORK is only ever chosen while this is true. */

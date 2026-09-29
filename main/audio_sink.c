@@ -82,14 +82,17 @@ static const char *TAG = "AUDIO_SINK";
 #define VOICE_TRIM_AFTER_FEEDS  25U
 
 /*
- * The ring is sized well above buffer_ms rather than at it: buffer_ms is
+ * The ring is sized well above bufferMs rather than at it: bufferMs is
  * the *steady-state* occupancy (the server timestamps a chunk at capture
- * time and the client plays it buffer_ms later, so that much audio is
- * in flight permanently), not a maximum. A ring of exactly buffer_ms would
+ * time and the client plays it bufferMs later, so that much audio is
+ * in flight permanently), not a maximum. A ring of exactly bufferMs would
  * sit at its limit continuously and drop whatever arrives while the
- * scheduler is holding playback back.
+ * scheduler is holding playback back. Sized for the largest bufferMs a
+ * server may announce, so the server's setting alone decides: 20 s of
+ * mono audio, about 1.9 MB of PSRAM.
  */
 #define RING_CAPACITY_FACTOR 2U
+#define RING_BYTES_PER_MS    ((AUDIO_I2S_SAMPLE_RATE / 1000U) * sizeof(int16_t))
 
 /*
  * A chunk timestamp that misses the buffered stream's continuation by more
@@ -156,14 +159,6 @@ typedef struct {
 static byte_ring_t s_ring;
 static bool s_started;
 
-/*
- * buffer_ms worth of bytes: what the prebuffer gate aims for and roughly
- * where the scheduler keeps the fill in steady state. Derived from the
- * local config at start (the ring is sized from it); the scheduler itself
- * uses the server-announced bufferMs, which is the same value whenever
- * both ends are configured alike.
- */
-static size_t s_target_fill_bytes;
 
 static volatile bool s_network_active;
 static volatile uint8_t s_source_mode = SOURCE_MODE_AUTO;
@@ -505,7 +500,10 @@ static audio_sink_source_t network_source_or_none(void)
         xSemaphoreTake(s_ring.lock, portMAX_DELAY);
         const size_t fill = s_ring.fill;
         xSemaphoreGive(s_ring.lock);
-        if (fill * 100U < s_target_fill_bytes * NETWORK_PREBUFFER_PERCENT) {
+        /* bufferMs worth of bytes, from the server: roughly where the
+         * scheduler keeps the fill in steady state. */
+        const size_t target_fill = (size_t)(s_stream_buffer_us / 1000LL) * RING_BYTES_PER_MS;
+        if (fill * 100U < target_fill * NETWORK_PREBUFFER_PERCENT) {
             return AUDIO_SINK_SOURCE_NONE;
         }
         s_network_ready = true;
@@ -1160,15 +1158,13 @@ static void player_task(void *arg)
     }
 }
 
-esp_err_t audio_sink_start(uint16_t buffer_ms)
+esp_err_t audio_sink_start(void)
 {
     if (s_started) {
         return ESP_OK;
     }
 
-    const size_t bytes_per_ms = (AUDIO_I2S_SAMPLE_RATE / 1000U) * sizeof(int16_t);
-    s_target_fill_bytes = (size_t)buffer_ms * bytes_per_ms;
-    const size_t capacity = s_target_fill_bytes * RING_CAPACITY_FACTOR;
+    const size_t capacity = (size_t)DEVICE_CONFIG_BUFFER_MAX_MS * RING_BYTES_PER_MS * RING_CAPACITY_FACTOR;
 
     esp_err_t result = ring_init(&s_ring, capacity);
     if (result != ESP_OK) {
@@ -1204,8 +1200,8 @@ esp_err_t audio_sink_start(uint16_t buffer_ms)
     }
 
     s_started = true;
-    ESP_LOGI(TAG, "Playback ring buffer ready: target %u ms (%u B), capacity %u B",
-             buffer_ms, (unsigned)s_target_fill_bytes, (unsigned)capacity);
+    ESP_LOGI(TAG, "Playback ring buffer ready: %u B, bufferMs from the server",
+             (unsigned)capacity);
     return ESP_OK;
 }
 

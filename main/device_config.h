@@ -38,6 +38,10 @@ extern "C" {
  * output delay line has to reserve so the trim stays adjustable at runtime. */
 #define DEVICE_CONFIG_DELAY_TRIM_MAX_MS 2000
 
+/* Range of buffer_ms. Clients size their ring for the maximum. */
+#define DEVICE_CONFIG_BUFFER_MIN_MS 200U
+#define DEVICE_CONFIG_BUFFER_MAX_MS 10000U
+
 typedef struct {
     uint32_t version;
 
@@ -67,12 +71,10 @@ typedef struct {
     uint8_t  role;
 
     /*
-     * Client role only. Applies live, no reboot.
-     *
-     * buffer_ms is also used by the server as the announced Snapcast
-     * bufferMs (see snapserver.c) -- both roles read it from the same
-     * field so a server and its clients agree on one end-to-end latency
-     * budget without a separate setting.
+     * Server role: the end-to-end latency, announced to every client as
+     * the Snapcast bufferMs (see snapserver.c) and the delay of the
+     * server's own speaker. Needs a reboot there. A client plays by the
+     * server's value and ignores its own.
      */
     uint16_t buffer_ms;
     int16_t  delay_trim_ms;

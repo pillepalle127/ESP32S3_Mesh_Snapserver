@@ -275,12 +275,10 @@ static bool config_is_valid(const device_config_t *cfg)
     }
     /*
      * buffer_ms is the end-to-end Snapcast latency (announced to clients as
-     * bufferMs, see snapserver.c) as well as the client's own playback
-     * ring-buffer size. Lower bound keeps the ring buffer from being too
-     * small to absorb normal jitter; upper bound is a sanity cap, not a
-     * hardware limit.
+     * bufferMs, see snapserver.c). Lower bound keeps enough cushion for
+     * normal jitter; the upper bound is what the clients' ring is sized for.
      */
-    if (cfg->buffer_ms < 200U || cfg->buffer_ms > 10000U) {
+    if (cfg->buffer_ms < DEVICE_CONFIG_BUFFER_MIN_MS || cfg->buffer_ms > DEVICE_CONFIG_BUFFER_MAX_MS) {
         return false;
     }
     if (cfg->delay_trim_ms < -DEVICE_CONFIG_DELAY_TRIM_MAX_MS ||

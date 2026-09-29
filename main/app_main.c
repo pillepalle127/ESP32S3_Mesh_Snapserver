@@ -164,7 +164,7 @@ void app_main(void)
     }
 
     if (client_role) {
-        ESP_ERROR_CHECK(audio_sink_start(cfg.buffer_ms));
+        ESP_ERROR_CHECK(audio_sink_start());
 
         /* The server's last volume for this client, until it sends a new one. */
         {
