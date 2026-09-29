@@ -164,12 +164,12 @@ Clients spielen aus ihrem Puffer in dieselbe Kette.
 | Subsonic-Hochpass | – | an | wie eingestellt |
 | Gain Sub / Breitband | – | an | wie eingestellt |
 | Sub-Phase 180° | – | an | wie eingestellt |
-| Kompressor | an | an | an |
+| Kompressor | an | an | aus |
 | Poti, Lautstärke | an | an | an |
-| Begrenzer −0,5 dBFS | an | an | an |
+| Begrenzer −0,5 dBFS, 1,3 ms Vorausschau | an | an | ohne Vorausschau |
 
-Nur der Puffer und das Delay verzögern. Filter, Kompressor und Begrenzer arbeiten ohne Vorausschau. Durchsagen
-umgehen alles, was verzögert.
+Nur Puffer, Delay und die Vorausschau des Begrenzers (1,3 ms) verzögern. Durchsagen umgehen alles, was
+verzögert.
 
 ---
 

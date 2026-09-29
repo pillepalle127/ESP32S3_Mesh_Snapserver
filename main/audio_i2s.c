@@ -223,10 +223,15 @@ static int16_t s_peak_right;
 /* Loudest frame RMS (0..1 of full scale) since the LED last read it. */
 static float s_led_rms;
 
-/* Limiter gain per branch (audio task only) and what it did since the
- * stats last read it (see audio_i2s_take_limiter_stats()). */
-static float s_limit_gain_sub = 1.0f;
-static float s_limit_gain_wide = 1.0f;
+/*
+ * Limiter state per branch (audio task only) and what it did since the
+ * stats last read it (see audio_i2s_take_limiter_stats()). Kept as the
+ * reduction 1 - gain, not the gain: released as gain = 1 - (1 - gain) *
+ * release, float rounding near 1 stalls a few 1e-4 short of unity for
+ * good; the reduction itself decays cleanly to zero.
+ */
+static float s_limit_reduction_sub;
+static float s_limit_reduction_wide;
 static uint32_t s_limit_samples;
 static float s_limit_min_gain = 1.0f;
 
@@ -279,18 +284,133 @@ static float comp_sample(comp_state_t *comp, float x, float attack, float releas
     return x * comp->gain;
 }
 
-static float limit_sample(float x, float *gain, float release)
+/*
+ * Look-ahead in front of the limiter below. The audio is held back
+ * LOOKAHEAD_SAMPLES - 1 samples (1.3 ms); meanwhile the gain each incoming
+ * sample would need is known in advance. The minimum of that over the
+ * window, averaged over the same window, ramps the gain down smoothly and
+ * reaches a peak's value exactly when the peak leaves the delay -- no
+ * overshoot, no step in the gain. Release as for the plain limiter. The
+ * plain limiter stays behind it as a backstop and takes over alone while
+ * an announcement plays, which must not be delayed.
+ */
+#define LOOKAHEAD_SAMPLES 64U
+
+typedef struct {
+    float delay[LOOKAHEAD_SAMPLES];
+    float held[LOOKAHEAD_SAMPLES];  /* window minimum, averaged below */
+    float held_sum;
+    size_t pos;
+    float reduction; /* 1 - gain, see s_limit_reduction_sub */
+    /*
+     * Window minimum of the needed gain as a monotonic queue: values rise
+     * from front to back, the front is the minimum. Each sample enters and
+     * leaves once, so this costs O(1) per sample instead of a scan of the
+     * whole window.
+     */
+    float min_val[LOOKAHEAD_SAMPLES];
+    uint32_t min_at[LOOKAHEAD_SAMPLES];
+    size_t min_front;
+    size_t min_count;
+    uint32_t count;
+} lookahead_t;
+
+/* Audio task only. */
+static lookahead_t s_lookahead_sub;
+static lookahead_t s_lookahead_wide;
+static bool s_lookahead_primed;
+
+/* Client: an announcement is playing (see audio_i2s_set_announcement_output()). */
+static volatile bool s_announcement_output;
+
+static void lookahead_reset(lookahead_t *la)
 {
-    float g = 1.0f - (1.0f - *gain) * release;
+    for (size_t i = 0; i < LOOKAHEAD_SAMPLES; ++i) {
+        la->delay[i] = 0.0f;
+        la->held[i] = 1.0f;
+    }
+    la->held_sum = (float)LOOKAHEAD_SAMPLES;
+    la->pos = 0;
+    la->reduction = 0.0f;
+    la->min_front = 0;
+    la->min_count = 0;
+    la->count = 0;
+}
+
+/* Recomputed once per frame so rounding in the running sum cannot drift. */
+static void lookahead_resum(lookahead_t *la)
+{
+    float sum = 0.0f;
+    for (size_t i = 0; i < LOOKAHEAD_SAMPLES; ++i) {
+        sum += la->held[i];
+    }
+    la->held_sum = sum;
+}
+
+static void note_limiting(float gain)
+{
+    if (gain < 0.9999f) {
+        ++s_limit_samples;
+        if (gain < s_limit_min_gain) {
+            s_limit_min_gain = gain;
+        }
+    }
+}
+
+static float lookahead_sample(lookahead_t *la, float x, float release)
+{
+    const float magnitude = fabsf(x);
+    const float need = (magnitude > LIMITER_CEILING) ? (LIMITER_CEILING / magnitude) : 1.0f;
+
+    const size_t pos = la->pos;
+    la->delay[pos] = x;
+
+    /* Expire the front, drop what this sample makes irrelevant, append it. */
+    const uint32_t now = la->count++;
+    if (la->min_count > 0U && now - la->min_at[la->min_front] >= LOOKAHEAD_SAMPLES) {
+        la->min_front = (la->min_front + 1U) % LOOKAHEAD_SAMPLES;
+        --la->min_count;
+    }
+    while (la->min_count > 0U) {
+        const size_t back = (la->min_front + la->min_count - 1U) % LOOKAHEAD_SAMPLES;
+        if (la->min_val[back] < need) {
+            break;
+        }
+        --la->min_count;
+    }
+    const size_t slot = (la->min_front + la->min_count) % LOOKAHEAD_SAMPLES;
+    la->min_val[slot] = need;
+    la->min_at[slot] = now;
+    ++la->min_count;
+    const float held = la->min_val[la->min_front];
+    la->held_sum += held - la->held[pos];
+    la->held[pos] = held;
+
+    const size_t oldest = (pos + 1U) % LOOKAHEAD_SAMPLES;
+    la->pos = oldest;
+
+    const float target = la->held_sum / (float)LOOKAHEAD_SAMPLES;
+    float reduction = la->reduction * release;
+    if (1.0f - reduction > target) {
+        reduction = 1.0f - target;
+    }
+    la->reduction = reduction;
+    const float g = 1.0f - reduction;
+    note_limiting(g);
+    return la->delay[oldest] * g;
+}
+
+static float limit_sample(float x, float *reduction, float release)
+{
+    float r = *reduction * release;
+    float g = 1.0f - r;
     const float magnitude = fabsf(x);
     if (magnitude * g > LIMITER_CEILING) {
         g = LIMITER_CEILING / magnitude;
-        ++s_limit_samples;
-        if (g < s_limit_min_gain) {
-            s_limit_min_gain = g;
-        }
+        r = 1.0f - g;
     }
-    *gain = g;
+    *reduction = r;
+    note_limiting(g);
     return x * g;
 }
 
@@ -436,6 +556,24 @@ esp_err_t audio_i2s_set_dsp_params(const audio_dsp_params_t *params)
     s_wideband_gain_linear = wideband_gain_linear;
     s_dsp_generation++;
     portEXIT_CRITICAL(&s_dsp_lock);
+
+    /* One line per change, so the log shows what the levels below it were
+     * produced with. */
+    char subsonic[16] = "off";
+    if (sub_hpf_enabled) {
+        snprintf(subsonic, sizeof(subsonic), "%.0f Hz", (double)params->sub_hpf_hz);
+    }
+    char comp[48] = "off";
+    if (params->comp_enable) {
+        snprintf(comp, sizeof(comp), "%.0f dBFS %.1f:1 %+.0f dB",
+                 (double)params->comp_threshold_db, (double)params->comp_ratio,
+                 (double)params->comp_makeup_db);
+    }
+    ESP_LOGI(TAG, "DSP: crossover %s %.0f Hz, gain sub %+.1f / wide %+.1f dB, subsonic %s, "
+             "sub phase %s, compressor %s",
+             params->bypass ? "off" : "on", (double)params->crossover_hz,
+             (double)params->sub_gain_db, (double)params->wideband_gain_db, subsonic,
+             params->sub_invert ? "180" : "0", comp);
 
     return ESP_OK;
 }
@@ -811,6 +949,20 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
                                   ? ((master_target - master) / (float)mono_samples)
                                   : 0.0f;
 
+    /*
+     * Announcements play without the look-ahead delay. Any switch between
+     * the two starts the look-ahead empty, so no stale audio comes out.
+     */
+    const bool lookahead = !(s_voice_active || s_announcement_output);
+    if (lookahead != s_lookahead_primed) {
+        lookahead_reset(&s_lookahead_sub);
+        lookahead_reset(&s_lookahead_wide);
+        s_lookahead_primed = lookahead;
+    } else if (lookahead) {
+        lookahead_resum(&s_lookahead_sub);
+        lookahead_resum(&s_lookahead_wide);
+    }
+
     float led_sum_sq = 0.0f;
     for (size_t i = 0; i < mono_samples; ++i) {
         const int16_t mono_sample = mono[i];
@@ -829,7 +981,10 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
             wideband = lr4_process(&highpass, (float)mono_sample) * wideband_gain_linear;
         }
 
-        if (dsp.comp_enable) {
+        /* Not during announcements: the make-up would lift the room the
+         * phone's microphone hears along with the voice, and that room
+         * includes these speakers -- an acoustic loop. */
+        if (dsp.comp_enable && lookahead) {
             if ((i % COMP_BLOCK) == 0U) {
                 comp_plan_block(&s_comp_sub, &dsp);
                 comp_plan_block(&s_comp_wide, &dsp);
@@ -845,8 +1000,14 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
          * one box down leaves every other box untouched.
          */
         master += master_step;
-        subwoofer = limit_sample(subwoofer * master, &s_limit_gain_sub, LIMITER_RELEASE_SUB);
-        wideband = limit_sample(wideband * master, &s_limit_gain_wide, LIMITER_RELEASE_WIDE);
+        subwoofer *= master;
+        wideband *= master;
+        if (lookahead) {
+            subwoofer = lookahead_sample(&s_lookahead_sub, subwoofer, LIMITER_RELEASE_SUB);
+            wideband = lookahead_sample(&s_lookahead_wide, wideband, LIMITER_RELEASE_WIDE);
+        }
+        subwoofer = limit_sample(subwoofer, &s_limit_reduction_sub, LIMITER_RELEASE_SUB);
+        wideband = limit_sample(wideband, &s_limit_reduction_wide, LIMITER_RELEASE_WIDE);
 
         const int16_t sub_sample = float_to_int16(subwoofer);
         const int16_t wide_sample = float_to_int16(wideband);
@@ -886,7 +1047,7 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     s_master_volume_current = master_target;
 
     /* Switched off: start from unity next time instead of a stale gain. */
-    if (!dsp.comp_enable) {
+    if (!dsp.comp_enable || !lookahead) {
         s_comp_sub.gain = 1.0f;
         s_comp_sub.step = 0.0f;
         s_comp_wide.gain = 1.0f;
@@ -1049,6 +1210,11 @@ esp_err_t audio_i2s_write_mono(const int16_t *mono, size_t mono_samples)
     }
 
     return apply_dsp_and_output(mono, mono_samples);
+}
+
+void audio_i2s_set_announcement_output(bool active)
+{
+    s_announcement_output = active;
 }
 
 void audio_i2s_set_voice_active(bool active)

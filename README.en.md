@@ -162,12 +162,12 @@ their buffer into the same chain.
 | Subsonic high-pass | – | on | as set |
 | Gain sub / wideband | – | on | as set |
 | Sub phase 180° | – | on | as set |
-| Compressor | on | on | on |
+| Compressor | on | on | off |
 | Pot, volume | on | on | on |
-| Limiter −0.5 dBFS | on | on | on |
+| Limiter −0.5 dBFS, 1.3 ms look-ahead | on | on | without look-ahead |
 
-Only the buffer and the delay add latency. Filters, compressor and limiter work without look-ahead. Announcements
-bypass everything that delays.
+Only the buffer, the delay and the limiter's look-ahead (1.3 ms) add latency. Announcements bypass everything that
+delays.
 
 ---
 

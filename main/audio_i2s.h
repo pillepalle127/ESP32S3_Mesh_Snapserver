@@ -176,6 +176,13 @@ void audio_i2s_take_output_peak(int16_t *left, int16_t *right);
  */
 void audio_i2s_take_limiter_stats(uint32_t *samples, float *max_reduction_db);
 
+/*
+ * Client: an announcement is being played. Everything in the output stage
+ * that delays (the limiter's look-ahead) is skipped while it is set; the
+ * server's own announcements are covered by audio_i2s_set_voice_active().
+ */
+void audio_i2s_set_announcement_output(bool active);
+
 /* Deepest compressor gain reduction in dB since the last call, before
  * make-up; 0 when it never acted or is off. Clears on read. */
 float audio_i2s_take_comp_stats(void);

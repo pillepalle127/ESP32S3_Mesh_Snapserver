@@ -1060,6 +1060,7 @@ static void player_task(void *arg)
         if (voice != s_voice_on) {
             ESP_LOGI(TAG, "Announcement %s", voice ? "started" : "ended");
             s_voice_on = voice;
+            audio_i2s_set_announcement_output(voice);
             /* Every announcement starts with an empty mailbox and a fresh
              * prefill, never with a leftover tail of the previous one. */
             portENTER_CRITICAL(&s_voice_lock);
