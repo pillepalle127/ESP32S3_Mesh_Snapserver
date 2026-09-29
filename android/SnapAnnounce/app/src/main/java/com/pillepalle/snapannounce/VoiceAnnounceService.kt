@@ -465,7 +465,7 @@ class VoiceAnnounceService : Service() {
                     Log.i(
                         TAG,
                         ("sent=$sent failed=$failed rate=%.0f kbit/s mic_peak=%.1f dBFS " +
-                            "out_peak=%.1f dBFS out_rms=%.1f dBFS gain=%.1f dB " +
+                            "out_peak=%.1f dBFS out_rms=%.1f dBFS gain=%.1f dB floor=%.1f dBFS " +
                             "mic_lag=%.0f ms enc_lag=%.0f ms rtt=%d/%d ms%s").format(
                             sentBytes * 8 / seconds / 1000.0,
                             dbfs(micPeak),
@@ -477,6 +477,7 @@ class VoiceAnnounceService : Service() {
                                 -120.0
                             },
                             agc.gainDb,
+                            agc.floorDbfs ?: -120.0,
                             micLagMs(recorder, frames.toLong() * FRAME_SAMPLES),
                             encoder.backlogMs,
                             if (rttCount.get() > 0) rttSumMs.get() / rttCount.get() else 0L,

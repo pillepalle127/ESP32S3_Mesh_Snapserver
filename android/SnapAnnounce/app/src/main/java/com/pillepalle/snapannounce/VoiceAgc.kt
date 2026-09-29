@@ -24,8 +24,17 @@ import kotlin.math.tanh
  * catches the peaks that then stick out above full scale.
  *  - Gain falls fast (attackDbPerFrame) on a loud frame and rises slowly
  *    (releaseDbPerFrame), ramped across each frame so it doesn't click.
- *  - Frames below gateDbfs (pauses) leave the gain alone, so the noise floor
- *    isn't pumped up between words.
+ *  - A noise gate mutes everything that is not clearly above the room:
+ *    a frame opens it only if it is gateAboveFloorDb over the tracked noise
+ *    floor (and above gateDbfs). The floor follows the quietest frames down
+ *    at once and creeps up at floorRiseDbPerFrame, so a steady hum -- or the
+ *    speakers' own output coming back through the microphone -- is learned
+ *    as floor within seconds and shut out. Without the gate the AGC lifted
+ *    the pauses by up to maxGainDb and fed the speakers' output straight
+ *    back into them: noise and echo even with nobody speaking (2026-09-29).
+ *    It holds open for gateHoldFrames after the last loud frame, so word
+ *    endings survive, and fades over one frame to avoid clicks.
+ *  - The gain only moves while the gate is open, so pauses don't pump it up.
  *  - It starts at startGainDb, so the first words aren't quiet while the
  *    gain is still climbing.
  *
@@ -43,6 +52,9 @@ class VoiceAgc(
     targetRmsDbfs: Double = -12.0,
     private val maxGainDb: Double = 24.0,
     gateDbfs: Double = -60.0,
+    private val gateAboveFloorDb: Double = 12.0,
+    private val floorRiseDbPerFrame: Double = 0.03,  // 3 dB/s
+    private val gateHoldFrames: Int = 15,            // 150 ms
     private val attackDbPerFrame: Double = 3.0,
     private val releaseDbPerFrame: Double = 0.1,   // 10 dB/s
     startGainDb: Double = 20.0,
@@ -58,6 +70,13 @@ class VoiceAgc(
     var gainDb: Double = startGainDb
         private set
 
+    /** Tracked noise floor in dBFS, for the diagnostics line; null until the first frame. */
+    var floorDbfs: Double? = null
+        private set
+
+    private var holdLeft = 0
+    private var gateGain = 0.0
+
     /** Scales and limits [samples] in place. */
     fun process(samples: ShortArray) {
         var sumSquares = 0.0
@@ -66,9 +85,25 @@ class VoiceAgc(
             sumSquares += v * v
         }
         val rms = sqrt(sumSquares / samples.size)
+        val rmsDb = 20.0 * log10(max(rms, 1.0) / FULL_SCALE)
+
+        val floor = floorDbfs
+        val newFloor = when {
+            floor == null || rmsDb < floor -> rmsDb
+            else -> min(rmsDb, floor + floorRiseDbPerFrame)
+        }
+        floorDbfs = newFloor
+        val open = rms > gate && rmsDb > newFloor + gateAboveFloorDb
+        if (open) {
+            holdLeft = gateHoldFrames
+        } else if (holdLeft > 0) {
+            holdLeft--
+        }
+        val previousGate = gateGain
+        gateGain = if (open || holdLeft > 0) 1.0 else 0.0
 
         val previousDb = gainDb
-        if (rms > gate) {
+        if (open) {
             val wantedDb = min(maxGainDb, 20.0 * log10(targetRms / rms))
             gainDb = if (wantedDb < gainDb) {
                 max(wantedDb, gainDb - attackDbPerFrame)
@@ -77,8 +112,8 @@ class VoiceAgc(
             }
         }
 
-        val g0 = 10.0.pow(previousDb / 20.0)
-        val g1 = 10.0.pow(gainDb / 20.0)
+        val g0 = 10.0.pow(previousDb / 20.0) * previousGate
+        val g1 = 10.0.pow(gainDb / 20.0) * gateGain
         val step = (g1 - g0) / samples.size
         for (i in samples.indices) {
             val g = g0 + step * (i + 1)
