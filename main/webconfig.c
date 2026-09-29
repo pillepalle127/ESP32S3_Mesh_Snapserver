@@ -182,6 +182,9 @@ static esp_err_t send_json(httpd_req_t *req, cJSON *root)
 static esp_err_t root_get_handler(httpd_req_t *req)
 {
     httpd_resp_set_type(req, "text/html");
+    /* Never cached: after a firmware update the browser would otherwise
+     * keep showing the old page, and phones offer no forced reload. */
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
     return httpd_resp_send(req, (const char *)webconfig_page_html_start,
                            webconfig_page_html_end - webconfig_page_html_start);
 }

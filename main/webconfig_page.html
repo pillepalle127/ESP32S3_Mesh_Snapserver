@@ -26,6 +26,11 @@
   .checkbox-row label { margin-top: 0; }
   button { margin-top: 1rem; padding: 0.5rem 1rem; font-size: 0.95rem; cursor: pointer; }
   #save { background: #2b6cb0; color: #fff; border: none; border-radius: 0.25rem; }
+  #save.dirty { box-shadow: 0 0 0 3px #f6ad55; }
+  .live-state { font-weight: normal; font-size: 0.8rem; margin-left: 0.5rem; color: #2f855a; }
+  .live-state.err { color: #b03030; }
+  details > summary { cursor: pointer; font-size: 1rem; font-weight: bold; margin-top: 1.5rem;
+    border-bottom: 1px solid #ccc; padding-bottom: 0.2rem; }
   #resetRow { margin-top: 2rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
   #resetRow button { margin-top: 0; padding: 0.25rem 0.6rem; font-size: 0.8rem; border-radius: 0.25rem; }
   #factoryReset { background: none; color: #b03030; border: 1px solid #b03030; }
@@ -74,6 +79,10 @@
   <option value="0">Server</option>
   <option value="1">Client</option>
 </select>
+<div id="server_fields">
+  <label for="buffer_ms">Buffer (ms)</label>
+  <input type="number" id="buffer_ms" min="200" max="10000" step="100">
+</div>
 
 <div id="client_fields">
   <label for="source_mode">Playback source</label>
@@ -84,12 +93,6 @@
   </select>
   <label for="local_input_threshold_db" id="local_input_threshold_db_label">Local input threshold (dBFS)</label>
   <input type="number" id="local_input_threshold_db" min="-80" max="0">
-  <div class="row">
-    <div><label for="buffer_ms">Buffer (ms)</label><input type="number" id="buffer_ms" min="200" max="10000" step="100"></div>
-    <div><label for="delay_trim_ms" id="delay_trim_ms_label">Delay trim (ms)</label><input type="number" id="delay_trim_ms" min="-2000" max="2000" step="10"></div>
-  </div>
-  <label for="server_host">Server address override</label>
-  <input type="text" id="server_host" maxlength="31" placeholder="auto (mesh root)">
 </div>
 
 <h2>Mesh / Wi-Fi</h2>
@@ -106,7 +109,7 @@
   <div><label for="mesh_max_level">Max mesh hops (1-15)</label><input type="number" id="mesh_max_level" min="1" max="15"></div>
 </div>
 
-<h2>DSP / Crossover</h2>
+<h2>DSP / Crossover<span class="live-state" id="dsp_state"></span></h2>
 <div class="checkbox-row"><input type="checkbox" id="crossover_enabled"><label for="crossover_enabled">Crossover enabled</label></div>
 <label for="crossover_hz" id="crossover_hz_label">Crossover frequency (40-500 Hz)</label>
 <input type="number" id="crossover_hz" min="40" max="500">
@@ -117,16 +120,19 @@
 <label for="sub_hpf_hz" id="sub_hpf_hz_label">Sub high-pass / subsonic (15-60 Hz, 0 = off)</label>
 <input type="number" id="sub_hpf_hz" min="0" max="60">
 <div class="checkbox-row"><input type="checkbox" id="sub_invert"><label for="sub_invert" id="sub_invert_label">Sub phase 180&deg;</label></div>
-<div class="checkbox-row"><input type="checkbox" id="comp_enable"><label for="comp_enable">Compressor</label></div>
+<label for="sub_channel" id="sub_channel_label">Sub output channel</label>
+<select id="sub_channel"><option value="0">Left</option><option value="1">Right</option></select>
+
+<h2>Compressor<span class="live-state" id="comp_state"></span></h2>
+<div class="checkbox-row"><input type="checkbox" id="comp_enable"><label for="comp_enable">Compressor enabled</label></div>
 <div class="row">
   <div><label for="comp_threshold_db" id="comp_threshold_db_label">Threshold (dBFS)</label><input type="number" id="comp_threshold_db" min="-40" max="0" step="1"></div>
   <div><label for="comp_ratio" id="comp_ratio_label">Ratio (1-10)</label><input type="number" id="comp_ratio" min="1" max="10" step="0.5"></div>
   <div><label for="comp_makeup_db" id="comp_makeup_db_label">Make-up (dB)</label><input type="number" id="comp_makeup_db" min="0" max="24" step="1"></div>
 </div>
-<label for="sub_channel" id="sub_channel_label">Sub output channel</label>
-<select id="sub_channel"><option value="0">Left</option><option value="1">Right</option></select>
 
-<h2>Pins</h2>
+<details id="pins_details">
+<summary>Pins</summary>
 <label for="pin_preset">Load wiring preset</label>
 <select id="pin_preset">
   <option value="">&mdash;</option>
@@ -153,12 +159,15 @@
 <label for="pot_delay_range_ms" id="pot_delay_range_ms_label">Delay knob range (&plusmn; ms)</label>
 <input type="number" id="pot_delay_range_ms" min="10" max="2000" step="10">
 </div>
+</details>
 
-<h2>Opus</h2>
+<details id="opus_details">
+<summary>Opus</summary>
 <div class="row">
   <div><label for="opus_bitrate">Bitrate (16000-192000)</label><input type="number" id="opus_bitrate" min="16000" max="192000" step="1000"></div>
   <div><label for="opus_complexity">Complexity (0-10)</label><input type="number" id="opus_complexity" min="0" max="10"></div>
 </div>
+</details>
 
 <button id="save">Save</button>
 <div id="resetRow">
@@ -190,9 +199,6 @@ const DE = {
   'Local I2S input': 'Lokaler I2S-Eingang',
   'Local input threshold (dBFS)': 'Schwelle lokaler Eingang (dBFS)',
   'Buffer (ms)': 'Puffer (ms)',
-  'Delay trim (ms)': 'Delay-Trim (ms)',
-  'Server address override': 'Feste Server-Adresse',
-  'auto (mesh root)': 'automatisch (Mesh-Root)',
   'Mesh / Wi-Fi': 'Mesh / WLAN',
   'Mesh enabled': 'Mesh aktiv',
   'Password': 'Passwort',
@@ -208,6 +214,10 @@ const DE = {
   'Sub high-pass / subsonic (15-60 Hz, 0 = off)': 'Sub-Hochpass / Subsonic (15-60 Hz, 0 = aus)',
   'Sub phase 180\u00b0': 'Sub-Phase 180\u00b0',
   'Compressor': 'Kompressor',
+  'Compressor enabled': 'Kompressor aktiv',
+  'applied': 'übernommen',
+  'not applied: {0}': 'nicht übernommen: {0}',
+  'not applied: server unreachable': 'nicht übernommen: Server nicht erreichbar',
   'Threshold (dBFS)': 'Schwelle (dBFS)',
   'Ratio (1-10)': 'Verhältnis (1-10)',
   'Make-up (dB)': 'Aufholen (dB)',
@@ -433,6 +443,7 @@ async function loadConfig() {
   }
   if (token !== selectionToken) return;
   configLoaded = true;
+  setFormDirty(false);
   updateSettingsHead();
   currentRole = cfg.role;
   updatePageTitle();
@@ -440,8 +451,6 @@ async function loadConfig() {
   $('source_mode').value = String(cfg.source_mode);
   $('local_input_threshold_db').value = cfg.local_input_threshold_db;
   $('buffer_ms').value = cfg.buffer_ms;
-  $('delay_trim_ms').value = cfg.delay_trim_ms;
-  $('server_host').value = cfg.server_host;
   updateRoleFieldsEnabled();
 
   $('mesh_enable').checked = cfg.mesh_enable;
@@ -482,7 +491,6 @@ async function loadConfig() {
   $('pot_delay_range_ms').value = cfg.pot_delay_range_ms;
   $('pot_volume_reversed').checked = !!cfg.pot_volume_reversed;
   $('pot_delay_reversed').checked = !!cfg.pot_delay_reversed;
-  savedDelayPin = cfg.pot_delay_gpio;
   fillPinSelects({
     pin_i2s_bclk: cfg.pins.i2s_bclk,
     pin_i2s_lrclk: cfg.pins.i2s_lrclk,
@@ -495,7 +503,6 @@ async function loadConfig() {
 }
 
 let pinRules = { max: 48, blocked: {}, adc: [] };
-let savedDelayPin = 0;
 
 /* Every pin function on the page. Knobs are limited to ADC1; the LED and
  * the knobs may be left unassigned, the I2S bus may not. */
@@ -556,13 +563,6 @@ function updatePotFieldsEnabled() {
   $('pot_delay_reversed_label').classList.toggle('disabled', delayPin === 0);
   $('pot_delay_range_ms').disabled = delayPin === 0;
   $('pot_delay_range_ms_label').classList.toggle('disabled', delayPin === 0);
-  // The trim field only yields to a knob that is actually running, i.e.
-  // saved and booted with -- not one merely picked in the list.
-  const knobOwnsTrim = savedDelayPin !== 0;
-  if (knobOwnsTrim) {
-    $('delay_trim_ms').disabled = true;
-    $('delay_trim_ms_label').classList.add('disabled');
-  }
 }
 
 function updateCrossoverFieldsEnabled() {
@@ -584,12 +584,12 @@ function updateCompFieldsEnabled() {
 
 function updateRoleFieldsEnabled() {
   const isClient = $('role').value === '1';
-  const fields = ['source_mode', 'local_input_threshold_db', 'buffer_ms', 'delay_trim_ms', 'server_host'];
-  for (const id of fields) {
-    $(id).disabled = !isClient;
-  }
+  // Only the server's buffer and encoder count; a client plays by what the
+  // server announces and sends.
+  $('client_fields').hidden = !isClient;
+  $('server_fields').hidden = isClient;
+  $('opus_details').hidden = isClient;
   $('local_input_threshold_db_label').classList.toggle('disabled', !isClient);
-  $('delay_trim_ms_label').classList.toggle('disabled', !isClient);
   updatePotFieldsEnabled();
 }
 
@@ -640,6 +640,7 @@ async function loadStatus() {
     const s = await res.json();
     if (token !== selectionToken) return;
     currentDeviceId = s.device_id;
+    deviceProvisioning = selectedId === null && s.reason !== 'none';
     updatePageTitle();
     let knobs = '';
     if (s.pot_volume_percent !== null && s.pot_volume_percent !== undefined) {
@@ -717,25 +718,12 @@ $('save').addEventListener('click', async () => {
     source_mode: Number($('source_mode').value),
     local_input_threshold_db: Number($('local_input_threshold_db').value),
     buffer_ms: Number($('buffer_ms').value),
-    delay_trim_ms: Number($('delay_trim_ms').value),
-    server_host: $('server_host').value,
     mesh_enable: $('mesh_enable').checked,
     mesh_ssid: $('mesh_ssid').value,
     mesh_password: $('mesh_password').value,
     mesh_channel: Number($('mesh_channel').value),
     mesh_max_level: Number($('mesh_max_level').value),
-    dsp_bypass: !$('crossover_enabled').checked,
-    crossover_hz: Number($('crossover_hz').value),
-    sub_gain_db: Number($('sub_gain_db').value),
-    wideband_gain_db: Number($('wideband_gain_db').value),
-    sub_hpf_hz: Number($('sub_hpf_hz').value),
-    sub_invert: $('sub_invert').checked,
-    comp_enable: $('comp_enable').checked,
-    comp_threshold_db: Number($('comp_threshold_db').value),
-    comp_ratio: Number($('comp_ratio').value),
-    comp_makeup_db: Number($('comp_makeup_db').value),
-    sub_channel: Number($('sub_channel').value),
-    wideband_channel: Number(otherChannel($('sub_channel').value)),
+    ...livePayload(),
     opus_bitrate: Number($('opus_bitrate').value),
     opus_complexity: Number($('opus_complexity').value),
     pins: {
@@ -772,6 +760,7 @@ $('save').addEventListener('click', async () => {
     return;
   }
   const result = await res.json();
+  if (token === selectionToken) setFormDirty(false);
   $('status').textContent = result.reboot
     ? t('Saved. A setting that needs a restart changed, {0} is rebooting...', who)
     : t('Saved.');
@@ -780,6 +769,90 @@ $('save').addEventListener('click', async () => {
     loadStatus();
   }
 });
+
+// DSP and compressor take effect without a reboot, so they are sent on
+// every change -- no scrolling down to Save while tuning by ear. Only on a
+// provisioning boot they wait for Save: any save there reboots the device.
+const LIVE_IDS = ['crossover_enabled', 'crossover_hz', 'sub_gain_db', 'wideband_gain_db', 'sub_hpf_hz',
+  'sub_invert', 'sub_channel', 'comp_enable', 'comp_threshold_db', 'comp_ratio', 'comp_makeup_db'];
+let deviceProvisioning = false;
+let liveBusy = false;
+let livePending = false;
+const liveTimers = {};
+
+function livePayload() {
+  return {
+    dsp_bypass: !$('crossover_enabled').checked,
+    crossover_hz: Number($('crossover_hz').value),
+    sub_gain_db: Number($('sub_gain_db').value),
+    wideband_gain_db: Number($('wideband_gain_db').value),
+    sub_hpf_hz: Number($('sub_hpf_hz').value),
+    sub_invert: $('sub_invert').checked,
+    sub_channel: Number($('sub_channel').value),
+    wideband_channel: Number(otherChannel($('sub_channel').value)),
+    comp_enable: $('comp_enable').checked,
+    comp_threshold_db: Number($('comp_threshold_db').value),
+    comp_ratio: Number($('comp_ratio').value),
+    comp_makeup_db: Number($('comp_makeup_db').value),
+  };
+}
+
+function showLiveState(id, text, error) {
+  const el = $(id);
+  el.textContent = text;
+  el.classList.toggle('err', error);
+  clearTimeout(liveTimers[id]);
+  if (!error) liveTimers[id] = setTimeout(() => { el.textContent = ''; }, 3000);
+}
+
+async function applyLive(stateId) {
+  if (liveBusy) {
+    livePending = stateId;
+    return;
+  }
+  liveBusy = true;
+  const token = selectionToken;
+  try {
+    const res = await fetch(configUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(livePayload()),
+    });
+    if (token !== selectionToken) return;
+    if (res.ok) showLiveState(stateId, t('applied'), false);
+    else showLiveState(stateId, t('not applied: {0}', await res.text()), true);
+  } catch (e) {
+    if (token === selectionToken) showLiveState(stateId, t('not applied: server unreachable'), true);
+  } finally {
+    liveBusy = false;
+    if (livePending) {
+      const next = livePending;
+      livePending = false;
+      applyLive(next);
+    }
+  }
+}
+
+for (const id of LIVE_IDS) {
+  $(id).addEventListener('change', () => {
+    if (!configLoaded || deviceProvisioning) return;
+    applyLive(id.startsWith('comp_') ? 'comp_state' : 'dsp_state');
+  });
+}
+
+// The rest of the form only takes effect on Save (unlike the device list,
+// which sends every change at once); the button says when that is pending.
+function setFormDirty(dirty) {
+  $('save').classList.toggle('dirty', dirty);
+}
+for (const type of ['input', 'change']) {
+  document.addEventListener(type, (e) => {
+    if (!configLoaded || !e.target.matches('input, select')) return;
+    if (e.target.closest('#devices_section, #resetRow')) return;
+    if (LIVE_IDS.includes(e.target.id) && !deviceProvisioning) return;
+    setFormDirty(true);
+  }, true);  // capture: also sees the non-bubbling change the sign button fires
+}
 
 // Asked on the page itself: browsers and the app's WebView may suppress
 // confirm(), and a dialog that never shows must not count as a yes.
@@ -978,7 +1051,7 @@ if (embedded) {
   $('pageTitle').hidden = true;
   document.querySelector('footer').hidden = true;
 }
-for (const id of ['local_input_threshold_db', 'delay_trim_ms', 'sub_gain_db', 'wideband_gain_db', 'comp_threshold_db']) {
+for (const id of ['local_input_threshold_db', 'sub_gain_db', 'wideband_gain_db', 'comp_threshold_db']) {
   addSignToggle($(id));
 }
 loadConfig();
