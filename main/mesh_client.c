@@ -34,23 +34,14 @@ static const char *TAG = "MESH_CLIENT";
 static bool s_snapclient_started;
 
 /*
- * Resolves which Snapserver to connect to: an explicit override from
- * device_config.server_host if set, otherwise ESP-Mesh-Lite's own root-IP
- * tracking, which stays correct across parent changes in a dynamic,
- * multi-hop mesh (unlike the local DHCP gateway, which is only the
+ * Resolves which Snapserver to connect to: the mesh root, from
+ * ESP-Mesh-Lite's own root-IP tracking, which stays correct across parent
+ * changes in a dynamic, multi-hop mesh (unlike the local DHCP gateway, which is only the
  * immediate parent beyond the first hop, and unlike mDNS, whose link-local
  * multicast doesn't cross the NAPT boundary between levels).
  */
 static void resolve_server_host(char *out, size_t out_len)
 {
-    device_config_t cfg;
-    device_config_get(&cfg);
-
-    if (cfg.server_host[0] != '\0') {
-        strlcpy(out, cfg.server_host, out_len);
-        return;
-    }
-
     esp_ip_addr_t root_ip;
     if (esp_mesh_lite_get_root_ip(ESP_IPADDR_TYPE_V4, &root_ip) == ESP_OK) {
         /*

@@ -224,7 +224,6 @@ static cJSON *build_config_json(void)
     cJSON_AddNumberToObject(root, "delay_trim_ms", cfg.delay_trim_ms);
     cJSON_AddNumberToObject(root, "source_mode", cfg.source_mode);
     cJSON_AddNumberToObject(root, "local_input_threshold_db", cfg.local_input_threshold_db);
-    cJSON_AddStringToObject(root, "server_host", cfg.server_host);
 
     device_pots_t pots;
     device_config_get_pots(&pots);
@@ -425,10 +424,6 @@ static esp_err_t apply_config_json(const cJSON *root, bool *reboot, const char *
     if (parse_number_field(root, "local_input_threshold_db", &num)) {
         next.local_input_threshold_db = (int8_t)num;
     }
-    /* server_host uses the password-style always-overwrite parser: an empty
-     * value is meaningful here too (auto-discover via Mesh-Lite), same as
-     * an empty mesh_password means "open network". */
-    parse_password_field(root, "server_host", next.server_host, sizeof(next.server_host));
 
     device_pots_t old_pots;
     device_config_get_pots(&old_pots);

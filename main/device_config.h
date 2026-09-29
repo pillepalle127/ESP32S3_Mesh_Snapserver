@@ -80,7 +80,8 @@ typedef struct {
     int16_t  delay_trim_ms;
     uint8_t  source_mode;
     int8_t   local_input_threshold_db;
-    /* Empty = auto-discover the server via esp_mesh_lite_get_root_ip(). */
+    /* Unused since 2026-09-29 (the server is always the mesh root); kept
+     * so the blob layout stays the same. */
     char     server_host[32];
 
     /*
