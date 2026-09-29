@@ -5,7 +5,7 @@
 
 # ESP32-S3 Mesh Snapserver
 
-**Updated:** 2026-09-26 · **Deutsch:** [README.md](README.md)
+**Updated:** 2026-09-29 · **Deutsch:** [README.md](README.md)
 
 Several speakers play the same music in sync, with no router, PC or cables in between. The ESP32-S3 boards build their
 own wireless network (ESP-Mesh-Lite) and pass the signal on from device to device.
@@ -148,10 +148,26 @@ front, plug forces go into the case. The status LED shines through the lid. The 
 ```text
 I2S in (stereo) ─► L+R → mono ─┬─► Opus ─► Snapcast TCP 1704 ─► clients
                                │
-                               └─► delay line (bufferMs + trim) ─► LR4 ─► low/high ─► gain/vol ─► I2S out
+                               └─► delay line ─► DSP ─► I2S out
 ```
 
-The server delays its own speaker by the buffer time so it plays together with the clients.
+The server delays its own speaker by the buffer time so it plays together with the clients. The clients play from
+their buffer into the same chain.
+
+| Stage, in order | Crossover off | Crossover on | Announcement |
+|---|---|---|---|
+| Buffer, delay, delay pot | on | on | bypassed |
+| Mono (L+R)/2 | on | on | – |
+| LR4 crossover | – | on | as set |
+| Subsonic high-pass | – | on | as set |
+| Gain sub / wideband | – | on | as set |
+| Sub phase 180° | – | on | as set |
+| Compressor | on | on | on |
+| Pot, volume | on | on | on |
+| Limiter −0.5 dBFS | on | on | on |
+
+Only the buffer and the delay add latency. Filters, compressor and limiter work without look-ahead. Announcements
+bypass everything that delays.
 
 ---
 
@@ -187,13 +203,28 @@ device. **Settings** loads a client's settings, however deep it sits in the mesh
 ### Settings
 
 * **Role:** server or client.
-* **Playback (client):** source, buffer (default 3000 ms), delay trim.
+* **Buffer (server):** reserve against radio dropouts, default 3000 ms, applies to all devices.
+* **Playback (client):** source.
 * **Mesh / Wi-Fi:** name, password and channel, the same on all devices.
-* **Crossover:** crossover frequency and gain for sub and wideband.
+* **Crossover:** crossover frequency, gain for sub and wideband (−24 to +18 dB), sub phase 180°.
+* **Subsonic:** high-pass on the sub branch against bass below the tuning, rule of thumb 0.75 × F3.
+* **Compressor:** threshold, ratio, make-up.
 * **Pins:** see [Pins](#pins).
-* **Opus:** bitrate and encoder complexity.
+* **Opus (server):** bitrate and encoder complexity, collapsed.
 
-Changing role, mesh or pins restarts the device.
+Crossover and compressor apply as you change them, everything else with **Save**. Role, mesh, buffer and pins
+restart the device. The pins are collapsed.
+
+### Setting up the compressor
+
+1. Balance sub and wideband with the gains, the louder branch at 0 dB. Pot and source at maximum.
+2. Compressor on, ratio 3, make-up 0 dB.
+3. Lower the threshold from −30 dBFS until loud passages are reduced by 3–6 dB.
+4. Raise the make-up until the limiter only rarely steps in, by 3 dB at most.
+5. Turn the pot through its range: the last part must still get louder, otherwise the make-up is too high.
+
+If it sounds flat or pumps, raise the threshold or lower the ratio. At 1:1 the compressor is plain gain.
+Compressor and limiter log their reduction every 5 s on the serial console.
 
 ---
 

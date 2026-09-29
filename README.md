@@ -5,7 +5,7 @@
 
 # ESP32-S3 Mesh Snapserver
 
-**Stand:** 2026-09-26 · **English:** [README.en.md](README.en.md)
+**Stand:** 2026-09-29 · **English:** [README.en.md](README.en.md)
 
 Mehrere Lautsprecher spielen synchron dieselbe Musik, ohne Router, PC oder Kabel dazwischen. Die ESP32-S3 bauen sich
 ihr eigenes Funknetz (ESP-Mesh-Lite) und reichen das Signal von Gerät zu Gerät weiter.
@@ -150,10 +150,26 @@ liegen in [`mechanics/housing/`](mechanics/housing/): das FreeCAD-Modell `Snapst
 ```text
 I2S in (Stereo) ─► L+R → Mono ─┬─► Opus ─► Snapcast TCP 1704 ─► Clients
                                │
-                               └─► Delay-Line (bufferMs + trim) ─► LR4 ─► Low/High ─► Gain/Vol ─► I2S out
+                               └─► Delay-Line ─► DSP ─► I2S out
 ```
 
-Der Server verzögert seinen eigenen Lautsprecher um die Pufferzeit, damit er mit den Clients zusammen spielt.
+Der Server verzögert seinen eigenen Lautsprecher um die Pufferzeit, damit er mit den Clients zusammen spielt. Die
+Clients spielen aus ihrem Puffer in dieselbe Kette.
+
+| Stufe, in Reihenfolge | Weiche aus | Weiche an | Durchsage |
+|---|---|---|---|
+| Puffer, Delay, Delay-Poti | an | an | umgangen |
+| Mono (L+R)/2 | an | an | – |
+| Weiche LR4 | – | an | wie eingestellt |
+| Subsonic-Hochpass | – | an | wie eingestellt |
+| Gain Sub / Breitband | – | an | wie eingestellt |
+| Sub-Phase 180° | – | an | wie eingestellt |
+| Kompressor | an | an | an |
+| Poti, Lautstärke | an | an | an |
+| Begrenzer −0,5 dBFS | an | an | an |
+
+Nur der Puffer und das Delay verzögern. Filter, Kompressor und Begrenzer arbeiten ohne Vorausschau. Durchsagen
+umgehen alles, was verzögert.
 
 ---
 
@@ -180,23 +196,38 @@ WLAN `ESP32_provisioning_<MAC>` zum Einrichten. Nach 3 Minuten ohne Speichern sc
 <img src="docs/webui-server.png" alt="Einstellungsseite des Servers mit Geräteliste" width="300" align="right">
 
 Jedes Gerät hat eine Einstellungsseite unter seiner IP-Adresse oder seinem mDNS-Namen. Die Werte bleiben bei
-Updates erhalten, **Factory Reset** setzt alles zurück.
+Updates erhalten, **Werkseinstellungen** setzt alles zurück.
 
 ### Geräteliste (Server)
 
 Name, Lautstärke, Stumm und Delay jedes Lautsprechers, auch aus Snapcast-Control-Apps. Der Server merkt sich die
-Werte je Gerät. **Settings** lädt die Einstellungen eines Clients, egal wie tief er im Mesh hängt.
+Werte je Gerät. **Einstellungen** lädt die Einstellungen eines Clients, egal wie tief er im Mesh hängt.
 
 ### Einstellungen
 
 * **Rolle:** Server oder Client.
-* **Wiedergabe (Client):** Quelle, Puffer (Vorgabe 3000 ms), Delay-Trim.
+* **Puffer (Server):** Vorsprung gegen Funkaussetzer, Vorgabe 3000 ms, gilt für alle Geräte.
+* **Wiedergabe (Client):** Quelle.
 * **Mesh / WLAN:** Name, Passwort und Kanal, auf allen Geräten gleich.
-* **Weiche:** Trennfrequenz und Verstärkung für Sub und Breitband.
+* **Weiche:** Trennfrequenz, Gain für Sub und Breitband (−24 bis +18 dB), Sub-Phase 180°.
+* **Subsonic:** Hochpass im Sub-Zweig gegen Tiefbass unterhalb der Abstimmung, Richtwert 0,75 × F3.
+* **Kompressor:** Schwelle, Verhältnis, Aufholen.
 * **Pins:** siehe [Pins](#pins).
-* **Opus:** Bitrate und Rechenaufwand des Encoders.
+* **Opus (Server):** Bitrate und Rechenaufwand des Encoders, eingeklappt.
 
-Änderungen an Rolle, Mesh oder Pins starten das Gerät neu.
+Weiche und Kompressor werden beim Ändern übernommen, alles andere mit **Speichern**. Rolle, Mesh, Puffer und Pins
+starten das Gerät neu. Die Pins sind eingeklappt.
+
+### Kompressor einstellen
+
+1. Sub und Breitband mit den Gains abgleichen, den lauteren Zweig auf 0 dB. Poti und Quelle auf Maximum.
+2. Kompressor an, Verhältnis 3, Aufholen 0 dB.
+3. Schwelle ab −30 dBFS senken, bis laute Stellen um 3–6 dB abgesenkt werden.
+4. Aufholen erhöhen, bis der Begrenzer nur noch selten eingreift, höchstens um 3 dB.
+5. Poti durchdrehen: Das letzte Stück muss noch lauter werden, sonst ist das Aufholen zu hoch.
+
+Klingt es platt oder pumpt es, die Schwelle höher oder das Verhältnis kleiner stellen. Mit 1:1 ist der Kompressor
+eine reine Verstärkung. Kompressor und Begrenzer melden ihre Absenkung alle 5 s im seriellen Log.
 
 ---
 
