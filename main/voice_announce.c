@@ -175,7 +175,7 @@ static const char *TAG = "VOICE";
  * everything after the reboot as "stale". Same value as audio_sink.c's
  * VOICE_INACTIVITY_TIMEOUT_US, which releases the overlay after the same gap.
  */
-#define VOICE_SESSION_GAP_US   (400LL * 1000LL)
+#define VOICE_SESSION_GAP_US   (1000LL * 1000LL)
 
 /* ------------------------------------------------------------------ */
 /* Opus decoding, shared by both roles                                */

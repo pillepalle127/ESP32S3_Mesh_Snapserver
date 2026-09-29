@@ -57,13 +57,15 @@ static const char *TAG = "AUDIO_SINK";
  * How long since the last received voice-announcement packet before the
  * arbiter releases VOICE back to whatever SOURCE_MODE would otherwise pick.
  * Comfortably above ordinary packet loss/jitter (announcement packets arrive
- * every ~10 ms, so this absorbs dozens of consecutive drops without
- * flapping mid-sentence) while still short enough that a dead phone/network
- * mid-announcement recovers to music well under half a second later -- this
- * timeout doubles as the client's entire "announcement over" signal, no
- * explicit message from the server needed.
+ * every ~10 ms) while still short enough that a dead phone/network
+ * mid-announcement recovers to music about a second later -- this timeout
+ * doubles as the client's entire "announcement over" signal, no explicit
+ * message from the server needed. 400 ms was too short two mesh levels
+ * down: gaps of that length split one announcement into pieces of 1-3 s
+ * with music in between (2026-09-29). The server ends an announcement
+ * after the same second of silence (VOICE_SILENCE_LIMIT_US).
  */
-#define VOICE_INACTIVITY_TIMEOUT_US (400LL * 1000LL)
+#define VOICE_INACTIVITY_TIMEOUT_US (1000LL * 1000LL)
 
 /* 100 ms of room, so a burst of packets has somewhere to land; what is
  * actually kept is bounded by VOICE_MAX_FILL_SAMPLES below, which must stay
