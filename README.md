@@ -208,7 +208,7 @@ ungeeignete Pins ab. Startet das Gerät mit einer neuen Belegung nicht, fällt e
 ### Potis
 
 Zwei optionale 10-kΩ-Potis regeln Lautstärke und Delay direkt am Gerät. Der Schleifer gehört an einen ADC1-Pin
-(GPIO 1–10).
+(GPIO 1–10). Die Drehrichtung lässt sich umkehren.
 
 ### Status-LED
 

@@ -92,13 +92,21 @@ typedef struct {
  * lives under its own NVS key and falls back to defaults field by field.
  *
  * A gpio of 0 means "no knob". Pin changes need a reboot, the delay range
- * applies live.
+ * and the direction apply live.
+ *
+ * The *_reversed flags came later. A blob stored before them is
+ * DEVICE_POTS_V1_SIZE bytes long and loads with both flags 0.
  */
 typedef struct {
     uint8_t  volume_gpio;
     uint8_t  delay_gpio;
     uint16_t delay_range_ms;
+    uint8_t  volume_reversed; /* 1: full turn clockwise = silence */
+    uint8_t  delay_reversed;
+    uint8_t  reserved[2];
 } device_pots_t;
+
+#define DEVICE_POTS_V1_SIZE 4U
 
 /* Volume stays on the pin it had while that was a Kconfig setting, so an
  * update changes nothing on boards already wired. Delay starts unset: an

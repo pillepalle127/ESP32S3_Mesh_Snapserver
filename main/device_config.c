@@ -4,6 +4,7 @@
  */
 #include "device_config.h"
 
+#include <stddef.h>
 #include <string.h>
 
 #include "audio_i2s.h"
@@ -51,6 +52,9 @@ static device_local_volume_t s_stream_volume = { .percent = 100U };
 
 static void load_volume_blob(nvs_handle_t handle, const char *key, device_local_volume_t *out);
 
+_Static_assert(offsetof(device_pots_t, volume_reversed) == DEVICE_POTS_V1_SIZE,
+               "old knob blobs must end where the direction flags begin");
+
 static device_pots_t s_pots = {
     .volume_gpio = DEVICE_POTS_DEFAULT_VOLUME_GPIO,
     .delay_gpio = DEVICE_POTS_DEFAULT_DELAY_GPIO,
@@ -62,6 +66,8 @@ static void seed_pot_defaults(device_pots_t *pots)
     pots->volume_gpio = DEVICE_POTS_DEFAULT_VOLUME_GPIO;
     pots->delay_gpio = DEVICE_POTS_DEFAULT_DELAY_GPIO;
     pots->delay_range_ms = DEVICE_POTS_DEFAULT_DELAY_RANGE_MS;
+    pots->volume_reversed = 0U;
+    pots->delay_reversed = 0U;
 }
 
 /* Guarded by s_cfg_lock like s_cfg. What the hardware was started with is
@@ -307,7 +313,7 @@ esp_err_t device_config_load(void)
      * -- and is not treated as a first boot for that, because nothing the
      * user configured has been lost.
      */
-    device_pots_t pots;
+    device_pots_t pots = { 0 };
     size_t pots_len = sizeof(pots);
     const esp_err_t pots_result = nvs_get_blob(handle, DEVICE_POTS_NVS_KEY, &pots, &pots_len);
 
@@ -351,7 +357,9 @@ esp_err_t device_config_load(void)
         (void)write_pins_blob(&pins);
     }
 
-    if (pots_result != ESP_OK || pots_len != sizeof(pots) || !device_config_pots_valid(&pots)) {
+    /* A shorter blob from before the direction flags leaves them at 0. */
+    const bool pots_len_ok = pots_len == sizeof(pots) || pots_len == DEVICE_POTS_V1_SIZE;
+    if (pots_result != ESP_OK || !pots_len_ok || !device_config_pots_valid(&pots)) {
         if (pots_result != ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "Stored knob settings unusable, using defaults");
         }
@@ -537,6 +545,9 @@ bool device_config_pots_valid(const device_pots_t *pots)
     }
     if (pots->delay_range_ms < DEVICE_POTS_DELAY_RANGE_MIN_MS ||
         pots->delay_range_ms > DEVICE_CONFIG_DELAY_TRIM_MAX_MS) {
+        return false;
+    }
+    if (pots->volume_reversed > 1U || pots->delay_reversed > 1U) {
         return false;
     }
     return true;

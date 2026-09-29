@@ -227,6 +227,8 @@ static cJSON *build_config_json(void)
     cJSON_AddNumberToObject(root, "pot_volume_gpio", pots.volume_gpio);
     cJSON_AddNumberToObject(root, "pot_delay_gpio", pots.delay_gpio);
     cJSON_AddNumberToObject(root, "pot_delay_range_ms", pots.delay_range_ms);
+    cJSON_AddBoolToObject(root, "pot_volume_reversed", pots.volume_reversed != 0U);
+    cJSON_AddBoolToObject(root, "pot_delay_reversed", pots.delay_reversed != 0U);
     cJSON_AddNumberToObject(root, "pot_delay_range_max_ms", DEVICE_CONFIG_DELAY_TRIM_MAX_MS);
 
     device_pins_t pins;
@@ -435,10 +437,17 @@ static esp_err_t apply_config_json(const cJSON *root, bool *reboot, const char *
         *err = "storing pin assignment failed";
         return ESP_FAIL;
     }
+    bool reversed = next_pots.volume_reversed != 0U;
+    parse_bool_field(root, "pot_volume_reversed", &reversed);
+    next_pots.volume_reversed = reversed ? 1U : 0U;
+    reversed = next_pots.delay_reversed != 0U;
+    parse_bool_field(root, "pot_delay_reversed", &reversed);
+    next_pots.delay_reversed = reversed ? 1U : 0U;
 
     device_config_t saved;
     device_config_get(&saved);
     pots_set_delay_range(next_pots.delay_range_ms);
+    pots_set_reversed(next_pots.volume_reversed != 0U, next_pots.delay_reversed != 0U);
     apply_live_params(&saved);
 
     /* Pins are claimed once at start, so moving any of them needs a reboot. */

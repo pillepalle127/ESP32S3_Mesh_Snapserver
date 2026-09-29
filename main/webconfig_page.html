@@ -132,8 +132,10 @@
 <div id="status_led_row"><label for="pin_status_led">Status LED (WS2812 data)</label><select id="pin_status_led"></select></div>
 <div id="pots_section">
 <div class="row">
-  <div><label for="pot_volume_gpio">Volume knob</label><select id="pot_volume_gpio"></select></div>
-  <div><label for="pot_delay_gpio">Delay knob</label><select id="pot_delay_gpio"></select></div>
+  <div><label for="pot_volume_gpio">Volume knob</label><select id="pot_volume_gpio"></select>
+    <div class="checkbox-row"><input type="checkbox" id="pot_volume_reversed"><label for="pot_volume_reversed" id="pot_volume_reversed_label">Reverse direction</label></div></div>
+  <div><label for="pot_delay_gpio">Delay knob</label><select id="pot_delay_gpio"></select>
+    <div class="checkbox-row"><input type="checkbox" id="pot_delay_reversed"><label for="pot_delay_reversed" id="pot_delay_reversed_label">Reverse direction</label></div></div>
 </div>
 <label for="pot_delay_range_ms" id="pot_delay_range_ms_label">Delay knob range (&plusmn; ms)</label>
 <input type="number" id="pot_delay_range_ms" min="10" max="2000" step="10">
@@ -195,6 +197,7 @@ const DE = {
   'Volume knob': 'Lautstärke-Poti',
   'Delay knob': 'Delay-Poti',
   'Delay knob range (\u00b1 ms)': 'Bereich Delay-Poti (\u00b1 ms)',
+  'Reverse direction': 'Drehrichtung umkehren',
   'Complexity (0-10)': 'Komplexität (0–10)',
   'Save': 'Speichern',
   'Factory Reset': 'Werkseinstellungen',
@@ -443,6 +446,8 @@ async function loadConfig() {
   pinRules = { max: cfg.gpio_max, blocked: cfg.gpio_blocked, adc: cfg.adc1_pins };
   $('pot_delay_range_ms').max = cfg.pot_delay_range_max_ms;
   $('pot_delay_range_ms').value = cfg.pot_delay_range_ms;
+  $('pot_volume_reversed').checked = !!cfg.pot_volume_reversed;
+  $('pot_delay_reversed').checked = !!cfg.pot_delay_reversed;
   savedDelayPin = cfg.pot_delay_gpio;
   fillPinSelects({
     pin_i2s_bclk: cfg.pins.i2s_bclk,
@@ -508,7 +513,12 @@ function fillPinSelects(values) {
 }
 
 function updatePotFieldsEnabled() {
+  const volumePin = Number($('pot_volume_gpio').value);
   const delayPin = Number($('pot_delay_gpio').value);
+  $('pot_volume_reversed').disabled = volumePin === 0;
+  $('pot_volume_reversed_label').classList.toggle('disabled', volumePin === 0);
+  $('pot_delay_reversed').disabled = delayPin === 0;
+  $('pot_delay_reversed_label').classList.toggle('disabled', delayPin === 0);
   $('pot_delay_range_ms').disabled = delayPin === 0;
   $('pot_delay_range_ms_label').classList.toggle('disabled', delayPin === 0);
   // The trim field only yields to a knob that is actually running, i.e.
@@ -688,6 +698,8 @@ $('save').addEventListener('click', async () => {
     pot_volume_gpio: Number($('pot_volume_gpio').value),
     pot_delay_gpio: Number($('pot_delay_gpio').value),
     pot_delay_range_ms: Number($('pot_delay_range_ms').value),
+    pot_volume_reversed: $('pot_volume_reversed').checked,
+    pot_delay_reversed: $('pot_delay_reversed').checked,
   };
 
   const token = selectionToken;

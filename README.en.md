@@ -204,7 +204,8 @@ If the device does not start with a new assignment, it falls back to the default
 
 ### Pots
 
-Two optional 10 kΩ pots set volume and delay on the device. The wiper goes to an ADC1 pin (GPIO 1–10).
+Two optional 10 kΩ pots set volume and delay on the device. The wiper goes to an ADC1 pin (GPIO 1–10). The
+turning direction can be reversed.
 
 ### Status LED
 

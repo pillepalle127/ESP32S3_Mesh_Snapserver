@@ -9,14 +9,18 @@
  *
  * Volume sets this device's own speaker through audio_i2s_set_master_volume()
  * and nothing else -- the Opus stream a server sends is fed from a separate
- * copy. Its pin has a pull-up, so a pin that is selected but has no knob
- * fitted reads full scale and plays at 100 %.
+ * copy. Its pin is pulled to the loud end, so a pin that is selected but
+ * has no knob fitted plays at 100 %.
  *
  * Delay replaces the delay_trim_ms field while its pin is set: centre is
- * 0 ms, the ends are -/+ the configured range. Its pin has a pull-down, so
- * an unplugged knob sits at the negative end rather than wandering. There
+ * 0 ms, the ends are -/+ the configured range. Its pin is pulled to the
+ * negative end, so an unplugged knob sits there rather than wandering. There
  * is no way to make an open input read "centre" with internal pulls, which
  * is why the delay knob defaults to no pin at all.
+ *
+ * Either knob can be reversed for a pot wired the other way round; the
+ * pull then moves to the other rail, so an open pin still means what it
+ * says above.
  */
 #pragma once
 
@@ -51,10 +55,14 @@ void pots_enable_delay(uint8_t role, uint16_t buffer_ms);
 /* Range of the delay knob, applied live. */
 void pots_set_delay_range(uint16_t range_ms);
 
+/* Turning direction of each knob, applied live. */
+void pots_set_reversed(bool volume, bool delay);
+
 /* True while a delay pin is set and running -- delay_trim_ms is ignored then. */
 bool pots_delay_active(void);
 
-/* Volume knob position in percent, -1 if no volume pin is running. */
+/* Volume set by the knob in percent (direction applied), -1 if no volume
+ * pin is running. */
 int pots_volume_percent(void);
 
 /* Current delay from the knob; false if no delay pin is running. */

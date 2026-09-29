@@ -68,6 +68,7 @@ static const char *TAG = "POTS";
 
 typedef struct {
     bool running;
+    uint8_t gpio;
     adc_channel_t channel;
     int raw; /* last accepted reading, -1 before the first */
 } knob_t;
@@ -81,6 +82,8 @@ static volatile uint16_t s_delay_range_ms = DEVICE_POTS_DEFAULT_DELAY_RANGE_MS;
 static volatile bool s_delay_armed;
 static volatile uint8_t s_role;
 static volatile uint16_t s_buffer_ms;
+static volatile bool s_volume_reversed;
+static volatile bool s_delay_reversed;
 
 static volatile int s_volume_percent = -1;
 static volatile int16_t s_delay_ms;
@@ -134,9 +137,11 @@ static bool update_knob(knob_t *knob)
     return true;
 }
 
-static float position(const knob_t *knob)
+/* 0.0 at the "low" end of the knob, 1.0 at the "high" end. */
+static float position(const knob_t *knob, bool reversed)
 {
-    return (float)knob->raw / (float)ADC_FULL_SCALE;
+    const float p = (float)knob->raw / (float)ADC_FULL_SCALE;
+    return reversed ? (1.0f - p) : p;
 }
 
 static void pots_task(void *arg)
@@ -145,17 +150,23 @@ static void pots_task(void *arg)
 
     int16_t applied_delay_ms = 0;
     bool delay_applied = false;
+    bool applied_volume_reversed = s_volume_reversed;
 
     for (;;) {
-        if (s_volume.running && update_knob(&s_volume)) {
+        /* A direction change from the config page counts as a move. */
+        const bool volume_reversed = s_volume_reversed;
+        const bool volume_moved = s_volume.running && update_knob(&s_volume);
+        if (s_volume.running && s_volume.raw >= 0 &&
+            (volume_moved || volume_reversed != applied_volume_reversed)) {
             /*
              * Cubic, the curve audio_sink_set_volume() uses for the
              * Snapcast volume. Linear would crowd everything useful into
              * the top quarter of the rotation.
              */
-            const float p = position(&s_volume);
+            const float p = position(&s_volume, volume_reversed);
             audio_i2s_set_master_volume(p * p * p);
-            s_volume_percent = (s_volume.raw * 100 + ADC_FULL_SCALE / 2) / ADC_FULL_SCALE;
+            s_volume_percent = (int)(p * 100.0f + 0.5f);
+            applied_volume_reversed = volume_reversed;
         }
 
         if (s_delay.running) {
@@ -168,7 +179,7 @@ static void pots_task(void *arg)
                  * touching the knob. Linear: this is an offset in time, not
                  * a loudness, and centre has to mean zero.
                  */
-                const float span = (position(&s_delay) * 2.0f) - 1.0f;
+                const float span = (position(&s_delay, s_delay_reversed) * 2.0f) - 1.0f;
                 const float ms = span * (float)s_delay_range_ms;
                 const int16_t delay_ms = (int16_t)((ms >= 0.0f) ? (ms + 0.5f) : (ms - 0.5f));
                 s_delay_ms = delay_ms;
@@ -184,6 +195,23 @@ static void pots_task(void *arg)
 
         vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
     }
+}
+
+static esp_err_t set_pull(uint8_t gpio, bool pull_up)
+{
+    esp_err_t err;
+    if (pull_up) {
+        err = rtc_gpio_pulldown_dis(gpio);
+        if (err == ESP_OK) {
+            err = rtc_gpio_pullup_en(gpio);
+        }
+    } else {
+        err = rtc_gpio_pullup_dis(gpio);
+        if (err == ESP_OK) {
+            err = rtc_gpio_pulldown_en(gpio);
+        }
+    }
+    return err;
 }
 
 /*
@@ -214,23 +242,14 @@ static esp_err_t open_knob(knob_t *knob, uint8_t gpio, bool pull_up, const char 
         return err;
     }
 
-    if (pull_up) {
-        err = rtc_gpio_pulldown_dis(gpio);
-        if (err == ESP_OK) {
-            err = rtc_gpio_pullup_en(gpio);
-        }
-    } else {
-        err = rtc_gpio_pullup_dis(gpio);
-        if (err == ESP_OK) {
-            err = rtc_gpio_pulldown_en(gpio);
-        }
-    }
+    err = set_pull(gpio, pull_up);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "%s knob: pull on GPIO %u failed: %s",
                  name, (unsigned)gpio, esp_err_to_name(err));
         return err;
     }
 
+    knob->gpio = gpio;
     knob->running = true;
     ESP_LOGI(TAG, "%s knob on GPIO %u (pull-%s)", name, (unsigned)gpio, pull_up ? "up" : "down");
     return ESP_OK;
@@ -239,6 +258,8 @@ static esp_err_t open_knob(knob_t *knob, uint8_t gpio, bool pull_up, const char 
 esp_err_t pots_start(const device_pots_t *cfg)
 {
     s_delay_range_ms = cfg->delay_range_ms;
+    s_volume_reversed = cfg->volume_reversed != 0U;
+    s_delay_reversed = cfg->delay_reversed != 0U;
 
     if (cfg->volume_gpio == 0U && cfg->delay_gpio == 0U) {
         ESP_LOGI(TAG, "No knobs configured; full volume, delay trim from config");
@@ -257,18 +278,19 @@ esp_err_t pots_start(const device_pots_t *cfg)
 
     /*
      * Each knob is independent: one failing to open leaves the other
-     * running. Volume pulls up (unplugged = full volume), delay pulls
-     * down (unplugged = a defined end, not a wandering value).
+     * running. Volume pulls to its loud end (unplugged = full volume),
+     * delay to its low end (unplugged = a defined end, not a wandering
+     * value). Reversing a knob moves its pull to the other rail.
      */
     esp_err_t first_error = ESP_OK;
     if (cfg->volume_gpio != 0U) {
-        err = open_knob(&s_volume, cfg->volume_gpio, true, "Volume");
+        err = open_knob(&s_volume, cfg->volume_gpio, !s_volume_reversed, "Volume");
         if (err != ESP_OK) {
             first_error = err;
         }
     }
     if (cfg->delay_gpio != 0U) {
-        err = open_knob(&s_delay, cfg->delay_gpio, false, "Delay");
+        err = open_knob(&s_delay, cfg->delay_gpio, s_delay_reversed, "Delay");
         if (err != ESP_OK && first_error == ESP_OK) {
             first_error = err;
         }
@@ -298,6 +320,18 @@ void pots_enable_delay(uint8_t role, uint16_t buffer_ms)
 void pots_set_delay_range(uint16_t range_ms)
 {
     s_delay_range_ms = range_ms;
+}
+
+void pots_set_reversed(bool volume, bool delay)
+{
+    if (s_volume.running && volume != s_volume_reversed) {
+        (void)set_pull(s_volume.gpio, !volume);
+    }
+    if (s_delay.running && delay != s_delay_reversed) {
+        (void)set_pull(s_delay.gpio, delay);
+    }
+    s_volume_reversed = volume;
+    s_delay_reversed = delay;
 }
 
 bool pots_delay_active(void)
@@ -336,6 +370,12 @@ void pots_enable_delay(uint8_t role, uint16_t buffer_ms)
 void pots_set_delay_range(uint16_t range_ms)
 {
     (void)range_ms;
+}
+
+void pots_set_reversed(bool volume, bool delay)
+{
+    (void)volume;
+    (void)delay;
 }
 
 bool pots_delay_active(void)
