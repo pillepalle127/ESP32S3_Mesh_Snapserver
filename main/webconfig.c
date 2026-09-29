@@ -603,8 +603,12 @@ static cJSON *build_status_json(void)
         }
         cJSON_AddBoolToObject(root, "server_connected", connected);
 #if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
-        /* Same count the server's device list shows: root = level 1. */
-        const uint8_t level = esp_mesh_lite_get_level();
+        /* Same count the server's device list shows: root = level 1.
+         * Mesh-Lite is never started on a provisioning boot, and asking
+         * it for the level then dereferences NULL. */
+        const uint8_t level = (provisioning_get_active_reason() == PROVISIONING_REASON_NONE)
+                                  ? esp_mesh_lite_get_level()
+                                  : 0U;
         if (level >= 2U) {
             cJSON_AddNumberToObject(root, "server_hops", level - 1U);
         } else {
