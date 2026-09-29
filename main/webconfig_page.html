@@ -26,7 +26,10 @@
   .checkbox-row label { margin-top: 0; }
   button { margin-top: 1rem; padding: 0.5rem 1rem; font-size: 0.95rem; cursor: pointer; }
   #save { background: #2b6cb0; color: #fff; border: none; border-radius: 0.25rem; }
-  #factoryReset { background: #b03030; color: #fff; border: none; border-radius: 0.25rem; }
+  #resetRow { margin-top: 2rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
+  #resetRow button { margin-top: 0; padding: 0.25rem 0.6rem; font-size: 0.8rem; border-radius: 0.25rem; }
+  #factoryReset { background: none; color: #b03030; border: 1px solid #b03030; }
+  #resetYes { background: #b03030; color: #fff; border: 1px solid #b03030; }
   #status { margin-top: 1rem; padding: 0.5rem; border-radius: 0.25rem; background: #eee; font-size: 0.85rem; white-space: pre-line; }
   input:disabled, select:disabled, button:disabled { opacity: 0.45; }
   button:disabled { cursor: default; }
@@ -148,7 +151,12 @@
 </div>
 
 <button id="save">Save</button>
-<button id="factoryReset">Factory Reset</button>
+<div id="resetRow">
+  <button type="button" id="factoryReset">Factory Reset</button>
+  <span id="resetConfirm" hidden><span>Reset all settings to defaults and reboot?</span>
+    <button type="button" id="resetYes">Reset</button>
+    <button type="button" id="resetNo">Cancel</button></span>
+</div>
 
 <footer>ESP32-S3 Mesh Snapserver &mdash; MIT License &copy; 2026 pillepalle127</footer>
 
@@ -201,6 +209,8 @@ const DE = {
   'Complexity (0-10)': 'Komplexität (0–10)',
   'Save': 'Speichern',
   'Factory Reset': 'Werkseinstellungen',
+  'Reset': 'Zurücksetzen',
+  'Cancel': 'Abbrechen',
   'Toggle sign': 'Vorzeichen wechseln',
   'Mesh active': 'Mesh aktiv',
   'Provisioning mode (no config saved yet)': 'Einrichtungsmodus (noch keine Konfiguration gespeichert)',
@@ -349,7 +359,8 @@ function updateSettingsHead() {
     (selectedId !== null && !selectedConnected ? t(' (not connected)') : '');
   $('save').disabled = !configLoaded || (selectedId !== null && !selectedConnected);
   // A client reset to defaults loses the mesh it would need to come back.
-  $('factoryReset').hidden = selectedId !== null;
+  $('resetRow').hidden = selectedId !== null;
+  if (selectedId !== null) setResetConfirm(false);
   if (selectedId !== null) $('server_nav').hidden = true;
 }
 
@@ -731,10 +742,16 @@ $('save').addEventListener('click', async () => {
   }
 });
 
-$('factoryReset').addEventListener('click', async () => {
-  if (!confirm(t('Reset all settings to defaults and reboot?'))) {
-    return;
-  }
+// Asked on the page itself: browsers and the app's WebView may suppress
+// confirm(), and a dialog that never shows must not count as a yes.
+function setResetConfirm(open) {
+  $('factoryReset').hidden = open;
+  $('resetConfirm').hidden = !open;
+}
+$('factoryReset').addEventListener('click', () => setResetConfirm(true));
+$('resetNo').addEventListener('click', () => setResetConfirm(false));
+$('resetYes').addEventListener('click', async () => {
+  setResetConfirm(false);
   $('status').textContent = t('Resetting...');
   await fetch('/api/factory-reset', { method: 'POST' });
   $('status').textContent = t('Factory reset done, device is rebooting...');
