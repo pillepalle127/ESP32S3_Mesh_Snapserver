@@ -191,6 +191,12 @@ static void seed_defaults(device_config_t *cfg)
     cfg->crossover_hz = CONFIG_SNAPSERVER_CROSSOVER_HZ;
     cfg->sub_gain_db = 0.0f;
     cfg->wideband_gain_db = 0.0f;
+    cfg->sub_hpf_hz = 0U;
+    cfg->sub_invert = 0U;
+    cfg->comp_enable = 0U;
+    cfg->comp_threshold_db = DEVICE_CONFIG_COMP_DEFAULT_THRESHOLD_DB;
+    cfg->comp_ratio_x10 = DEVICE_CONFIG_COMP_DEFAULT_RATIO_X10;
+    cfg->comp_makeup_db = DEVICE_CONFIG_COMP_DEFAULT_MAKEUP_DB;
     cfg->sub_channel = SUBWOOFER_OUTPUT_CHANNEL;
     cfg->wideband_channel = WIDEBAND_OUTPUT_CHANNEL;
 
@@ -228,10 +234,25 @@ static bool config_is_valid(const device_config_t *cfg)
     if (cfg->crossover_hz < 40U || cfg->crossover_hz > 500U) {
         return false;
     }
-    if (cfg->sub_gain_db < -24.0f || cfg->sub_gain_db > 12.0f) {
+    /* Boosts are allowed: a quiet source needs them, and the limiter in
+     * audio_i2s.c keeps the output below full scale. */
+    if (cfg->sub_gain_db < -24.0f || cfg->sub_gain_db > DEVICE_CONFIG_GAIN_MAX_DB) {
         return false;
     }
-    if (cfg->wideband_gain_db < -24.0f || cfg->wideband_gain_db > 12.0f) {
+    if (cfg->wideband_gain_db < -24.0f || cfg->wideband_gain_db > DEVICE_CONFIG_GAIN_MAX_DB) {
+        return false;
+    }
+    if (cfg->sub_invert > 1U) {
+        return false;
+    }
+    if (cfg->comp_enable > 1U ||
+        cfg->comp_threshold_db < -40 || cfg->comp_threshold_db > 0 ||
+        cfg->comp_ratio_x10 < 10U || cfg->comp_ratio_x10 > 100U ||
+        cfg->comp_makeup_db > 24U) {
+        return false;
+    }
+    if (cfg->sub_hpf_hz != 0U &&
+        (cfg->sub_hpf_hz < 15U || cfg->sub_hpf_hz > 60U || cfg->sub_hpf_hz >= cfg->crossover_hz)) {
         return false;
     }
     if (cfg->sub_channel > 1U || cfg->wideband_channel > 1U ||
@@ -385,6 +406,16 @@ esp_err_t device_config_load(void)
     s_local_volume = local_volume;
     s_stream_volume = stream_volume;
     portEXIT_CRITICAL(&s_cfg_lock);
+
+    /* Compressor fields came from the reserved bytes: ratio 0 means the
+     * blob predates them. Seeded here, before the validity check, which
+     * would otherwise replace the whole config with the defaults. */
+    if (result == ESP_OK && len == sizeof(loaded) && loaded.comp_ratio_x10 == 0U) {
+        loaded.comp_enable = 0U;
+        loaded.comp_threshold_db = DEVICE_CONFIG_COMP_DEFAULT_THRESHOLD_DB;
+        loaded.comp_ratio_x10 = DEVICE_CONFIG_COMP_DEFAULT_RATIO_X10;
+        loaded.comp_makeup_db = DEVICE_CONFIG_COMP_DEFAULT_MAKEUP_DB;
+    }
 
     const bool found = (result == ESP_OK) && (len == sizeof(loaded)) &&
                         (loaded.version == DEVICE_CONFIG_VERSION) &&

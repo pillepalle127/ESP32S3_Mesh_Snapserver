@@ -81,7 +81,28 @@ typedef struct {
     /* Empty = auto-discover the server via esp_mesh_lite_get_root_ip(). */
     char     server_host[32];
 
-    uint8_t  reserved[16];
+    /*
+     * Subsonic high-pass on the sub branch in Hz, 0 = off (15-60, below
+     * crossover_hz). Applies live. Taken from the reserved bytes, which
+     * older blobs hold as 0, so they load unchanged with the filter off.
+     */
+    uint8_t  sub_hpf_hz;
+
+    /* 1: sub branch polarity inverted (180 degrees). Applies live; from
+     * the reserved bytes as well, older blobs load it as 0. */
+    uint8_t  sub_invert;
+
+    /*
+     * Compressor on both output branches, before the knob. Applies live.
+     * Ratio in tenths (30 = 3:1). A blob from before these fields has
+     * ratio 0 and gets the defaults below on load, switched off.
+     */
+    uint8_t  comp_enable;
+    int8_t   comp_threshold_db;   /* -40..0 dBFS */
+    uint8_t  comp_ratio_x10;      /* 10..100 */
+    uint8_t  comp_makeup_db;      /* 0..24 */
+
+    uint8_t  reserved[10];
 } device_config_t;
 
 /*
@@ -107,6 +128,13 @@ typedef struct {
 } device_pots_t;
 
 #define DEVICE_POTS_V1_SIZE 4U
+
+/* Upper limit for sub_gain_db and wideband_gain_db. */
+#define DEVICE_CONFIG_GAIN_MAX_DB 18.0f
+
+#define DEVICE_CONFIG_COMP_DEFAULT_THRESHOLD_DB (-20)
+#define DEVICE_CONFIG_COMP_DEFAULT_RATIO_X10    30U
+#define DEVICE_CONFIG_COMP_DEFAULT_MAKEUP_DB    6U
 
 /* Volume stays on the pin it had while that was a Kconfig setting, so an
  * update changes nothing on boards already wired. Delay starts unset: an

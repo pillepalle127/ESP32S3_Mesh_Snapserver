@@ -725,6 +725,16 @@ static void sink_stats_task(void *arg)
         audio_i2s_take_output_peak(&dsp_left, &dsp_right);
         ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767), I2S clock %+ld ppm",
                  (int)dsp_left, (int)dsp_right, (long)audio_i2s_clock_ppm());
+        uint32_t limited = 0;
+        float limit_db = 0.0f;
+        audio_i2s_take_limiter_stats(&limited, &limit_db);
+        if (limited != 0U) {
+            ESP_LOGW(TAG, "Output limiter: %lu samples, max -%.1f dB", (unsigned long)limited, (double)limit_db);
+        }
+        const float comp_db = audio_i2s_take_comp_stats();
+        if (comp_db >= 0.1f) {
+            ESP_LOGI(TAG, "Compressor: max -%.1f dB", (double)comp_db);
+        }
 
         /*
          * Same format as the server's heap line. A client is also a mesh

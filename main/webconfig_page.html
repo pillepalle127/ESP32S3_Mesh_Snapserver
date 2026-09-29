@@ -111,8 +111,17 @@
 <label for="crossover_hz" id="crossover_hz_label">Crossover frequency (40-500 Hz)</label>
 <input type="number" id="crossover_hz" min="40" max="500">
 <div class="row">
-  <div><label for="sub_gain_db" id="sub_gain_db_label">Sub gain (dB)</label><input type="number" id="sub_gain_db" min="-24" max="12" step="0.5"></div>
-  <div><label for="wideband_gain_db" id="wideband_gain_db_label">Wideband gain (dB)</label><input type="number" id="wideband_gain_db" min="-24" max="12" step="0.5"></div>
+  <div><label for="sub_gain_db" id="sub_gain_db_label">Sub gain (dB)</label><input type="number" id="sub_gain_db" min="-24" max="18" step="0.5"></div>
+  <div><label for="wideband_gain_db" id="wideband_gain_db_label">Wideband gain (dB)</label><input type="number" id="wideband_gain_db" min="-24" max="18" step="0.5"></div>
+</div>
+<label for="sub_hpf_hz" id="sub_hpf_hz_label">Sub high-pass / subsonic (15-60 Hz, 0 = off)</label>
+<input type="number" id="sub_hpf_hz" min="0" max="60">
+<div class="checkbox-row"><input type="checkbox" id="sub_invert"><label for="sub_invert" id="sub_invert_label">Sub phase 180&deg;</label></div>
+<div class="checkbox-row"><input type="checkbox" id="comp_enable"><label for="comp_enable">Compressor</label></div>
+<div class="row">
+  <div><label for="comp_threshold_db" id="comp_threshold_db_label">Threshold (dBFS)</label><input type="number" id="comp_threshold_db" min="-40" max="0" step="1"></div>
+  <div><label for="comp_ratio" id="comp_ratio_label">Ratio (1-10)</label><input type="number" id="comp_ratio" min="1" max="10" step="0.5"></div>
+  <div><label for="comp_makeup_db" id="comp_makeup_db_label">Make-up (dB)</label><input type="number" id="comp_makeup_db" min="0" max="24" step="1"></div>
 </div>
 <label for="sub_channel" id="sub_channel_label">Sub output channel</label>
 <select id="sub_channel"><option value="0">Left</option><option value="1">Right</option></select>
@@ -196,6 +205,12 @@ const DE = {
   'Crossover frequency (40-500 Hz)': 'Trennfrequenz (40–500 Hz)',
   'Sub gain (dB)': 'Verstärkung Sub (dB)',
   'Wideband gain (dB)': 'Verstärkung Breitband (dB)',
+  'Sub high-pass / subsonic (15-60 Hz, 0 = off)': 'Sub-Hochpass / Subsonic (15-60 Hz, 0 = aus)',
+  'Sub phase 180\u00b0': 'Sub-Phase 180\u00b0',
+  'Compressor': 'Kompressor',
+  'Threshold (dBFS)': 'Schwelle (dBFS)',
+  'Ratio (1-10)': 'Verhältnis (1-10)',
+  'Make-up (dB)': 'Aufholen (dB)',
   'Sub output channel': 'Ausgangskanal Sub',
   'Left': 'Links',
   'Right': 'Rechts',
@@ -448,6 +463,13 @@ async function loadConfig() {
   $('crossover_hz').value = cfg.crossover_hz;
   $('sub_gain_db').value = cfg.sub_gain_db;
   $('wideband_gain_db').value = cfg.wideband_gain_db;
+  $('sub_hpf_hz').value = cfg.sub_hpf_hz || 0;
+  $('sub_invert').checked = !!cfg.sub_invert;
+  $('comp_enable').checked = !!cfg.comp_enable;
+  $('comp_threshold_db').value = cfg.comp_threshold_db ?? -20;
+  $('comp_ratio').value = cfg.comp_ratio ?? 3;
+  $('comp_makeup_db').value = cfg.comp_makeup_db ?? 6;
+  updateCompFieldsEnabled();
   $('sub_channel').value = String(cfg.sub_channel);
   $('opus_bitrate').value = cfg.opus_bitrate;
   $('opus_complexity').value = cfg.opus_complexity;
@@ -545,8 +567,16 @@ function updatePotFieldsEnabled() {
 
 function updateCrossoverFieldsEnabled() {
   const enabled = $('crossover_enabled').checked;
-  const fields = ['crossover_hz', 'sub_gain_db', 'wideband_gain_db', 'sub_channel'];
+  const fields = ['crossover_hz', 'sub_gain_db', 'wideband_gain_db', 'sub_hpf_hz', 'sub_invert', 'sub_channel'];
   for (const id of fields) {
+    $(id).disabled = !enabled;
+    $(id + '_label').classList.toggle('disabled', !enabled);
+  }
+}
+
+function updateCompFieldsEnabled() {
+  const enabled = $('comp_enable').checked;
+  for (const id of ['comp_threshold_db', 'comp_ratio', 'comp_makeup_db']) {
     $(id).disabled = !enabled;
     $(id + '_label').classList.toggle('disabled', !enabled);
   }
@@ -646,6 +676,7 @@ async function loadStatus() {
 $('sub_channel').addEventListener('change', () => {});
 
 $('crossover_enabled').addEventListener('change', updateCrossoverFieldsEnabled);
+$('comp_enable').addEventListener('change', updateCompFieldsEnabled);
 
 $('role').addEventListener('change', updateRoleFieldsEnabled);
 
@@ -697,6 +728,12 @@ $('save').addEventListener('click', async () => {
     crossover_hz: Number($('crossover_hz').value),
     sub_gain_db: Number($('sub_gain_db').value),
     wideband_gain_db: Number($('wideband_gain_db').value),
+    sub_hpf_hz: Number($('sub_hpf_hz').value),
+    sub_invert: $('sub_invert').checked,
+    comp_enable: $('comp_enable').checked,
+    comp_threshold_db: Number($('comp_threshold_db').value),
+    comp_ratio: Number($('comp_ratio').value),
+    comp_makeup_db: Number($('comp_makeup_db').value),
     sub_channel: Number($('sub_channel').value),
     wideband_channel: Number(otherChannel($('sub_channel').value)),
     opus_bitrate: Number($('opus_bitrate').value),
@@ -941,7 +978,7 @@ if (embedded) {
   $('pageTitle').hidden = true;
   document.querySelector('footer').hidden = true;
 }
-for (const id of ['local_input_threshold_db', 'delay_trim_ms', 'sub_gain_db', 'wideband_gain_db']) {
+for (const id of ['local_input_threshold_db', 'delay_trim_ms', 'sub_gain_db', 'wideband_gain_db', 'comp_threshold_db']) {
   addSignToggle($(id));
 }
 loadConfig();

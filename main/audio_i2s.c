@@ -24,6 +24,22 @@ static const char *TAG = "AUDIO_I2S";
 #define DMA_FRAME_NUM       AUDIO_I2S_DMA_FRAME_NUM
 #define MAX_FRAME_SAMPLES   960
 #define BIQUAD_BUTTERWORTH_Q 0.7071067811865476f
+/* 4th-order Butterworth as two biquads: Q = 1 / (2 cos(pi/8)), 1 / (2 cos(3pi/8)). */
+#define BUTTERWORTH4_Q1      0.5411961001461970f
+#define BUTTERWORTH4_Q2      1.3065629648763766f
+
+/*
+ * Limiter before the int16 conversion, per output branch. It only acts
+ * when a sample would exceed the ceiling -- a gain boost on a loud passage,
+ * or a filter overshoot near full scale -- and replaces the hard clip
+ * float_to_int16() would do.
+ * Instant attack (the ceiling is never crossed), exponential release:
+ * slow on the sub, where a fast gain change would reshape a 40 Hz wave
+ * (25 ms period) itself. Coefficients are exp(-1 / (tau * 48000)).
+ */
+#define LIMITER_CEILING        (0.9441f * 32767.0f)  /* -0.5 dBFS */
+#define LIMITER_RELEASE_SUB    0.99993056f           /* tau 300 ms */
+#define LIMITER_RELEASE_WIDE   0.99979169f           /* tau 100 ms */
 #define OUTPUT_CHANNELS       2U
 
 /*
@@ -129,6 +145,9 @@ static uint32_t s_voice_wait_max_ms;
  */
 static lr4_filter_t s_lowpass;
 static lr4_filter_t s_highpass;
+/* Subsonic high-pass on the sub branch; same locking and state handling. */
+static lr4_filter_t s_sub_hpf;
+static bool s_sub_hpf_enabled;
 static audio_dsp_params_t s_dsp_params;
 static float s_sub_gain_linear = 1.0f;
 static float s_wideband_gain_linear = 1.0f;
@@ -204,6 +223,77 @@ static int16_t s_peak_right;
 /* Loudest frame RMS (0..1 of full scale) since the LED last read it. */
 static float s_led_rms;
 
+/* Limiter gain per branch (audio task only) and what it did since the
+ * stats last read it (see audio_i2s_take_limiter_stats()). */
+static float s_limit_gain_sub = 1.0f;
+static float s_limit_gain_wide = 1.0f;
+static uint32_t s_limit_samples;
+static float s_limit_min_gain = 1.0f;
+
+/*
+ * Compressor per output branch. The detector follows the mean square of
+ * the branch signal (RMS, so it reacts to loudness rather than single
+ * peaks); the gain is worked out every COMP_BLOCK samples and ramped
+ * linearly in between, which keeps log10f/powf off the per-sample path.
+ * Attack and release are fixed: slow on the sub so the gain does not
+ * ride along with a 40 Hz wave. Coefficients are 1 - exp(-1/(tau * 48000)).
+ */
+#define COMP_BLOCK             32U
+#define COMP_ATTACK_SUB        0.00069420f  /* tau 30 ms */
+#define COMP_RELEASE_SUB       0.00005208f  /* tau 400 ms */
+#define COMP_ATTACK_WIDE       0.00208117f  /* tau 10 ms */
+#define COMP_RELEASE_WIDE      0.00010416f  /* tau 200 ms */
+#define COMP_FULL_SCALE_SQ     (32767.0f * 32767.0f)
+
+typedef struct {
+    float mean_sq; /* detector, in sample units squared */
+    float gain;    /* current linear gain, make-up included */
+    float step;    /* per-sample ramp towards the block's target */
+} comp_state_t;
+
+/* Audio task only, like the limiter state below. */
+static comp_state_t s_comp_sub = { .gain = 1.0f };
+static comp_state_t s_comp_wide = { .gain = 1.0f };
+static float s_comp_max_reduction_db;
+
+static void comp_plan_block(comp_state_t *comp, const audio_dsp_params_t *dsp)
+{
+    const float level_db = 10.0f * log10f(comp->mean_sq / COMP_FULL_SCALE_SQ + 1e-12f);
+    const float over_db = level_db - dsp->comp_threshold_db;
+    float reduction_db = 0.0f;
+    if (over_db > 0.0f) {
+        reduction_db = over_db * (1.0f - 1.0f / dsp->comp_ratio);
+        if (reduction_db > s_comp_max_reduction_db) {
+            s_comp_max_reduction_db = reduction_db;
+        }
+    }
+    const float target = powf(10.0f, (dsp->comp_makeup_db - reduction_db) / 20.0f);
+    comp->step = (target - comp->gain) / (float)COMP_BLOCK;
+}
+
+static float comp_sample(comp_state_t *comp, float x, float attack, float release)
+{
+    const float sq = x * x;
+    comp->mean_sq += ((sq > comp->mean_sq) ? attack : release) * (sq - comp->mean_sq);
+    comp->gain += comp->step;
+    return x * comp->gain;
+}
+
+static float limit_sample(float x, float *gain, float release)
+{
+    float g = 1.0f - (1.0f - *gain) * release;
+    const float magnitude = fabsf(x);
+    if (magnitude * g > LIMITER_CEILING) {
+        g = LIMITER_CEILING / magnitude;
+        ++s_limit_samples;
+        if (g < s_limit_min_gain) {
+            s_limit_min_gain = g;
+        }
+    }
+    *gain = g;
+    return x * g;
+}
+
 static int16_t float_to_int16(float sample)
 {
     if (sample > 32767.0f) {
@@ -250,12 +340,13 @@ static void configure_biquad_lowpass(biquad_t *filter,
 
 static void configure_biquad_highpass(biquad_t *filter,
                                       float sample_rate,
-                                      float cutoff_hz)
+                                      float cutoff_hz,
+                                      float q)
 {
     const float omega = 2.0f * (float)M_PI * cutoff_hz / sample_rate;
     const float cosine = cosf(omega);
     const float sine = sinf(omega);
-    const float alpha = sine / (2.0f * BIQUAD_BUTTERWORTH_Q);
+    const float alpha = sine / (2.0f * q);
     const float a0 = 1.0f + alpha;
 
     filter->b0 = ((1.0f + cosine) * 0.5f) / a0;
@@ -289,6 +380,20 @@ esp_err_t audio_i2s_set_dsp_params(const audio_dsp_params_t *params)
                  (unsigned)params->wideband_channel);
         return ESP_ERR_INVALID_ARG;
     }
+    if (params->comp_enable &&
+        (params->comp_ratio < 1.0f || params->comp_ratio > 10.0f ||
+         params->comp_threshold_db > 0.0f || params->comp_makeup_db < 0.0f)) {
+        ESP_LOGE(TAG, "Invalid compressor settings");
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (params->sub_hpf_hz < 0.0f ||
+        (params->sub_hpf_hz > 0.0f && params->sub_hpf_hz >= params->crossover_hz)) {
+        ESP_LOGE(TAG,
+                 "Invalid subsonic frequency: %.1f Hz (crossover %.1f Hz)",
+                 (double)params->sub_hpf_hz,
+                 (double)params->crossover_hz);
+        return ESP_ERR_INVALID_ARG;
+    }
 
     /*
      * Coefficient math (sinf/cosf/division) and the dB->linear conversion
@@ -302,15 +407,30 @@ esp_err_t audio_i2s_set_dsp_params(const audio_dsp_params_t *params)
     lr4_filter_t new_highpass;
     configure_biquad_lowpass(&new_lowpass.stage1, (float)AUDIO_I2S_SAMPLE_RATE, params->crossover_hz);
     configure_biquad_lowpass(&new_lowpass.stage2, (float)AUDIO_I2S_SAMPLE_RATE, params->crossover_hz);
-    configure_biquad_highpass(&new_highpass.stage1, (float)AUDIO_I2S_SAMPLE_RATE, params->crossover_hz);
-    configure_biquad_highpass(&new_highpass.stage2, (float)AUDIO_I2S_SAMPLE_RATE, params->crossover_hz);
+    configure_biquad_highpass(&new_highpass.stage1, (float)AUDIO_I2S_SAMPLE_RATE, params->crossover_hz,
+                              BIQUAD_BUTTERWORTH_Q);
+    configure_biquad_highpass(&new_highpass.stage2, (float)AUDIO_I2S_SAMPLE_RATE, params->crossover_hz,
+                              BIQUAD_BUTTERWORTH_Q);
 
-    const float sub_gain_linear = powf(10.0f, params->sub_gain_db / 20.0f);
+    const bool sub_hpf_enabled = (params->sub_hpf_hz > 0.0f);
+    lr4_filter_t new_sub_hpf = { 0 };
+    if (sub_hpf_enabled) {
+        configure_biquad_highpass(&new_sub_hpf.stage1, (float)AUDIO_I2S_SAMPLE_RATE, params->sub_hpf_hz,
+                                  BUTTERWORTH4_Q1);
+        configure_biquad_highpass(&new_sub_hpf.stage2, (float)AUDIO_I2S_SAMPLE_RATE, params->sub_hpf_hz,
+                                  BUTTERWORTH4_Q2);
+    }
+
+    /* Polarity rides on the sign of the gain; the limiter works on |x|. */
+    const float sub_gain_linear = powf(10.0f, params->sub_gain_db / 20.0f) *
+                                  (params->sub_invert ? -1.0f : 1.0f);
     const float wideband_gain_linear = powf(10.0f, params->wideband_gain_db / 20.0f);
 
     portENTER_CRITICAL(&s_dsp_lock);
     s_lowpass = new_lowpass;
     s_highpass = new_highpass;
+    s_sub_hpf = new_sub_hpf;
+    s_sub_hpf_enabled = sub_hpf_enabled;
     s_dsp_params = *params;
     s_sub_gain_linear = sub_gain_linear;
     s_wideband_gain_linear = wideband_gain_linear;
@@ -375,6 +495,7 @@ esp_err_t audio_i2s_start(void)
         .wideband_gain_db = 0.0f,
         .sub_channel = SUBWOOFER_OUTPUT_CHANNEL,
         .wideband_channel = WIDEBAND_OUTPUT_CHANNEL,
+        .sub_hpf_hz = 0.0f,
     };
     esp_err_t result = audio_i2s_set_dsp_params(&default_params);
     if (result != ESP_OK) {
@@ -660,6 +781,8 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
      */
     lr4_filter_t lowpass;
     lr4_filter_t highpass;
+    lr4_filter_t sub_hpf;
+    bool sub_hpf_enabled;
     audio_dsp_params_t dsp;
     float sub_gain_linear;
     float wideband_gain_linear;
@@ -668,6 +791,8 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
     portENTER_CRITICAL(&s_dsp_lock);
     lowpass = s_lowpass;
     highpass = s_highpass;
+    sub_hpf = s_sub_hpf;
+    sub_hpf_enabled = s_sub_hpf_enabled;
     dsp = s_dsp_params;
     sub_gain_linear = s_sub_gain_linear;
     wideband_gain_linear = s_wideband_gain_linear;
@@ -696,8 +821,21 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
             subwoofer = (float)mono_sample;
             wideband = (float)mono_sample;
         } else {
-            subwoofer = lr4_process(&lowpass, (float)mono_sample) * sub_gain_linear;
+            subwoofer = lr4_process(&lowpass, (float)mono_sample);
+            if (sub_hpf_enabled) {
+                subwoofer = lr4_process(&sub_hpf, subwoofer);
+            }
+            subwoofer *= sub_gain_linear;
             wideband = lr4_process(&highpass, (float)mono_sample) * wideband_gain_linear;
+        }
+
+        if (dsp.comp_enable) {
+            if ((i % COMP_BLOCK) == 0U) {
+                comp_plan_block(&s_comp_sub, &dsp);
+                comp_plan_block(&s_comp_wide, &dsp);
+            }
+            subwoofer = comp_sample(&s_comp_sub, subwoofer, COMP_ATTACK_SUB, COMP_RELEASE_SUB);
+            wideband = comp_sample(&s_comp_wide, wideband, COMP_ATTACK_WIDE, COMP_RELEASE_WIDE);
         }
 
         /*
@@ -707,8 +845,8 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
          * one box down leaves every other box untouched.
          */
         master += master_step;
-        subwoofer *= master;
-        wideband *= master;
+        subwoofer = limit_sample(subwoofer * master, &s_limit_gain_sub, LIMITER_RELEASE_SUB);
+        wideband = limit_sample(wideband * master, &s_limit_gain_wide, LIMITER_RELEASE_WIDE);
 
         const int16_t sub_sample = float_to_int16(subwoofer);
         const int16_t wide_sample = float_to_int16(wideband);
@@ -747,6 +885,14 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
      */
     s_master_volume_current = master_target;
 
+    /* Switched off: start from unity next time instead of a stale gain. */
+    if (!dsp.comp_enable) {
+        s_comp_sub.gain = 1.0f;
+        s_comp_sub.step = 0.0f;
+        s_comp_wide.gain = 1.0f;
+        s_comp_wide.step = 0.0f;
+    }
+
     /*
      * Write the updated filter memory back so the next frame continues from
      * here -- but only if s_dsp_generation is still what it was at snapshot
@@ -770,6 +916,10 @@ static esp_err_t apply_dsp_and_output(const int16_t *mono, size_t mono_samples)
         s_highpass.stage1.z2 = highpass.stage1.z2;
         s_highpass.stage2.z1 = highpass.stage2.z1;
         s_highpass.stage2.z2 = highpass.stage2.z2;
+        s_sub_hpf.stage1.z1 = sub_hpf.stage1.z1;
+        s_sub_hpf.stage1.z2 = sub_hpf.stage1.z2;
+        s_sub_hpf.stage2.z1 = sub_hpf.stage2.z1;
+        s_sub_hpf.stage2.z2 = sub_hpf.stage2.z2;
     }
     portEXIT_CRITICAL(&s_dsp_lock);
 
@@ -858,6 +1008,27 @@ void audio_i2s_take_output_peak(int16_t *left, int16_t *right)
     s_peak_left = 0;
     s_peak_right = 0;
     portEXIT_CRITICAL(&s_dsp_lock);
+}
+
+float audio_i2s_take_comp_stats(void)
+{
+    portENTER_CRITICAL(&s_dsp_lock);
+    const float reduction_db = s_comp_max_reduction_db;
+    s_comp_max_reduction_db = 0.0f;
+    portEXIT_CRITICAL(&s_dsp_lock);
+    return reduction_db;
+}
+
+void audio_i2s_take_limiter_stats(uint32_t *samples, float *max_reduction_db)
+{
+    portENTER_CRITICAL(&s_dsp_lock);
+    const uint32_t count = s_limit_samples;
+    const float min_gain = s_limit_min_gain;
+    s_limit_samples = 0;
+    s_limit_min_gain = 1.0f;
+    portEXIT_CRITICAL(&s_dsp_lock);
+    *samples = count;
+    *max_reduction_db = (min_gain < 1.0f) ? -20.0f * log10f(min_gain) : 0.0f;
 }
 
 esp_err_t audio_i2s_capture_mono(int16_t *mono, size_t mono_samples)

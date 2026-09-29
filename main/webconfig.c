@@ -205,6 +205,12 @@ static cJSON *build_config_json(void)
     cJSON_AddNumberToObject(root, "crossover_hz", cfg.crossover_hz);
     cJSON_AddNumberToObject(root, "sub_gain_db", cfg.sub_gain_db);
     cJSON_AddNumberToObject(root, "wideband_gain_db", cfg.wideband_gain_db);
+    cJSON_AddNumberToObject(root, "sub_hpf_hz", cfg.sub_hpf_hz);
+    cJSON_AddBoolToObject(root, "sub_invert", cfg.sub_invert != 0U);
+    cJSON_AddBoolToObject(root, "comp_enable", cfg.comp_enable != 0U);
+    cJSON_AddNumberToObject(root, "comp_threshold_db", cfg.comp_threshold_db);
+    cJSON_AddNumberToObject(root, "comp_ratio", cfg.comp_ratio_x10 / 10.0);
+    cJSON_AddNumberToObject(root, "comp_makeup_db", cfg.comp_makeup_db);
     cJSON_AddNumberToObject(root, "sub_channel", cfg.sub_channel);
     cJSON_AddNumberToObject(root, "wideband_channel", cfg.wideband_channel);
     cJSON_AddNumberToObject(root, "opus_bitrate", cfg.opus_bitrate);
@@ -327,6 +333,12 @@ static void apply_live_params(const device_config_t *cfg)
         .crossover_hz = (float)cfg->crossover_hz,
         .sub_gain_db = cfg->sub_gain_db,
         .wideband_gain_db = cfg->wideband_gain_db,
+        .sub_hpf_hz = (float)cfg->sub_hpf_hz,
+        .sub_invert = cfg->sub_invert != 0U,
+        .comp_enable = cfg->comp_enable != 0U,
+        .comp_threshold_db = (float)cfg->comp_threshold_db,
+        .comp_ratio = (float)cfg->comp_ratio_x10 / 10.0f,
+        .comp_makeup_db = (float)cfg->comp_makeup_db,
         .sub_channel = cfg->sub_channel,
         .wideband_channel = cfg->wideband_channel,
     };
@@ -380,6 +392,23 @@ static esp_err_t apply_config_json(const cJSON *root, bool *reboot, const char *
     if (parse_number_field(root, "crossover_hz", &num)) next.crossover_hz = (uint16_t)num;
     if (parse_number_field(root, "sub_gain_db", &num)) next.sub_gain_db = (float)num;
     if (parse_number_field(root, "wideband_gain_db", &num)) next.wideband_gain_db = (float)num;
+    if (parse_number_field(root, "sub_hpf_hz", &num)) next.sub_hpf_hz = (num < 0 || num > 255) ? 255U : (uint8_t)num;
+    bool sub_invert = next.sub_invert != 0U;
+    parse_bool_field(root, "sub_invert", &sub_invert);
+    next.sub_invert = sub_invert ? 1U : 0U;
+    bool comp_enable = next.comp_enable != 0U;
+    parse_bool_field(root, "comp_enable", &comp_enable);
+    next.comp_enable = comp_enable ? 1U : 0U;
+    /* Out of range becomes a value config_is_valid() rejects. */
+    if (parse_number_field(root, "comp_threshold_db", &num)) {
+        next.comp_threshold_db = (num < -128 || num > 127) ? 127 : (int8_t)num;
+    }
+    if (parse_number_field(root, "comp_ratio", &num)) {
+        next.comp_ratio_x10 = (num < 0 || num > 25.5) ? 0U : (uint8_t)(num * 10.0 + 0.5);
+    }
+    if (parse_number_field(root, "comp_makeup_db", &num)) {
+        next.comp_makeup_db = (num < 0 || num > 255) ? 255U : (uint8_t)num;
+    }
     if (parse_number_field(root, "sub_channel", &num)) next.sub_channel = (uint8_t)num;
     if (parse_number_field(root, "wideband_channel", &num)) next.wideband_channel = (uint8_t)num;
 
@@ -406,6 +435,12 @@ static esp_err_t apply_config_json(const cJSON *root, bool *reboot, const char *
     if (parse_number_field(root, "pot_delay_range_ms", &num)) {
         next_pots.delay_range_ms = (uint16_t)num;
     }
+    bool reversed = next_pots.volume_reversed != 0U;
+    parse_bool_field(root, "pot_volume_reversed", &reversed);
+    next_pots.volume_reversed = reversed ? 1U : 0U;
+    reversed = next_pots.delay_reversed != 0U;
+    parse_bool_field(root, "pot_delay_reversed", &reversed);
+    next_pots.delay_reversed = reversed ? 1U : 0U;
 
     device_pins_t old_pins;
     device_config_get_pins(&old_pins);
@@ -437,12 +472,6 @@ static esp_err_t apply_config_json(const cJSON *root, bool *reboot, const char *
         *err = "storing pin assignment failed";
         return ESP_FAIL;
     }
-    bool reversed = next_pots.volume_reversed != 0U;
-    parse_bool_field(root, "pot_volume_reversed", &reversed);
-    next_pots.volume_reversed = reversed ? 1U : 0U;
-    reversed = next_pots.delay_reversed != 0U;
-    parse_bool_field(root, "pot_delay_reversed", &reversed);
-    next_pots.delay_reversed = reversed ? 1U : 0U;
 
     device_config_t saved;
     device_config_get(&saved);

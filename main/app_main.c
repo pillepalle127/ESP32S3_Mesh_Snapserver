@@ -138,6 +138,12 @@ void app_main(void)
         .crossover_hz = (float)cfg.crossover_hz,
         .sub_gain_db = cfg.sub_gain_db,
         .wideband_gain_db = cfg.wideband_gain_db,
+        .sub_hpf_hz = (float)cfg.sub_hpf_hz,
+        .sub_invert = cfg.sub_invert != 0U,
+        .comp_enable = cfg.comp_enable != 0U,
+        .comp_threshold_db = (float)cfg.comp_threshold_db,
+        .comp_ratio = (float)cfg.comp_ratio_x10 / 10.0f,
+        .comp_makeup_db = (float)cfg.comp_makeup_db,
         .sub_channel = cfg.sub_channel,
         .wideband_channel = cfg.wideband_channel,
     };

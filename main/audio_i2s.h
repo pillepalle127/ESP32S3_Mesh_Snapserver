@@ -75,6 +75,16 @@ typedef struct {
     float wideband_gain_db;
     uint8_t sub_channel;
     uint8_t wideband_channel;
+    /* Subsonic high-pass on the sub branch, 4th-order Butterworth; 0 = off.
+     * Crossover mode only, must stay below crossover_hz. */
+    float sub_hpf_hz;
+    /* Sub branch polarity inverted (180 degrees). Crossover mode only. */
+    bool  sub_invert;
+    /* Compressor on both branches, before the knob and the limiter. */
+    bool  comp_enable;
+    float comp_threshold_db;  /* dBFS */
+    float comp_ratio;         /* 1..10 */
+    float comp_makeup_db;
 } audio_dsp_params_t;
 
 esp_err_t audio_i2s_start(void);
@@ -158,6 +168,17 @@ esp_err_t audio_i2s_capture_mono(int16_t *mono, size_t mono_samples);
  * is a large slice of a 20 ms frame budget.
  */
 void audio_i2s_take_output_peak(int16_t *left, int16_t *right);
+
+/*
+ * Safety limiter at the end of both output branches (-0.5 dBFS): samples it
+ * had to pull down since the last call, and the deepest reduction in dB
+ * (0 when it never acted). Clears on read, like the peak above.
+ */
+void audio_i2s_take_limiter_stats(uint32_t *samples, float *max_reduction_db);
+
+/* Deepest compressor gain reduction in dB since the last call, before
+ * make-up; 0 when it never acted or is off. Clears on read. */
+float audio_i2s_take_comp_stats(void);
 
 /*
  * Level for the status LED: the loudest frame RMS since the last call, as a
