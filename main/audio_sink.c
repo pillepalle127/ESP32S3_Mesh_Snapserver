@@ -127,6 +127,17 @@ static const char *TAG = "AUDIO_SINK";
 #define HARD_RESYNC_THRESHOLD_US (100LL * 1000LL)
 
 /*
+ * Right after the timeline followed a shift (STREAM_DISCONTINUITY_US),
+ * whatever scheduling error is left beyond this is removed in one step
+ * too, not by resampling. A shift is only seen above 100 ms, and what is
+ * left of it can land just under HARD_RESYNC_THRESHOLD_US: 96 ms measured
+ * on 2026-10-01, which the 200 ppm control took minutes to work off -- an
+ * echo against the other speakers all that time. One short hold or skip
+ * is the lesser evil.
+ */
+#define SHIFT_SNAP_THRESHOLD_US (5LL * 1000LL)
+
+/*
  * PI gains for the fine correction, in ppm per us of error and ppm per
  * (us * s) of accumulated error. Deliberately slow: a 10 ms error asks for
  * ~15 ppm, which is inaudible and still closes that gap in well under a
@@ -264,6 +275,9 @@ static int64_t s_last_error_us;
 static uint32_t s_resync_count;
 static uint64_t s_discontinuity_count;
 static uint64_t s_timeline_shift_count;
+/* Set by the network feed when the timeline followed a shift; the next
+ * scheduled frame takes the rest at SHIFT_SNAP_THRESHOLD_US. */
+static volatile bool s_shift_snap_pending;
 
 /*
  * Loudest captured local-input frame within the current stats window,
@@ -902,7 +916,12 @@ static bool render_network_frame(int16_t *playout_mono)
          * Holding until the error is actually gone starts playback on time
          * and leaves the controller nothing but real crystal drift to do.
          */
-        if (error_us > HARD_RESYNC_THRESHOLD_US || (holding && error_us > 0)) {
+        /* Just after a shift the step threshold is SHIFT_SNAP_THRESHOLD_US. */
+        const bool snap = s_shift_snap_pending;
+        s_shift_snap_pending = false;
+        const int64_t step_us = snap ? SHIFT_SNAP_THRESHOLD_US : HARD_RESYNC_THRESHOLD_US;
+
+        if (error_us > step_us || (holding && error_us > 0)) {
             if (!holding) {
                 holding = true;
                 s_resync_count++;
@@ -911,7 +930,7 @@ static bool render_network_frame(int16_t *playout_mono)
         }
         holding = false;
 
-        if (error_us < -HARD_RESYNC_THRESHOLD_US) {
+        if (error_us < -step_us) {
             timeline_resync_late(error_us);
             s_resync_count++;
         } else {
@@ -1310,6 +1329,7 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm,
             timeline_anchor_locked(chunk_ts_us);
             s_network_ready = false; /* rebuild the prebuffer from scratch */
             s_timeline_reset_pending = true;
+            s_shift_snap_pending = false;
             s_discontinuity_count++;
         } else if (gap_us > STREAM_DISCONTINUITY_US || gap_us < -STREAM_DISCONTINUITY_US) {
             /*
@@ -1320,6 +1340,7 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm,
              */
             s_head_ts_us += gap_us;
             s_timeline_shift_count++;
+            s_shift_snap_pending = true;
         }
     }
     xSemaphoreGive(s_ring.lock);
