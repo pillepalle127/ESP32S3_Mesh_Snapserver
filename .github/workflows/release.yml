@@ -137,24 +137,42 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: docs/releases
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
           merge-multiple: true
 
+      # What changed (docs/releases/<tag>.md, if there is one), then how to
+      # install, which is the same for every release.
+      - name: Notes
+        run: |
+          {
+            notes="docs/releases/${GITHUB_REF_NAME}.md"
+            if [ -f "$notes" ]; then
+              cat "$notes"
+              printf '\n---\n\n'
+            fi
+            cat <<'EOF'
+          **Firmware im Browser installieren:** https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/ (Chrome oder Edge am PC; bei einem Update „Erase device“ nicht anhaken, dann bleiben die Einstellungen erhalten).
+
+          **Mit esptool:**
+          ```
+          esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin 0x3d0000 ota_data_initial.bin
+          ```
+          `snapmesh-full.bin` ist ein Gesamt-Image ab `0x0` nur für eine Neuinstallation – es überschreibt die gespeicherten Einstellungen.
+
+          **App:** `SnapAnnounce-*.apk` herunterladen und installieren („Unbekannte Apps installieren“ erlauben).
+          EOF
+          } > "$RUNNER_TEMP/notes.md"
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          body: |
-            **Firmware im Browser installieren:** https://pillepalle127.github.io/ESP32S3_Mesh_Snapserver/ (Chrome oder Edge am PC; bei einem Update „Erase device“ nicht anhaken, dann bleiben die Einstellungen erhalten).
-
-            **Mit esptool:**
-            ```
-            esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 partition-table.bin 0x10000 snapmesh-app.bin 0x3d0000 ota_data_initial.bin
-            ```
-            `snapmesh-full.bin` ist ein Gesamt-Image ab `0x0` nur für eine Neuinstallation – es überschreibt die gespeicherten Einstellungen.
-
-            **App:** `SnapAnnounce-*.apk` herunterladen und installieren („Unbekannte Apps installieren“ erlauben).
+          body_path: ${{ runner.temp }}/notes.md
 
   pages:
     if: startsWith(github.ref, 'refs/tags/v')
