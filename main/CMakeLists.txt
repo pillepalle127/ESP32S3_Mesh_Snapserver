@@ -17,6 +17,7 @@ idf_component_register(
         "status_led.c"
 		"snapcontrol.c" # <--
         "pots.c"
+        "power_button.c"
         "voice_announce.c"
         "webconfig.c"
     INCLUDE_DIRS "."

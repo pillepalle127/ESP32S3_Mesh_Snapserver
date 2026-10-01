@@ -162,6 +162,11 @@ typedef struct {
  * the ESP alike (ESP slave in both directions). It was a reserved byte
  * before, which older blobs hold as 0, so they read as master unchanged.
  *
+ * power_button is the push button that switches the device off (held 2 s,
+ * deep sleep) and on again (any press), wired to GND; 0 means none. It
+ * must be an RTC pin (pinmap_is_rtc()), the only ones that can wake the
+ * chip. The last reserved byte before, so older blobs read as "none".
+ *
  * trial_boots is bookkeeping, not configuration: a save that changes any
  * pin (or the I2S role) sets it to 1, every boot that loads it counts it
  * up, and device_config_confirm_pins() clears it once the device came up.
@@ -176,7 +181,7 @@ typedef struct {
     uint8_t status_led;
     uint8_t trial_boots;
     uint8_t i2s_slave;
-    uint8_t reserved;
+    uint8_t power_button;
 } device_pins_t;
 
 #define DEVICE_PINS_TRIAL_BOOTS_MAX 3U

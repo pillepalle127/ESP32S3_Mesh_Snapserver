@@ -254,6 +254,7 @@ static cJSON *build_config_json(void)
     cJSON_AddNumberToObject(pin_obj, "i2s_dout", pins.i2s_dout);
     cJSON_AddNumberToObject(pin_obj, "status_led", pins.status_led);
     cJSON_AddNumberToObject(pin_obj, "i2s_slave", pins.i2s_slave);
+    cJSON_AddNumberToObject(pin_obj, "power_button", pins.power_button);
 #if CONFIG_SNAPSERVER_STATUS_LED_ENABLE
     cJSON_AddBoolToObject(root, "status_led_supported", true);
 #else
@@ -266,11 +267,13 @@ static cJSON *build_config_json(void)
      * function already holds a pin the page works out itself: the form
      * can move several at once, and only the complete set it submits can
      * be checked for clashes (device_config_pin_set_valid() does that
-     * again on save). Knobs additionally need ADC1, see pots.c.
+     * again on save). Knobs additionally need ADC1, see pots.c, and the
+     * power button an RTC pin, see power_button.h.
      */
     cJSON_AddNumberToObject(root, "gpio_max", PINMAP_GPIO_MAX);
     cJSON *blocked = cJSON_AddObjectToObject(root, "gpio_blocked");
     cJSON *adc = cJSON_AddArrayToObject(root, "adc1_pins");
+    cJSON *rtc = cJSON_AddArrayToObject(root, "rtc_pins");
     for (uint8_t gpio = 0U; gpio <= PINMAP_GPIO_MAX; ++gpio) {
         const char *reason = pinmap_blocked_reason(gpio);
         if (reason != NULL) {
@@ -280,6 +283,9 @@ static cJSON *build_config_json(void)
         }
         if (pinmap_is_adc1(gpio)) {
             cJSON_AddItemToArray(adc, cJSON_CreateNumber(gpio));
+        }
+        if (pinmap_is_rtc(gpio)) {
+            cJSON_AddItemToArray(rtc, cJSON_CreateNumber(gpio));
         }
     }
 
@@ -458,6 +464,7 @@ static esp_err_t apply_config_json(const cJSON *root, bool *reboot, const char *
         if (parse_number_field(pin_obj, "i2s_dout", &num)) next_pins.i2s_dout = (uint8_t)num;
         if (parse_number_field(pin_obj, "status_led", &num)) next_pins.status_led = (uint8_t)num;
         if (parse_number_field(pin_obj, "i2s_slave", &num)) next_pins.i2s_slave = (num != 0) ? 1U : 0U;
+        if (parse_number_field(pin_obj, "power_button", &num)) next_pins.power_button = (uint8_t)num;
     }
 
     /*

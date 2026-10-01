@@ -163,7 +163,11 @@
   <option value="0">ESP (master)</option>
   <option value="1">External (ESP is slave)</option>
 </select>
-<div id="status_led_row"><label for="pin_status_led">Status LED (WS2812 data)</label><select id="pin_status_led"></select></div>
+<div class="row">
+  <div id="status_led_row"><label for="pin_status_led">Status LED (WS2812 data)</label><select id="pin_status_led"></select></div>
+  <div id="power_button_row"><label for="pin_power_button">Power button (to GND)</label><select id="pin_power_button"></select></div>
+</div>
+<div class="note" id="power_button_note">Power button: hold 2 s = off, press = on</div>
 <div id="pots_section">
 <div class="row">
   <div><label for="pot_volume_gpio">Volume knob</label><select id="pot_volume_gpio"></select>
@@ -244,6 +248,8 @@ const DE = {
   'Load wiring preset': 'Vorlage für die Verdrahtung',
   'I2S DIN (from ADC)': 'I2S DIN (vom ADC)',
   'I2S DOUT (to DAC)': 'I2S DOUT (zum DAC)',
+  'Power button (to GND)': 'Ein/Aus-Taster (gegen GND)',
+  'Power button: hold 2 s = off, press = on': 'Taster: 2 s halten = aus, drücken = an',
   'Status LED (WS2812 data)': 'Status-LED (WS2812-Daten)',
   'Volume knob': 'Lautstärke-Poti',
   'Delay knob': 'Delay-Poti',
@@ -511,7 +517,11 @@ async function loadConfig() {
 
   $('pots_section').hidden = !cfg.pots_supported;
   $('status_led_row').hidden = !cfg.status_led_supported;
-  pinRules = { max: cfg.gpio_max, blocked: cfg.gpio_blocked, adc: cfg.adc1_pins };
+  // Firmware without the button sends no RTC pins; offer nothing it ignores.
+  const hasPowerButton = 'power_button' in cfg.pins && Array.isArray(cfg.rtc_pins);
+  $('power_button_row').hidden = !hasPowerButton;
+  $('power_button_note').hidden = !hasPowerButton;
+  pinRules = { max: cfg.gpio_max, blocked: cfg.gpio_blocked, adc: cfg.adc1_pins, rtc: cfg.rtc_pins || [] };
   $('pot_delay_range_ms').max = cfg.pot_delay_range_max_ms;
   $('pot_delay_range_ms').value = cfg.pot_delay_range_ms;
   $('pot_volume_reversed').checked = !!cfg.pot_volume_reversed;
@@ -523,14 +533,16 @@ async function loadConfig() {
     pin_i2s_din: cfg.pins.i2s_din,
     pin_i2s_dout: cfg.pins.i2s_dout,
     pin_status_led: cfg.pins.status_led,
+    pin_power_button: cfg.pins.power_button || 0,
     pot_volume_gpio: cfg.pot_volume_gpio,
     pot_delay_gpio: cfg.pot_delay_gpio,
   });
 }
 
-let pinRules = { max: 48, blocked: {}, adc: [] };
+let pinRules = { max: 48, blocked: {}, adc: [], rtc: [] };
 
-/* Every pin function on the page. Knobs are limited to ADC1; the LED and
+/* Every pin function on the page. Knobs are limited to ADC1, the power
+ * button to the RTC pins that can wake the chip; the LED, the button and
  * the knobs may be left unassigned, the I2S bus may not. */
 const PIN_FIELDS = [
   { id: 'pin_i2s_bclk' },
@@ -538,6 +550,7 @@ const PIN_FIELDS = [
   { id: 'pin_i2s_din' },
   { id: 'pin_i2s_dout' },
   { id: 'pin_status_led', optional: true },
+  { id: 'pin_power_button', optional: true, rtc: true },
   { id: 'pot_volume_gpio', optional: true, adc: true },
   { id: 'pot_delay_gpio', optional: true, adc: true },
 ];
@@ -548,8 +561,10 @@ const PIN_PRESETS = {
   alt2: { pin_i2s_bclk: 12, pin_i2s_lrclk: 14, pin_i2s_din: 11, pin_i2s_dout: 13 },
 };
 
-function usablePins(adcOnly) {
-  const all = adcOnly ? pinRules.adc : [...Array(pinRules.max + 1).keys()];
+function usablePins(field) {
+  const all = field.adc ? pinRules.adc
+    : field.rtc ? pinRules.rtc
+    : [...Array(pinRules.max + 1).keys()];
   return all.filter((g) => !(String(g) in pinRules.blocked));
 }
 
@@ -569,7 +584,7 @@ function fillPinSelects(values) {
     const taken = new Set(PIN_FIELDS.filter((o) => o !== f).map((o) => values[o.id]).filter((g) => g));
     sel.innerHTML = '';
     if (f.optional) sel.add(new Option(t('none'), '0'));
-    for (const gpio of usablePins(f.adc)) {
+    for (const gpio of usablePins(f)) {
       if (!taken.has(gpio)) sel.add(new Option(`GPIO ${gpio}`, String(gpio)));
     }
     if (selected && ![...sel.options].some((o) => Number(o.value) === selected)) {
@@ -724,7 +739,7 @@ $('pin_preset').addEventListener('change', () => {
   $('pin_i2s_slave').value = '0';
   const values = Object.assign(currentPins(), preset);
   const presetPins = Object.values(preset);
-  for (const id of ['pin_status_led', 'pot_volume_gpio', 'pot_delay_gpio']) {
+  for (const id of ['pin_status_led', 'pin_power_button', 'pot_volume_gpio', 'pot_delay_gpio']) {
     if (presetPins.includes(values[id])) values[id] = 0;
   }
   fillPinSelects(values);
@@ -764,6 +779,7 @@ $('save').addEventListener('click', async () => {
       i2s_dout: Number($('pin_i2s_dout').value),
       status_led: Number($('pin_status_led').value),
       i2s_slave: Number($('pin_i2s_slave').value),
+      power_button: Number($('pin_power_button').value),
     },
     pot_volume_gpio: Number($('pot_volume_gpio').value),
     pot_delay_gpio: Number($('pot_delay_gpio').value),

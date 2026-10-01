@@ -104,7 +104,7 @@ static bool pin_taken(const device_pins_t *pins, uint8_t gpio)
     }
     return gpio == pins->i2s_bclk || gpio == pins->i2s_lrclk ||
            gpio == pins->i2s_din || gpio == pins->i2s_dout ||
-           gpio == pins->status_led;
+           gpio == pins->status_led || gpio == pins->power_button;
 }
 
 static bool pins_valid(const device_pins_t *pins)
@@ -112,13 +112,19 @@ static bool pins_valid(const device_pins_t *pins)
     if (pins->i2s_slave > 1U) {
         return false;
     }
+    /* The button has to be able to wake the chip from deep sleep. */
+    if (pins->power_button != 0U && !pinmap_is_rtc(pins->power_button)) {
+        return false;
+    }
     const uint8_t used[] = {
-        pins->i2s_bclk, pins->i2s_lrclk, pins->i2s_din, pins->i2s_dout, pins->status_led,
+        pins->i2s_bclk, pins->i2s_lrclk, pins->i2s_din, pins->i2s_dout,
+        pins->status_led, pins->power_button,
     };
     const size_t count = sizeof(used) / sizeof(used[0]);
+    /* The LED and the button, the last two entries, may be left unassigned. */
+    const size_t first_optional = count - 2U;
     for (size_t i = 0; i < count; ++i) {
-        /* Only the LED (the last entry) may be left unassigned. */
-        if (used[i] == 0U && i == count - 1U) {
+        if (used[i] == 0U && i >= first_optional) {
             continue;
         }
         if (pinmap_blocked_reason(used[i]) != NULL) {
@@ -140,7 +146,8 @@ static bool pins_differ(const device_pins_t *a, const device_pins_t *b)
 {
     return a->i2s_bclk != b->i2s_bclk || a->i2s_lrclk != b->i2s_lrclk ||
            a->i2s_din != b->i2s_din || a->i2s_dout != b->i2s_dout ||
-           a->status_led != b->status_led || a->i2s_slave != b->i2s_slave;
+           a->status_led != b->status_led || a->i2s_slave != b->i2s_slave ||
+           a->power_button != b->power_button;
 }
 
 static esp_err_t write_pins_blob(const device_pins_t *pins)
@@ -699,7 +706,6 @@ esp_err_t device_config_save_pin_set(const device_pins_t *pins, const device_pot
     portEXIT_CRITICAL(&s_cfg_lock);
 
     device_pins_t to_store = *pins;
-    to_store.reserved = 0U;
     /* Unchanged pins keep whatever trial state they are in. */
     to_store.trial_boots = pins_differ(&stored, pins) ? 1U : stored.trial_boots;
 

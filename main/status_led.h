@@ -74,3 +74,9 @@ void status_led_set_activity(status_led_activity_t activity);
  * (audio_i2s_take_led_rms()). The LED shows the larger of the two.
  */
 void status_led_set_level_db(float dbfs);
+
+/*
+ * Turns the LED off for good, before the device switches itself off (see
+ * power_button.c). Returns once the dark frame has gone out.
+ */
+void status_led_off(void);

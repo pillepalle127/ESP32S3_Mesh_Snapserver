@@ -104,6 +104,7 @@ static rmt_encoder_handle_t s_encoder;
 static volatile status_led_state_t s_state = STATUS_LED_BOOTING;
 static volatile status_led_activity_t s_activity = STATUS_LED_ACTIVITY_NONE;
 static volatile float s_level_db = -120.0f;
+static volatile bool s_off;
 
 /*
  * Level as hue, the way a meter with more than one LED would use position:
@@ -210,6 +211,12 @@ static void led_task(void *arg)
     uint32_t tick = 0;
 
     for (;;) {
+        if (s_off) {
+            /* Switching off: dark from here on, see status_led_off(). */
+            (void)led_write((led_rgb_t){ 0, 0, 0 }, 0.0f);
+            vTaskSuspend(NULL);
+        }
+
         /* Priority as documented in status_led.h. */
         const status_led_state_t connection = s_state;
         status_led_state_t state = connection;
@@ -354,11 +361,19 @@ void status_led_set_level_db(float dbfs)
     s_level_db = dbfs;
 }
 
+void status_led_off(void)
+{
+    s_off = true;
+    /* The task notices within one update and writes black. */
+    vTaskDelay(pdMS_TO_TICKS(3 * LED_UPDATE_MS));
+}
+
 #else /* !CONFIG_SNAPSERVER_STATUS_LED_ENABLE */
 
 esp_err_t status_led_start(void) { return ESP_OK; }
 void status_led_set_state(status_led_state_t state) { (void)state; }
 void status_led_set_activity(status_led_activity_t activity) { (void)activity; }
 void status_led_set_level_db(float dbfs) { (void)dbfs; }
+void status_led_off(void) {}
 
 #endif

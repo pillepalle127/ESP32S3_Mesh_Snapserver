@@ -10,6 +10,7 @@
 
 #define ADC1_FIRST_GPIO 1U
 #define ADC1_LAST_GPIO  10U
+#define RTC_LAST_GPIO   21U
 
 const char *pinmap_blocked_reason(uint8_t gpio)
 {
@@ -49,4 +50,9 @@ const char *pinmap_blocked_reason(uint8_t gpio)
 bool pinmap_is_adc1(uint8_t gpio)
 {
     return gpio >= ADC1_FIRST_GPIO && gpio <= ADC1_LAST_GPIO;
+}
+
+bool pinmap_is_rtc(uint8_t gpio)
+{
+    return gpio <= RTC_LAST_GPIO;
 }

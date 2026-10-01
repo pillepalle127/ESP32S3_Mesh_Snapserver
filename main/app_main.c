@@ -18,6 +18,7 @@
 #include "snapserver.h"
 #include "status_led.h"
 #include "pots.h"
+#include "power_button.h"
 #include "voice_announce.h"
 #include "webconfig.h"
 
@@ -89,12 +90,25 @@ void app_main(void)
     ESP_ERROR_CHECK(initialize_nvs());
     ESP_ERROR_CHECK(initialize_network_stack());
     ESP_ERROR_CHECK(device_config_load());
+    /* Before anything claims a pin the last switch-off may still hold. */
+    power_button_boot();
 
     device_config_t cfg;
     device_config_get(&cfg);
     /* Up before the radio, so the very first thing the LED shows is that
      * the board is alive and the GPIO is right. */
     (void)status_led_start();
+
+    /* Early, so the device can be switched off even if the mesh hangs.
+     * Not fatal: without the button it simply stays on. */
+    {
+        device_pins_t pins;
+        device_config_get_pins(&pins);
+        const esp_err_t button_result = power_button_start(&pins);
+        if (button_result != ESP_OK && button_result != ESP_ERR_NOT_SUPPORTED) {
+            ESP_LOGW(TAG, "Power button unavailable: %s", esp_err_to_name(button_result));
+        }
+    }
 
     const bool client_role = (cfg.role == DEVICE_ROLE_CLIENT);
 

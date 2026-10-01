@@ -27,3 +27,6 @@ const char *pinmap_blocked_reason(uint8_t gpio);
 
 /* True for GPIO 1 to 10, the ADC1 pins that stay readable while Wi-Fi runs. */
 bool pinmap_is_adc1(uint8_t gpio);
+
+/* True for GPIO 0 to 21, the RTC pins that can wake the chip from deep sleep. */
+bool pinmap_is_rtc(uint8_t gpio);
