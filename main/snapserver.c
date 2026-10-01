@@ -189,6 +189,16 @@ static const char *TAG = "SNAPSERVER";
  */
 #define CLIENT_SILENCE_LIMIT_US 20000000
 
+/*
+ * Seconds in a row in which more chunks for a client were dropped than
+ * delivered before it is closed, so that it reconnects. The silence limit
+ * above misses this case: on 2026-10-01 a freshly connected client kept
+ * sending Time requests (time_msgs rising) while the way to it carried
+ * 0-17 of 50 chunks/s, and it stuttered for ~100 s until a send finally
+ * stalled hard. A new connection was fine at once.
+ */
+#define CLIENT_STALL_SECONDS 3
+
 /* TCP keepalive: idle 10s, then 3 probes 5s apart -> dead peer detected
  * after ~25s even while client_task is blocked waiting for the next
  * message. */
@@ -1526,6 +1536,8 @@ static void stats_task(void *arg)
 {
     (void)arg;
     uint32_t last_chunks[MAX_CLIENTS] = {0};
+    uint32_t last_skipped[MAX_CLIENTS] = {0};
+    uint8_t stall_seconds[MAX_CLIENTS] = {0};
     int64_t last_peak_us = 0;
     size_t last_min_free = SIZE_MAX;
 
@@ -1614,6 +1626,23 @@ static void stats_task(void *arg)
             /* A reconnect resets the counter; avoid an unsigned wrap. */
             const uint32_t chunk_rate =
                 (chunks >= last_chunks[i]) ? (chunks - last_chunks[i]) : chunks;
+            const uint32_t skip_rate =
+                (skipped >= last_skipped[i]) ? (skipped - last_skipped[i]) : skipped;
+
+            /* See CLIENT_STALL_SECONDS. */
+            if (active && ready && skip_rate > chunk_rate) {
+                if (++stall_seconds[i] >= CLIENT_STALL_SECONDS) {
+                    ESP_LOGW(TAG,
+                             "%s: more chunks dropped than delivered for %d s "
+                             "(last second %lu/%lu), closing it so it reconnects",
+                             peer, CLIENT_STALL_SECONDS,
+                             (unsigned long)skip_rate, (unsigned long)chunk_rate);
+                    mark_client_failed(&s_clients[i]);
+                    stall_seconds[i] = 0;
+                }
+            } else {
+                stall_seconds[i] = 0;
+            }
 
             if (active) {
                 ESP_LOGI(TAG,
@@ -1628,6 +1657,7 @@ static void stats_task(void *arg)
                          (unsigned long)times);
             }
             last_chunks[i] = chunks;
+            last_skipped[i] = skipped;
         }
 
         /*
