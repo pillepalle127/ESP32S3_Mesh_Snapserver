@@ -225,6 +225,12 @@ static cJSON *build_config_json(void)
     cJSON_AddNumberToObject(root, "source_mode", cfg.source_mode);
     cJSON_AddNumberToObject(root, "local_input_threshold_db", cfg.local_input_threshold_db);
 
+    /* Client role: the volume it plays at, see api_volume_post_handler(). */
+    device_local_volume_t stream_volume;
+    device_config_get_stream_volume(&stream_volume);
+    cJSON_AddNumberToObject(root, "stream_volume_percent", stream_volume.percent);
+    cJSON_AddBoolToObject(root, "stream_muted", stream_volume.muted != 0U);
+
     device_pots_t pots;
     device_config_get_pots(&pots);
 #if CONFIG_SNAPSERVER_POTS_ENABLE
@@ -536,6 +542,60 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
     return send_result;
 }
 
+/*
+ * Client role: {"volume_percent": 0-100, "muted": bool}, either may be left
+ * out. The same Snapcast volume the server sets, set on the client itself
+ * so it can be changed without a server. Applied at once and stored like
+ * the server's value; the server's next ServerSettings overrides it. Its
+ * own route because a /api/config save reboots on a provisioning boot.
+ */
+static esp_err_t api_volume_post_handler(httpd_req_t *req)
+{
+    device_config_t cfg;
+    device_config_get(&cfg);
+    if (cfg.role != DEVICE_ROLE_CLIENT) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
+                            "clients only; the server's volume is in its device list");
+        return ESP_OK;
+    }
+
+    char body[128];
+    if (read_body(req, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad request body");
+        return ESP_OK;
+    }
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
+        return ESP_OK;
+    }
+
+    device_local_volume_t volume;
+    device_config_get_stream_volume(&volume);
+    double num = 0.0;
+    bool muted = volume.muted != 0U;
+    const bool volume_given = parse_number_field(root, "volume_percent", &num);
+    parse_bool_field(root, "muted", &muted);
+    cJSON_Delete(root);
+    if (volume_given && (num < 0.0 || num > 100.0)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "out of range");
+        return ESP_OK;
+    }
+    if (volume_given) {
+        volume.percent = (uint8_t)num;
+    }
+    volume.muted = muted ? 1U : 0U;
+    if (device_config_save_stream_volume(&volume) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "storing volume failed");
+        return ESP_OK;
+    }
+    audio_sink_set_volume(volume.percent, volume.muted != 0U);
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "ok", true);
+    return send_json(req, resp);
+}
+
 static esp_err_t api_factory_reset_post_handler(httpd_req_t *req)
 {
     /*
@@ -640,6 +700,11 @@ static cJSON *build_status_json(void)
             cJSON_AddNullToObject(root, "server_host");
         }
         cJSON_AddBoolToObject(root, "server_connected", connected);
+        /* While connected the server sets it; the page follows from here. */
+        device_local_volume_t stream_volume;
+        device_config_get_stream_volume(&stream_volume);
+        cJSON_AddNumberToObject(root, "stream_volume_percent", stream_volume.percent);
+        cJSON_AddBoolToObject(root, "stream_muted", stream_volume.muted != 0U);
 #if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
         /* Same count the server's device list shows: root = level 1.
          * Mesh-Lite is never started on a provisioning boot, and asking
@@ -1112,6 +1177,7 @@ esp_err_t webconfig_start(void)
         { .uri = "/", .method = HTTP_GET, .handler = root_get_handler },
         { .uri = "/api/config", .method = HTTP_GET, .handler = api_config_get_handler },
         { .uri = "/api/config", .method = HTTP_POST, .handler = api_config_post_handler },
+        { .uri = "/api/volume", .method = HTTP_POST, .handler = api_volume_post_handler },
         { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = api_factory_reset_post_handler },
         { .uri = "/api/status", .method = HTTP_GET, .handler = api_status_get_handler },
         { .uri = "/api/devices", .method = HTTP_GET, .handler = api_devices_get_handler },

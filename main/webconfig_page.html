@@ -29,6 +29,7 @@
   #save.dirty { box-shadow: 0 0 0 3px #f6ad55; }
   .live-state { font-weight: normal; font-size: 0.8rem; margin-left: 0.5rem; color: #2f855a; }
   .live-state.err { color: #b03030; }
+  .note { font-size: 0.8rem; color: #666; margin-top: 0.3rem; }
   details > summary { cursor: pointer; font-size: 1rem; font-weight: bold; margin-top: 1.5rem;
     border-bottom: 1px solid #ccc; padding-bottom: 0.2rem; }
   #resetRow { margin-top: 2rem; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
@@ -93,6 +94,15 @@
   </select>
   <label for="local_input_threshold_db" id="local_input_threshold_db_label">Local input threshold (dBFS)</label>
   <input type="number" id="local_input_threshold_db" min="-80" max="0">
+</div>
+<div id="volume_fields" hidden>
+  <label for="stream_volume">Volume<span class="live-state" id="volume_state"></span></label>
+  <div class="dev-ctrl">
+    <input type="range" id="stream_volume" min="0" max="100">
+    <span id="stream_volume_value"></span>
+    <label><input type="checkbox" id="stream_muted">mute</label>
+  </div>
+  <div class="note" id="volume_note" hidden>Set by the server while connected</div>
 </div>
 
 <h2>Mesh / Wi-Fi</h2>
@@ -223,6 +233,8 @@ const DE = {
   'applied': 'übernommen',
   'not applied: {0}': 'nicht übernommen: {0}',
   'not applied: server unreachable': 'nicht übernommen: Server nicht erreichbar',
+  'not applied: device unreachable': 'nicht übernommen: Gerät nicht erreichbar',
+  'Set by the server while connected': 'Stellt der Server ein, solange verbunden',
   'Threshold (dBFS)': 'Schwelle (dBFS)',
   'Ratio (1-10)': 'Verhältnis (1-10)',
   'Make-up (dB)': 'Aufholen (dB)',
@@ -460,6 +472,11 @@ async function loadConfig() {
   $('local_input_threshold_db').value = cfg.local_input_threshold_db;
   $('buffer_ms').value = cfg.buffer_ms;
   updateRoleFieldsEnabled();
+  // A client's own page only; through the server its device list has it.
+  $('volume_fields').hidden = !(cfg.role === 1 && selectedId === null);
+  $('stream_volume').value = cfg.stream_volume_percent ?? 100;
+  $('stream_muted').checked = !!cfg.stream_muted;
+  showVolumeValue();
 
   $('mesh_enable').checked = cfg.mesh_enable;
   $('mesh_ssid').value = cfg.mesh_ssid;
@@ -664,7 +681,10 @@ async function loadStatus() {
     } else if (s.pins_on_trial) {
       pins = '\n' + t('New pin assignment on trial until this start completes.');
     }
-    if (selectedId === null) updateServerNav(s);
+    if (selectedId === null) {
+      updateServerNav(s);
+      updateVolumeLock(s);
+    }
     let clients = '';
     if (s.clients) {
       const foreign = s.clients.total - s.clients.own;
@@ -852,6 +872,64 @@ for (const id of LIVE_IDS) {
   });
 }
 
+// A client's volume goes to the device at once, on a provisioning boot too:
+// /api/volume never reboots. While connected the server owns it, so the
+// slider follows the status and is locked.
+let volumeBusy = false;
+let volumePending = false;
+
+function showVolumeValue() {
+  $('stream_volume_value').textContent = $('stream_volume').value + ' %';
+}
+
+function updateVolumeLock(s) {
+  if (!('server_connected' in s)) return;
+  const locked = !!s.server_connected;
+  $('stream_volume').disabled = locked;
+  $('stream_muted').disabled = locked;
+  $('volume_note').hidden = !locked;
+  if (locked) {
+    $('stream_volume').value = s.stream_volume_percent;
+    $('stream_muted').checked = !!s.stream_muted;
+    showVolumeValue();
+  }
+}
+
+async function applyVolume() {
+  if (volumeBusy) {
+    volumePending = true;
+    return;
+  }
+  volumeBusy = true;
+  try {
+    const res = await fetch('/api/volume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        volume_percent: Number($('stream_volume').value),
+        muted: $('stream_muted').checked,
+      }),
+    });
+    if (res.ok) showLiveState('volume_state', t('applied'), false);
+    else showLiveState('volume_state', t('not applied: {0}', await res.text()), true);
+  } catch (e) {
+    showLiveState('volume_state', t('not applied: device unreachable'), true);
+  } finally {
+    volumeBusy = false;
+    if (volumePending) {
+      volumePending = false;
+      applyVolume();
+    }
+  }
+}
+
+$('stream_volume').addEventListener('input', showVolumeValue);
+for (const id of ['stream_volume', 'stream_muted']) {
+  $(id).addEventListener('change', () => {
+    if (configLoaded) applyVolume();
+  });
+}
+
 // The rest of the form only takes effect on Save (unlike the device list,
 // which sends every change at once); the button says when that is pending.
 function setFormDirty(dirty) {
@@ -860,7 +938,7 @@ function setFormDirty(dirty) {
 for (const type of ['input', 'change']) {
   document.addEventListener(type, (e) => {
     if (!configLoaded || !e.target.matches('input, select')) return;
-    if (e.target.closest('#devices_section, #resetRow')) return;
+    if (e.target.closest('#devices_section, #resetRow, #volume_fields')) return;
     if (LIVE_IDS.includes(e.target.id) && !deviceProvisioning) return;
     setFormDirty(true);
   }, true);  // capture: also sees the non-bubbling change the sign button fires
