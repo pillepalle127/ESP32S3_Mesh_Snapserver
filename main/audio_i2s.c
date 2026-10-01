@@ -235,7 +235,7 @@ static int64_t s_samples_captured;
  * back later than that has lost audio. Logged as it happens, with how long
  * the loop was away, so it can be lined up with what else ran.
  */
-#define CAPTURE_LATE_US 25000LL
+#define CAPTURE_LATE_US 35000LL /* 25-29 ms is normal jitter: TX paces the loop */
 static int64_t s_capture_left_us;
 
 /* Clock check, see apply_dsp_and_output() and audio_i2s_clock_ppm(). */
