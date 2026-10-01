@@ -19,10 +19,10 @@
  * der Pinbelegung (device_pins_t, device_config.h) und wird auf der
  * Konfigurationsseite eingestellt.
  */
-#define AUDIO_I2S_DEFAULT_GPIO_BCLK   4
-#define AUDIO_I2S_DEFAULT_GPIO_LRCLK  6
-#define AUDIO_I2S_DEFAULT_GPIO_DIN    5   // TinySine SD OUT -> ESP32-S3
-#define AUDIO_I2S_DEFAULT_GPIO_DOUT   7   // ESP32-S3 -> PCM5102A DIN
+#define AUDIO_I2S_DEFAULT_GPIO_BCLK   12
+#define AUDIO_I2S_DEFAULT_GPIO_LRCLK  14
+#define AUDIO_I2S_DEFAULT_GPIO_DIN    11  // TinySine SD OUT -> ESP32-S3
+#define AUDIO_I2S_DEFAULT_GPIO_DOUT   13  // ESP32-S3 -> PCM5102A DIN
 
 #define AUDIO_I2S_SAMPLE_RATE 48000
 #define AUDIO_I2S_CHANNELS        2

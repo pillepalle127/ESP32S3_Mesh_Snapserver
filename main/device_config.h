@@ -151,8 +151,9 @@ typedef struct {
  * Pin assignment for the I2S bus and the status LED. Stored under its own
  * NVS key for the same reason as device_pots_t, and falls back to the
  * defaults as a whole: a half-applied pin set is worse than none. The
- * defaults are the pins that used to be hard-coded (audio_i2s.h, Kconfig),
- * so an update changes nothing on boards already wired.
+ * defaults are in audio_i2s.h (I2S, BCLK 12/LRCLK 14/DIN 11/DOUT 13 since
+ * v0.5.0, 4/6/5/7 before) and Kconfig (LED). A board that never saved its
+ * pins moves with the defaults on an update.
  *
  * status_led 0 means "no LED" (GPIO 0 is a strapping pin and never
  * assignable). The I2S pins are always set. Every change needs a reboot.

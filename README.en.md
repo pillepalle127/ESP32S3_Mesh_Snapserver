@@ -76,10 +76,10 @@ pins (see [Pins](#pins)):
 
 | GPIO | Function |
 |---|---|
-| 4 | BCLK (PCM5102A BCK, TinySine BCLK) |
-| 6 | LRCLK (PCM5102A LCK, TinySine LRCLK) |
-| 5 | DIN ← TinySine DOUT |
-| 7 | DOUT → PCM5102A DIN |
+| 12 | BCLK (PCM5102A BCK, TinySine BCLK) |
+| 14 | LRCLK (PCM5102A LCK, TinySine LRCLK) |
+| 11 | DIN ← TinySine DOUT |
+| 13 | DOUT → PCM5102A DIN |
 | 10 | volume pot (wiper) |
 | – | delay pot (default: none) |
 | – | power button to GND (default: none) |

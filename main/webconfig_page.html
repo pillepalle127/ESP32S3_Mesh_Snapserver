@@ -146,9 +146,8 @@
 <label for="pin_preset">Load wiring preset</label>
 <select id="pin_preset">
   <option value="">&mdash;</option>
-  <option value="standard">Standard: BCLK 4, LRCLK 6, DIN 5, DOUT 7</option>
-  <option value="alt">Alternative 1: BCLK 17, LRCLK 8, DIN 5, DOUT 18</option>
-  <option value="alt2">Alternative 2: BCLK 12, LRCLK 14, DIN 11, DOUT 13</option>
+  <option value="standard">Standard: BCLK 12, LRCLK 14, DIN 11, DOUT 13</option>
+  <option value="alt">Alternative: BCLK 17, LRCLK 8, DIN 5, DOUT 18</option>
 </select>
 <div class="row">
   <div><label for="pin_i2s_bclk">I2S BCLK</label><select id="pin_i2s_bclk"></select></div>
@@ -556,9 +555,8 @@ const PIN_FIELDS = [
 ];
 
 const PIN_PRESETS = {
-  standard: { pin_i2s_bclk: 4, pin_i2s_lrclk: 6, pin_i2s_din: 5, pin_i2s_dout: 7 },
+  standard: { pin_i2s_bclk: 12, pin_i2s_lrclk: 14, pin_i2s_din: 11, pin_i2s_dout: 13 },
   alt: { pin_i2s_bclk: 17, pin_i2s_lrclk: 8, pin_i2s_din: 5, pin_i2s_dout: 18 },
-  alt2: { pin_i2s_bclk: 12, pin_i2s_lrclk: 14, pin_i2s_din: 11, pin_i2s_dout: 13 },
 };
 
 function usablePins(field) {

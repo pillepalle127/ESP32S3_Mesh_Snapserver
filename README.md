@@ -77,10 +77,10 @@ Standardbelegung könnt ihr ändern (siehe [Pins](#pins)):
 
 | GPIO | Funktion |
 |---|---|
-| 4 | BCLK (PCM5102A BCK, TinySine BCLK) |
-| 6 | LRCLK (PCM5102A LCK, TinySine LRCLK) |
-| 5 | DIN ← TinySine DOUT |
-| 7 | DOUT → PCM5102A DIN |
+| 12 | BCLK (PCM5102A BCK, TinySine BCLK) |
+| 14 | LRCLK (PCM5102A LCK, TinySine LRCLK) |
+| 11 | DIN ← TinySine DOUT |
+| 13 | DOUT → PCM5102A DIN |
 | 10 | Lautstärke-Poti (Schleifer) |
 | – | Delay-Poti (Vorgabe: keiner) |
 | – | Ein/Aus-Taster gegen GND (Vorgabe: keiner) |
