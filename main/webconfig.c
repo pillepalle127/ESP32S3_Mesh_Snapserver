@@ -41,8 +41,9 @@ static const char *TAG = "WEBCONFIG";
 #define WEBCONFIG_MAX_BODY 1536
 #define WEBCONFIG_REBOOT_DELAY_US (1500LL * 1000LL)
 
-extern const uint8_t webconfig_page_html_start[] asm("_binary_webconfig_page_html_start");
-extern const uint8_t webconfig_page_html_end[] asm("_binary_webconfig_page_html_end");
+/* gzip-compressed at build time, see main/CMakeLists.txt. */
+extern const uint8_t webconfig_page_gz_start[] asm("_binary_webconfig_page_html_gz_start");
+extern const uint8_t webconfig_page_gz_end[] asm("_binary_webconfig_page_html_gz_end");
 
 static httpd_handle_t s_server;
 static esp_timer_handle_t s_reboot_timer;
@@ -185,8 +186,9 @@ static esp_err_t root_get_handler(httpd_req_t *req)
     /* Never cached: after a firmware update the browser would otherwise
      * keep showing the old page, and phones offer no forced reload. */
     httpd_resp_set_hdr(req, "Cache-Control", "no-store");
-    return httpd_resp_send(req, (const char *)webconfig_page_html_start,
-                           webconfig_page_html_end - webconfig_page_html_start);
+    httpd_resp_set_hdr(req, "Content-Encoding", "gzip");
+    return httpd_resp_send(req, (const char *)webconfig_page_gz_start,
+                           webconfig_page_gz_end - webconfig_page_gz_start);
 }
 
 /*

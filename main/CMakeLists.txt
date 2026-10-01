@@ -21,7 +21,6 @@ idf_component_register(
         "voice_announce.c"
         "webconfig.c"
     INCLUDE_DIRS "."
-    EMBED_TXTFILES "webconfig_page.html"
     REQUIRES
         esp_timer
         esp_wifi
@@ -40,3 +39,19 @@ idf_component_register(
         espressif__iot_bridge
 		json
 )
+
+# The config page goes out gzip-compressed (49 KB -> 14 KB). Sending it
+# uncompressed took ~300 ms per load and slowed the server's capture loop
+# enough to lose ~50 ms of audio each time (2026-10-01).
+idf_build_get_property(python PYTHON)
+set(page_gz "${CMAKE_CURRENT_BINARY_DIR}/webconfig_page.html.gz")
+add_custom_command(
+    OUTPUT "${page_gz}"
+    COMMAND "${python}" -c
+        "import gzip,sys; d=open(sys.argv[1],'rb').read(); open(sys.argv[2],'wb').write(gzip.compress(d,9,mtime=0))"
+        "${CMAKE_CURRENT_SOURCE_DIR}/webconfig_page.html" "${page_gz}"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/webconfig_page.html"
+    VERBATIM)
+add_custom_target(webconfig_page_gz DEPENDS "${page_gz}")
+add_dependencies(${COMPONENT_LIB} webconfig_page_gz)
+target_add_binary_data(${COMPONENT_LIB} "${page_gz}" BINARY)
