@@ -83,6 +83,7 @@ Standardbelegung könnt ihr ändern (siehe [Pins](#pins)):
 | 7 | DOUT → PCM5102A DIN |
 | 10 | Lautstärke-Poti (Schleifer) |
 | – | Delay-Poti (Vorgabe: keiner) |
+| – | Ein/Aus-Taster gegen GND (Vorgabe: keiner) |
 | 48 | WS2812-Status-LED |
 
 ---
@@ -207,7 +208,7 @@ Werte je Gerät. **Einstellungen** lädt die Einstellungen eines Clients, egal w
 
 * **Rolle:** Server oder Client.
 * **Puffer (Server):** Vorsprung gegen Funkaussetzer, Vorgabe 3000 ms, gilt für alle Geräte.
-* **Wiedergabe (Client):** Quelle.
+* **Wiedergabe (Client):** Quelle, Lautstärke und Stumm. Solange ein Server verbunden ist, stellt er die Lautstärke ein.
 * **Mesh / WLAN:** Name, Passwort und Kanal, auf allen Geräten gleich.
 * **Weiche:** Trennfrequenz, Gain für Sub und Breitband (−24 bis +18 dB), Sub-Phase 180°.
 * **Subsonic:** Hochpass im Sub-Zweig gegen Tiefbass unterhalb der Abstimmung, Richtwert 0,75 × F3.
@@ -215,7 +216,7 @@ Werte je Gerät. **Einstellungen** lädt die Einstellungen eines Clients, egal w
 * **Pins:** siehe [Pins](#pins).
 * **Opus (Server):** Bitrate und Rechenaufwand des Encoders, eingeklappt.
 
-Weiche und Kompressor werden beim Ändern übernommen, alles andere mit **Speichern**. Rolle, Mesh, Puffer und Pins
+Weiche, Kompressor und Lautstärke werden beim Ändern übernommen, alles andere mit **Speichern**. Rolle, Mesh, Puffer und Pins
 starten das Gerät neu. Die Pins sind eingeklappt.
 
 ### Kompressor einstellen
@@ -235,6 +236,17 @@ eine reine Verstärkung. Kompressor und Begrenzer melden ihre Absenkung alle 5 s
 
 Die Pins lassen sich in der Web-UI umbelegen, ohne neu zu flashen. Die Firmware lehnt Doppelbelegungen und
 ungeeignete Pins ab. Startet das Gerät mit einer neuen Belegung nicht, fällt es auf die Standardbelegung zurück.
+
+### I2S-Takt
+
+Normal erzeugt der ESP BCLK und LRCLK. Gibt ein anderes Gerät den Takt vor, zum Beispiel ein DSP wie der ADAU1701,
+stellt ihr **I2S-Takt** auf **Extern**. Dann laufen Quelle, DAC und ESP auf dessen Takt. Ohne diesen Takt bleibt es
+still.
+
+### Ein/Aus-Taster
+
+Ein Taster von einem GPIO (1–21) gegen GND, ohne weitere Bauteile. 2 s halten schaltet aus, drücken schaltet ein.
+Aus heißt Deep Sleep: Nur der ESP schläft, DAC, Verstärker und Spannungsregler am Akku ziehen weiter Strom.
 
 ### Potis
 

@@ -82,6 +82,7 @@ pins (see [Pins](#pins)):
 | 7 | DOUT → PCM5102A DIN |
 | 10 | volume pot (wiper) |
 | – | delay pot (default: none) |
+| – | power button to GND (default: none) |
 | 48 | WS2812 status LED |
 
 ---
@@ -204,7 +205,7 @@ device. **Settings** loads a client's settings, however deep it sits in the mesh
 
 * **Role:** server or client.
 * **Buffer (server):** reserve against radio dropouts, default 3000 ms, applies to all devices.
-* **Playback (client):** source.
+* **Playback (client):** source, volume and mute. While a server is connected, the server sets the volume.
 * **Mesh / Wi-Fi:** name, password and channel, the same on all devices.
 * **Crossover:** crossover frequency, gain for sub and wideband (−24 to +18 dB), sub phase 180°.
 * **Subsonic:** high-pass on the sub branch against bass below the tuning, rule of thumb 0.75 × F3.
@@ -212,7 +213,7 @@ device. **Settings** loads a client's settings, however deep it sits in the mesh
 * **Pins:** see [Pins](#pins).
 * **Opus (server):** bitrate and encoder complexity, collapsed.
 
-Crossover and compressor apply as you change them, everything else with **Save**. Role, mesh, buffer and pins
+Crossover, compressor and volume apply as you change them, everything else with **Save**. Role, mesh, buffer and pins
 restart the device. The pins are collapsed.
 
 ### Setting up the compressor
@@ -232,6 +233,16 @@ Compressor and limiter log their reduction every 5 s on the serial console.
 
 Pins can be reassigned in the web UI without reflashing. The firmware rejects double assignments and unsuitable pins.
 If the device does not start with a new assignment, it falls back to the default pins.
+
+### I2S clock
+
+Normally the ESP generates BCLK and LRCLK. If another device sets the clock, for example a DSP like the ADAU1701,
+set **I2S clock** to **External**. Source, DAC and ESP then run on its clock. Without that clock there is no sound.
+
+### Power button
+
+A button from a GPIO (1–21) to GND, no other parts. Hold it for 2 s to switch off, press it to switch on. Off means
+deep sleep: only the ESP sleeps, DAC, amplifier and regulator on the battery keep drawing current.
 
 ### Pots
 
