@@ -106,8 +106,16 @@ static const char *TAG = "AUDIO_SINK";
  * ~450 us per frame behind, hit its 100 ms threshold every ~4.5 s and
  * re-anchored. Dropping the buffer for that meant re-prebuffering 2.4 s
  * every 4.5 s, i.e. near-permanent silence.
+ *
+ * Small on purpose: the server's timestamps count samples, so between
+ * re-anchors a chunk continues the previous one to well under 1 ms. At
+ * 100 ms, as before, the server's 103-104 ms re-anchors sat right on the
+ * threshold: one client saw the shift and followed it, the next measured
+ * just under and did not, and the two played ~100 ms apart (an echo)
+ * until the second one happened to see a later chunk above it
+ * (2026-10-01, reproducible by reloading the server's page).
  */
-#define STREAM_DISCONTINUITY_US (100LL * 1000LL)
+#define STREAM_DISCONTINUITY_US (5LL * 1000LL)
 
 /*
  * Beyond this the stream is treated as a genuinely new one and the buffer
