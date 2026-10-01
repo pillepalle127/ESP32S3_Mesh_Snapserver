@@ -44,21 +44,30 @@ static const char *TAG = "AUDIO_I2S";
 
 /*
  * If the sample counter based timestamp drifts further than this from the
- * hardware timer, the stream is re-anchored. That only happens after a real
- * discontinuity such as a DMA overflow, not during normal operation.
+ * hardware timer, the stream is re-anchored: a jump every client has to
+ * follow. Smaller drifts are slewed out (TIMELINE_SLEW_US), which nobody
+ * hears. Was 100 ms: reloading the server's web page slowed the capture
+ * loop to 25-29 ms per 20 ms frame for ~400 ms, a few reloads lost 100 ms
+ * of capture and every one of those became an audible jump on all clients
+ * (2026-10-01).
  */
-#define TIMESTAMP_RESYNC_THRESHOLD_US 100000LL
+#define TIMESTAMP_RESYNC_THRESHOLD_US 500000LL
 
 /*
- * With the ESP as I2S slave the samples arrive on an external clock, which
- * runs a few ppm off esp_timer. The timeline follows it instead of jumping
- * every time the difference reaches the threshold above (at 50 ppm that
- * would be every 33 minutes, for every client): whenever the averaged drift
- * leaves the dead band, the anchor moves by at most TIMELINE_SLEW_US per
- * frame, i.e. 250 ppm at 20 ms frames. The dead band keeps it still against
- * the jitter of the blocking read. Master mode (one crystal) does not use it.
+ * The timeline follows a drift instead of jumping whenever the difference
+ * reaches the threshold above: whenever the averaged drift leaves the dead
+ * band, the anchor moves by at most this much per frame. The dead band
+ * keeps it still against the jitter of the blocking read.
+ *
+ * As I2S slave the samples arrive on an external clock a few ppm off
+ * esp_timer (at 50 ppm a jump every 33 minutes, for every client): 5 us
+ * per 20 ms frame, 250 ppm. As master there is one crystal, and the drift
+ * is capture lost while the loop fell behind: 2 us per frame, 100 ppm,
+ * well inside what the clients' resampling follows (AUDIO_RESAMPLE_MAX_PPM)
+ * on top of their own crystal; 100 ms take about 17 minutes.
  */
 #define TIMELINE_SLEW_US         5LL
+#define TIMELINE_SLEW_MASTER_US  2LL
 #define TIMELINE_DEADBAND_US   200.0f
 
 /*
@@ -1472,15 +1481,16 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
         s_samples_captured = 0;
         s_timeline_drift_avg_us = 0.0f;
         frame_timestamp_us = s_stream_anchor_us;
-    } else if (s_i2s_slave) {
-        /* Follow the external clock, see TIMELINE_SLEW_US. */
+    } else {
+        /* Follow the drift, see TIMELINE_SLEW_US. */
+        const int64_t slew_us = s_i2s_slave ? TIMELINE_SLEW_US : TIMELINE_SLEW_MASTER_US;
         s_timeline_drift_avg_us += ((float)drift_us - s_timeline_drift_avg_us) / 64.0f;
         if (s_timeline_drift_avg_us > TIMELINE_DEADBAND_US) {
-            s_stream_anchor_us += TIMELINE_SLEW_US;
-            s_timeline_drift_avg_us -= (float)TIMELINE_SLEW_US;
+            s_stream_anchor_us += slew_us;
+            s_timeline_drift_avg_us -= (float)slew_us;
         } else if (s_timeline_drift_avg_us < -TIMELINE_DEADBAND_US) {
-            s_stream_anchor_us -= TIMELINE_SLEW_US;
-            s_timeline_drift_avg_us += (float)TIMELINE_SLEW_US;
+            s_stream_anchor_us -= slew_us;
+            s_timeline_drift_avg_us += (float)slew_us;
         }
     }
 
