@@ -1137,6 +1137,28 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
 /* Startup                                                            */
 /* ------------------------------------------------------------------ */
 
+/*
+ * Diagnostic (2026-10-01): every request runs through here and is logged
+ * when it took long, to line slow ones up with the server's capture
+ * misses (audio_i2s.c, CAPTURE_LATE_US). The real handler is the route's
+ * user_ctx.
+ */
+#define SLOW_REQUEST_US 20000LL
+
+static esp_err_t timed_handler(httpd_req_t *req)
+{
+    esp_err_t (*handler)(httpd_req_t *) = (esp_err_t (*)(httpd_req_t *))req->user_ctx;
+    const int64_t start_us = esp_timer_get_time();
+    const esp_err_t result = handler(req);
+    const int64_t took_us = esp_timer_get_time() - start_us;
+    if (took_us > SLOW_REQUEST_US) {
+        ESP_LOGI(TAG, "%s %s took %lld ms",
+                 req->method == HTTP_POST ? "POST" : "GET", req->uri,
+                 (long long)(took_us / 1000LL));
+    }
+    return result;
+}
+
 esp_err_t webconfig_start(void)
 {
     if (s_server != NULL) {
@@ -1183,17 +1205,17 @@ esp_err_t webconfig_start(void)
     }
 
     static const httpd_uri_t routes[] = {
-        { .uri = "/", .method = HTTP_GET, .handler = root_get_handler },
-        { .uri = "/api/config", .method = HTTP_GET, .handler = api_config_get_handler },
-        { .uri = "/api/config", .method = HTTP_POST, .handler = api_config_post_handler },
-        { .uri = "/api/volume", .method = HTTP_POST, .handler = api_volume_post_handler },
-        { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = api_factory_reset_post_handler },
-        { .uri = "/api/status", .method = HTTP_GET, .handler = api_status_get_handler },
-        { .uri = "/api/devices", .method = HTTP_GET, .handler = api_devices_get_handler },
-        { .uri = "/api/devices", .method = HTTP_POST, .handler = api_devices_post_handler },
-        { .uri = "/api/devices/config", .method = HTTP_GET, .handler = api_device_config_get_handler },
-        { .uri = "/api/devices/config", .method = HTTP_POST, .handler = api_device_config_post_handler },
-        { .uri = "/api/devices/status", .method = HTTP_GET, .handler = api_device_status_get_handler },
+        { .uri = "/", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)root_get_handler },
+        { .uri = "/api/config", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)api_config_get_handler },
+        { .uri = "/api/config", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_config_post_handler },
+        { .uri = "/api/volume", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_volume_post_handler },
+        { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_factory_reset_post_handler },
+        { .uri = "/api/status", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)api_status_get_handler },
+        { .uri = "/api/devices", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)api_devices_get_handler },
+        { .uri = "/api/devices", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_devices_post_handler },
+        { .uri = "/api/devices/config", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)api_device_config_get_handler },
+        { .uri = "/api/devices/config", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_device_config_post_handler },
+        { .uri = "/api/devices/status", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)api_device_status_get_handler },
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {

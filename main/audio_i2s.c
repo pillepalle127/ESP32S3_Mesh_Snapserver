@@ -228,6 +228,16 @@ static uint32_t s_dsp_generation;
 static int64_t s_stream_anchor_us;
 static int64_t s_samples_captured;
 
+/*
+ * Diagnostic (2026-10-01): reloading the server's web page made it lose
+ * capture and re-anchor (TIMESTAMP_RESYNC_THRESHOLD_US). The RX DMA holds
+ * DMA_DESC_NUM x DMA_FRAME_NUM samples, 40 ms; a capture loop that comes
+ * back later than that has lost audio. Logged as it happens, with how long
+ * the loop was away, so it can be lined up with what else ran.
+ */
+#define CAPTURE_LATE_US 25000LL
+static int64_t s_capture_left_us;
+
 /* Clock check, see apply_dsp_and_output() and audio_i2s_clock_ppm(). */
 static int64_t s_rate_anchor_us;
 static int64_t s_rate_samples;
@@ -1441,7 +1451,14 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
         return ESP_ERR_INVALID_ARG;
     }
 
+    const int64_t entry_us = esp_timer_get_time();
+    if (s_capture_left_us != 0 && entry_us - s_capture_left_us > CAPTURE_LATE_US) {
+        ESP_LOGW(TAG, "Capture loop was away %lld ms between frames (RX DMA holds %u ms)",
+                 (long long)((entry_us - s_capture_left_us) / 1000LL),
+                 (unsigned)(DMA_DESC_NUM * DMA_FRAME_NUM * 1000U / AUDIO_I2S_SAMPLE_RATE));
+    }
     esp_err_t result = capture_mono_from_rx(mono, mono_samples);
+    s_capture_left_us = esp_timer_get_time();
     if (result != ESP_OK) {
         return result;
     }
