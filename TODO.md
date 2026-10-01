@@ -691,23 +691,11 @@ Bugs sind umgesetzt:
   Minuten von selbst weg -- entspricht genau den wandernden Störphasen von
   Fehler A. Mit Pegelwandler nicht mehr aufgetreten.
 
-- **Durchsage-App: Standort-Berechtigung wieder entfernen (vorgemerkt
-  2026-09-19, auf Nutzerwunsch; noch nicht umgesetzt, nur geplant).** Damit
-  die App erkennt, ob das Handy direkt am Root hängt, würde sie die BSSID
-  des verbundenen WLANs mit der AP-MAC des Servers vergleichen. Android gibt die BSSID nur mit
-  `ACCESS_FINE_LOCATION` heraus, eine Berechtigung, die für eine
-  Durchsage-App sachfremd ist. Das ist nur als Zwischenlösung gedacht und
-  soll wieder raus.
-
-  Ersatz ohne Berechtigung: der **Server** entscheidet. Hängt das Handy
-  direkt am Root, hat es eine eigene Adresse aus dessen DHCP, die in
-  `esp_wifi_ap_get_sta_list()` steht und keinem ESP-Knoten gehört. Hängt es
-  hinter einem Relay, sieht der Server wegen NAPT dessen Adresse, also die
-  eines bekannten Snapclients. Kriterium damit: Owner-IP aus
-  `voice_announce_rpc_start()` ist Level-1-Station **und** gehört keinem
-  ESP-Client. `Voice.Start` meldet das Ergebnis zurück (etwa
-  `"direct":false`), und die App warnt nur noch. Offen: Das gezielte
-  Verbinden mit dem Root per `WifiNetworkSpecifier` braucht die BSSID
-  weiterhin als Ziel. Sie müsste dann vom Server kommen (AP-MAC, z. B. in
-  der `Voice.Start`-Antwort oder aus `Server.GetStatus`) statt vom Handy
-  gelesen zu werden.
+- **Durchsage-App: Standort-Berechtigung (entfällt, geprüft 2026-10-01).**
+  Geplant war, die BSSID per `ACCESS_FINE_LOCATION` zu lesen, um zu
+  erkennen, ob das Handy direkt am Root hängt, und die Berechtigung danach
+  wieder zu entfernen. Eingebaut wurde sie nie: Das Manifest hat keine
+  Standort-Berechtigung, die App liest keine BSSID. Falls die Erkennung
+  doch kommt, dann ohne Berechtigung über den Server (Owner-IP aus
+  `voice_announce_rpc_start()` ist Level-1-Station und gehört keinem
+  ESP-Client; Ergebnis in der `Voice.Start`-Antwort).
