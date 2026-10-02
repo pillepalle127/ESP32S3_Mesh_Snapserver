@@ -97,22 +97,24 @@ static const char *TAG = "AUDIO_SINK";
 #define RING_BYTES_PER_MS    ((AUDIO_I2S_SAMPLE_RATE / 1000U) * sizeof(int16_t))
 
 /*
- * Every chunk is checked against where the previous one ended, and any
- * difference is followed: the buffered audio is kept and only its labelling
- * moves. The usual cause is the *server* correcting its own capture
+ * Every chunk is checked against where the previous one ended. The usual
+ * cause of a difference is the *server* correcting its own capture
  * timeline (audio_i2s.c): a slew of a few us per frame, or a re-anchor
  * (TIMESTAMP_RESYNC_THRESHOLD_US) that relabels its timestamps without
- * interrupting the audio itself. Dropping the buffer for that meant
- * re-prebuffering 2.4 s every few seconds, i.e. near-permanent silence.
+ * interrupting the audio itself. The buffered audio is kept and only its
+ * labelling moves -- dropping it meant re-prebuffering 2.4 s every few
+ * seconds, i.e. near-permanent silence.
  *
- * A gap beyond this one is also stepped out right away
- * (SHIFT_SNAP_THRESHOLD_US) instead of resampled. It used to be measured
- * against the ring's fill, which looks up to ~20 ms short while the player
- * has a frame staged, so only gaps above 50 ms could be told apart, and the
- * server's slew piled up unseen until it did: each client then jumped
- * 50 ms at its own moment, up to minutes apart, an echo until the last one
- * followed (2026-10-02). Against the previous chunk's end the gap is exact,
- * the same on every client, and the slew is followed as it happens.
+ * Small differences are summed up and followed in one step once the sum
+ * passes this, with the rest taken out at once (SHIFT_SNAP_THRESHOLD_US).
+ * Against the previous chunk's end the sum is exact, so every client steps
+ * at the same chunk. Two ways that failed (2026-10-02):
+ * - Measured against the ring's fill, which looks up to ~20 ms short while
+ *   the player has a frame staged, only 50 ms could be told apart: each
+ *   client jumped 50 ms at its own moment, up to minutes apart -- an echo.
+ * - Following every slew right away left the ramp to the PI control, which
+ *   lags it by an amount that depends on each client's history: 14E4 sat
+ *   25 ms early next to 7788 for minutes -- an echo too.
  */
 #define STREAM_DISCONTINUITY_US (5LL * 1000LL)
 
@@ -243,9 +245,11 @@ static int64_t s_last_stats_us;
 static int64_t s_head_ts_us;
 static int64_t s_head_ts_remainder;
 static bool s_head_ts_valid;
-/* Server timestamp where the last chunk written to the ring ended, see
- * STREAM_DISCONTINUITY_US. Guarded by the ring lock. */
+/* Server timestamp where the last chunk written to the ring ended, and the
+ * small differences not yet followed, see STREAM_DISCONTINUITY_US. Guarded
+ * by the ring lock. */
 static int64_t s_next_chunk_ts_us;
+static int64_t s_pending_gap_us;
 
 /* server_clock - local esp_timer clock, from snapclient.c's time sync. */
 static volatile int64_t s_server_offset_us;
@@ -463,6 +467,7 @@ static void timeline_anchor_locked(int64_t chunk_ts_us)
     s_head_ts_us = chunk_ts_us;
     s_head_ts_remainder = 0;
     s_head_ts_valid = true;
+    s_pending_gap_us = 0;
 }
 
 static float rms_dbfs(const int16_t *samples, size_t count)
@@ -749,6 +754,14 @@ static void sink_stats_task(void *arg)
         audio_i2s_take_output_peak(&dsp_left, &dsp_right);
         ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767), I2S clock %+ld ppm",
                  (int)dsp_left, (int)dsp_right, (long)audio_i2s_clock_ppm());
+        uint32_t tx_dry = 0;
+        uint32_t rx_lost = 0;
+        audio_i2s_take_dma_stats(&tx_dry, &rx_lost);
+        if (tx_dry != 0U || rx_lost != 0U) {
+            ESP_LOGW(TAG, "I2S DMA: TX ran dry %lu x, RX overflowed %lu x (%u ms each)",
+                     (unsigned long)tx_dry, (unsigned long)rx_lost,
+                     (unsigned)(AUDIO_I2S_DMA_FRAME_NUM * 1000U / AUDIO_I2S_SAMPLE_RATE));
+        }
         uint32_t limited = 0;
         float limit_db = 0.0f;
         audio_i2s_take_limiter_stats(&limited, &limit_db);
@@ -1333,15 +1346,16 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm,
             s_timeline_reset_pending = true;
             s_shift_snap_pending = false;
             s_discontinuity_count++;
-        } else if (gap_us != 0) {
-            /*
-             * Follow the shift and keep everything buffered: the audio is
-             * still continuous, only its labelling moved. The scheduler
-             * sees the error change by gap_us; a slew's few us are left to
-             * the resampler, a step is taken out at once.
-             */
-            s_head_ts_us += gap_us;
-            if (gap_us > STREAM_DISCONTINUITY_US || gap_us < -STREAM_DISCONTINUITY_US) {
+        } else {
+            s_pending_gap_us += gap_us;
+            if (s_pending_gap_us > STREAM_DISCONTINUITY_US ||
+                s_pending_gap_us < -STREAM_DISCONTINUITY_US) {
+                /*
+                 * Follow the shift and keep everything buffered: the audio
+                 * is still continuous, only its labelling moved.
+                 */
+                s_head_ts_us += s_pending_gap_us;
+                s_pending_gap_us = 0;
                 s_timeline_shift_count++;
                 s_shift_snap_pending = true;
             }
