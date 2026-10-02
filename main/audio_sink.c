@@ -144,7 +144,7 @@ static const char *TAG = "AUDIO_SINK";
  * echo against the other speakers all that time. One short hold or skip
  * is the lesser evil.
  */
-#define SHIFT_SNAP_THRESHOLD_US (5LL * 1000LL)
+#define SHIFT_SNAP_THRESHOLD_US (1LL * 1000LL)
 
 /*
  * PI gains for the fine correction, in ppm per us of error and ppm per
@@ -864,7 +864,19 @@ static void timeline_resync_late(int64_t error_us)
     timeline_advance_locked(staged + skipped);
     xSemaphoreGive(s_ring.lock);
 
+    /*
+     * The staging and resampler phase go, the controller's state stays: its
+     * integral is this crystal's rate against the server's, which a skip
+     * does not change. Clearing it let the client drift at that rate until
+     * the integral was rebuilt minutes later -- 30-40 ms off after every
+     * small skip (2026-10-02).
+     */
+    const float integral = s_control_integral;
+    const float ppm = s_control_ppm;
     control_reset();
+    s_control_integral = integral;
+    s_control_ppm = ppm;
+    audio_resample_set_ppm(&s_resample, (int32_t)ppm);
 }
 
 /*
@@ -922,6 +934,7 @@ static bool render_network_frame(int16_t *playout_mono)
 
     int64_t error_us = 0;
     static bool holding;
+    size_t silent = 0; /* samples of silence in front of the stream */
 
     if (scheduling_error_us(&error_us)) {
         s_last_error_us = error_us;
@@ -946,26 +959,38 @@ static bool render_network_frame(int16_t *playout_mono)
 
         if (error_us > step_us || (holding && error_us > 0)) {
             if (!holding) {
-                holding = true;
                 s_resync_count++;
             }
-            return false;
-        }
-        holding = false;
-
-        if (error_us < -step_us) {
+            /*
+             * Whole frames of silence while more than one is left, then
+             * exactly the rest in front of the stream. Holding in whole
+             * frames overshot by up to 20 ms, a different amount on every
+             * client, which the PI control then took minutes to work off:
+             * the speakers 10-15 ms apart after every shift (2026-10-02).
+             */
+            const int64_t frame_us = samples_to_us(AUDIO_SINK_FRAME_SAMPLES);
+            if (error_us >= frame_us) {
+                holding = true;
+                return false;
+            }
+            silent = (size_t)us_to_samples(error_us);
+        } else if (error_us < -step_us) {
             timeline_resync_late(error_us);
             s_resync_count++;
         } else {
             control_update(error_us);
         }
+        holding = false;
     } else {
         holding = false;
         control_neutral();
     }
 
+    const size_t out_samples = AUDIO_SINK_FRAME_SAMPLES - silent;
+    memset(playout_mono, 0, silent * sizeof(int16_t));
+
     const size_t needed =
-        audio_resample_input_needed(&s_resample, AUDIO_SINK_FRAME_SAMPLES);
+        audio_resample_input_needed(&s_resample, out_samples);
     if (needed > STAGE_CAPACITY) {
         return false;
     }
@@ -987,7 +1012,7 @@ static bool render_network_frame(int16_t *playout_mono)
     }
 
     const size_t consumed =
-        audio_resample_process(&s_resample, s_stage, playout_mono, AUDIO_SINK_FRAME_SAMPLES);
+        audio_resample_process(&s_resample, s_stage, playout_mono + silent, out_samples);
 
     /*
      * The timeline follows what actually leaves the resampler, not what is
