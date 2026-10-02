@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "nvs.h"
 
 static const char *TAG = "CLIENT_STORE";
@@ -41,6 +42,24 @@ static stored_t *s_entries;
 static uint32_t s_seq;
 static SemaphoreHandle_t s_lock;
 
+/*
+ * Changes reach the flash only once they have been left alone this long.
+ * Every flash write stalls both cores for whatever runs from flash, the
+ * erase of a full page for 30-50 ms: dragging a volume slider on the
+ * server page wrote on every step and stalled the capture loop for 53 ms
+ * against 40 ms of I2S buffering -- lost audio on every client and a gap
+ * on the server's own speaker (2026-10-02). Now one write per gesture.
+ */
+#define STORE_WRITE_DELAY_MS 3000
+#define STORE_TASK_STACK     4096 /* internal RAM: it writes flash */
+
+/* Guarded by s_lock: entries not yet in NVS, and keys of evicted entries
+ * still to be erased there. */
+static bool s_dirty[CLIENT_STORE_MAX];
+static char s_erase_keys[CLIENT_STORE_MAX][NVS_KEY_NAME_MAX_SIZE];
+static size_t s_erase_count;
+static TaskHandle_t s_store_task;
+
 static void make_key(const char *id, char key[NVS_KEY_NAME_MAX_SIZE])
 {
     uint32_t hash = 2166136261U;
@@ -61,6 +80,66 @@ static stored_t *find_unsafe(const char *id)
     return NULL;
 }
 
+/* Writes every pending change to NVS, one entry at a time. */
+static void store_flush(void)
+{
+    nvs_handle_t handle;
+    esp_err_t result = nvs_open(STORE_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open failed: %s", esp_err_to_name(result));
+        return;
+    }
+
+    for (;;) {
+        char key[NVS_KEY_NAME_MAX_SIZE];
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        if (s_erase_count == 0U) {
+            xSemaphoreGive(s_lock);
+            break;
+        }
+        strlcpy(key, s_erase_keys[--s_erase_count], sizeof(key));
+        xSemaphoreGive(s_lock);
+        (void)nvs_erase_key(handle, key);
+    }
+
+    for (size_t i = 0; i < CLIENT_STORE_MAX; ++i) {
+        stored_t entry;
+        xSemaphoreTake(s_lock, portMAX_DELAY);
+        const bool dirty = s_dirty[i];
+        s_dirty[i] = false;
+        entry = s_entries[i];
+        xSemaphoreGive(s_lock);
+        if (!dirty || entry.id[0] == '\0') {
+            continue;
+        }
+
+        char key[NVS_KEY_NAME_MAX_SIZE];
+        make_key(entry.id, key);
+        result = nvs_set_blob(handle, key, &entry, sizeof(entry));
+        if (result != ESP_OK) {
+            ESP_LOGW(TAG, "Storing settings for %s failed: %s", entry.id, esp_err_to_name(result));
+        }
+    }
+
+    result = nvs_commit(handle);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_commit failed: %s", esp_err_to_name(result));
+    }
+    nvs_close(handle);
+}
+
+static void store_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        (void)ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        /* Wait until nothing changed for STORE_WRITE_DELAY_MS. */
+        while (ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(STORE_WRITE_DELAY_MS)) != 0U) {
+        }
+        store_flush();
+    }
+}
+
 esp_err_t client_store_init(void)
 {
     if (s_entries != NULL) {
@@ -75,6 +154,11 @@ esp_err_t client_store_init(void)
     if (s_entries == NULL || s_lock == NULL) {
         ESP_LOGE(TAG, "Out of memory");
         return ESP_ERR_NO_MEM;
+    }
+    if (xTaskCreatePinnedToCore(store_task, "client_store", STORE_TASK_STACK, NULL, 1,
+                                &s_store_task, 0) != pdPASS) {
+        s_store_task = NULL; /* then client_store_put() writes right away */
+        ESP_LOGW(TAG, "No store task, settings are written immediately");
     }
 
     nvs_handle_t handle;
@@ -180,27 +264,20 @@ void client_store_put(const char *id, const client_store_entry_t *entry)
     }
     next.seq = ++s_seq;
     *slot = next;
+    s_dirty[slot - s_entries] = true;
+    if (evicted_key[0] != '\0' && s_erase_count < CLIENT_STORE_MAX) {
+        char key[NVS_KEY_NAME_MAX_SIZE];
+        make_key(id, key);
+        if (strcmp(evicted_key, key) != 0) {
+            strlcpy(s_erase_keys[s_erase_count++], evicted_key, NVS_KEY_NAME_MAX_SIZE);
+        }
+    }
     xSemaphoreGive(s_lock);
 
-    char key[NVS_KEY_NAME_MAX_SIZE];
-    make_key(id, key);
-
-    nvs_handle_t handle;
-    esp_err_t result = nvs_open(STORE_NVS_NAMESPACE, NVS_READWRITE, &handle);
-    if (result != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_open failed: %s", esp_err_to_name(result));
-        return;
-    }
-    if (evicted_key[0] != '\0' && strcmp(evicted_key, key) != 0) {
-        (void)nvs_erase_key(handle, evicted_key);
-    }
-    result = nvs_set_blob(handle, key, &next, sizeof(next));
-    if (result == ESP_OK) {
-        result = nvs_commit(handle);
-    }
-    nvs_close(handle);
-    if (result != ESP_OK) {
-        ESP_LOGW(TAG, "Storing settings for %s failed: %s", id, esp_err_to_name(result));
+    if (s_store_task != NULL) {
+        xTaskNotifyGive(s_store_task);
+    } else {
+        store_flush();
     }
 }
 
@@ -216,6 +293,8 @@ void client_store_erase_all(void)
     if (s_entries != NULL) {
         xSemaphoreTake(s_lock, portMAX_DELAY);
         memset(s_entries, 0, sizeof(*s_entries) * CLIENT_STORE_MAX);
+        memset(s_dirty, 0, sizeof(s_dirty));
+        s_erase_count = 0;
         xSemaphoreGive(s_lock);
     }
 }

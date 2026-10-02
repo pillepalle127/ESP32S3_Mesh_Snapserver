@@ -12,9 +12,10 @@
  * All entries are read into RAM once by client_store_init(), and lookups
  * only ever touch that copy: the Hello that needs them is handled in a
  * task whose stack lives in PSRAM, and flash access from such a task is
- * not allowed. client_store_put() does write flash, synchronously, and so
- * must be called from a task with an internal-RAM stack (the JSON-RPC
- * connection tasks and the HTTP server are).
+ * not allowed. client_store_put() leaves the flash write to its own task
+ * (internal-RAM stack); only if that task could not be created does it
+ * write synchronously, so callers should still have an internal-RAM stack
+ * (the JSON-RPC connection tasks and the HTTP server do).
  */
 #pragma once
 
@@ -44,8 +45,8 @@ esp_err_t client_store_init(void);
 bool client_store_get(const char *id, client_store_entry_t *out);
 
 /*
- * Stores the settings for id, in RAM and in NVS. Skips the flash write if
- * nothing changed. Internal-RAM stack required, see above.
+ * Stores the settings for id: in RAM at once, in NVS once nothing changed
+ * for a few seconds (see STORE_WRITE_DELAY_MS). Skips it if nothing changed.
  */
 void client_store_put(const char *id, const client_store_entry_t *entry);
 
