@@ -1725,6 +1725,14 @@ static void stats_task(void *arg)
             audio_i2s_take_output_peak(&peak_left, &peak_right);
             ESP_LOGI(TAG, "DSP output peak: left=%d right=%d (of 32767), I2S clock %+ld ppm",
                      (int)peak_left, (int)peak_right, (long)audio_i2s_clock_ppm());
+            uint32_t tx_dry = 0;
+            uint32_t rx_lost = 0;
+            audio_i2s_take_dma_stats(&tx_dry, &rx_lost);
+            if (tx_dry != 0U || rx_lost != 0U) {
+                ESP_LOGW(TAG, "I2S DMA: TX ran dry %lu x, RX overflowed %lu x (%u ms each)",
+                         (unsigned long)tx_dry, (unsigned long)rx_lost,
+                         (unsigned)(AUDIO_I2S_DMA_FRAME_NUM * 1000U / AUDIO_I2S_SAMPLE_RATE));
+            }
             uint32_t limited = 0;
             float limit_db = 0.0f;
             audio_i2s_take_limiter_stats(&limited, &limit_db);

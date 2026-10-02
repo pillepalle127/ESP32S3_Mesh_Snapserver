@@ -170,6 +170,13 @@ esp_err_t audio_i2s_capture_mono(int16_t *mono, size_t mono_samples);
 void audio_i2s_take_output_peak(int16_t *left, int16_t *right);
 
 /*
+ * Reads and clears how many DMA buffers (AUDIO_I2S_DMA_FRAME_NUM samples
+ * each) went out on TX without new audio -- the output ran dry, a click --
+ * and how many captured RX buffers were overwritten before being read.
+ */
+void audio_i2s_take_dma_stats(uint32_t *tx_underflows, uint32_t *rx_overflows);
+
+/*
  * Safety limiter at the end of both output branches (-0.5 dBFS): samples it
  * had to pull down since the last call, and the deepest reduction in dB
  * (0 when it never acted). Clears on read, like the peak above.
