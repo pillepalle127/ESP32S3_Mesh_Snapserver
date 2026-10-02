@@ -159,15 +159,14 @@ their buffer into the same chain.
 |---|---|---|---|
 | Buffer, delay, delay pot | X | X | - |
 | Mono (L+R)/2 | X | X | - |
-| LR4 crossover | - | X | (X) |
-| Subsonic high-pass | - | X | (X) |
-| Gain sub / wideband | - | X | (X) |
-| Sub phase 180° | - | X | (X) |
+| Subsonic high-pass | - | X | X |
+| Gain sub / wideband | - | X | X |
+| Sub phase 180° | - | X | X |
 | Compressor | X | X | - |
 | Pot, volume | X | X | X |
 | Limiter −0.5 dBFS, 1.3 ms look-ahead | X | X | X |
 
-**X** active, **-** off, **(X)** as the crossover is set.
+**X** available, **-** not available.
 
 Only the buffer, the delay and the limiter's look-ahead (1.3 ms) add latency. Announcements bypass everything that
 delays.

@@ -161,15 +161,14 @@ Clients spielen aus ihrem Puffer in dieselbe Kette.
 |---|---|---|---|
 | Puffer, Delay, Delay-Poti | X | X | - |
 | Mono (L+R)/2 | X | X | - |
-| Weiche LR4 | - | X | (X) |
-| Subsonic-Hochpass | - | X | (X) |
-| Gain Sub / Breitband | - | X | (X) |
-| Sub-Phase 180° | - | X | (X) |
+| Subsonic-Hochpass | - | X | X |
+| Gain Sub / Breitband | - | X | X |
+| Sub-Phase 180° | - | X | X |
 | Kompressor | X | X | - |
 | Poti, Lautstärke | X | X | X |
 | Begrenzer −0,5 dBFS, 1,3 ms Vorausschau | X | X | X |
 
-**X** aktiv, **-** aus, **(X)** wie die Weiche eingestellt ist.
+**X** verfügbar, **-** nicht verfügbar.
 
 Nur Puffer, Delay und die Vorausschau des Begrenzers (1,3 ms) verzögern. Durchsagen umgehen alles, was
 verzögert.
