@@ -159,15 +159,17 @@ Clients spielen aus ihrem Puffer in dieselbe Kette.
 
 | Stufe, in Reihenfolge | Weiche aus | Weiche an | Durchsage |
 |---|---|---|---|
-| Puffer, Delay, Delay-Poti | an | an | umgangen |
-| Mono (L+R)/2 | an | an | – |
-| Weiche LR4 | – | an | wie eingestellt |
-| Subsonic-Hochpass | – | an | wie eingestellt |
-| Gain Sub / Breitband | – | an | wie eingestellt |
-| Sub-Phase 180° | – | an | wie eingestellt |
-| Kompressor | an | an | aus |
-| Poti, Lautstärke | an | an | an |
-| Begrenzer −0,5 dBFS, 1,3 ms Vorausschau | an | an | ohne Vorausschau |
+| Puffer, Delay, Delay-Poti | X | X | - |
+| Mono (L+R)/2 | X | X | - |
+| Weiche LR4 | - | X | (X) |
+| Subsonic-Hochpass | - | X | (X) |
+| Gain Sub / Breitband | - | X | (X) |
+| Sub-Phase 180° | - | X | (X) |
+| Kompressor | X | X | - |
+| Poti, Lautstärke | X | X | X |
+| Begrenzer −0,5 dBFS, 1,3 ms Vorausschau | X | X | X |
+
+**X** aktiv, **-** aus, **(X)** wie die Weiche eingestellt ist.
 
 Nur Puffer, Delay und die Vorausschau des Begrenzers (1,3 ms) verzögern. Durchsagen umgehen alles, was
 verzögert.
@@ -271,7 +273,9 @@ Eine WS2812 blitzt beim Start rot, grün und blau und zeigt danach den Zustand:
 
 ---
 
-## Sprachdurchsagen
+## SnapAnnounce App
+
+<img src="docs/snapannounce-icon.png" alt="SnapAnnounce-Icon" width="72" align="left">
 
 Mit **SnapAnnounce** startet ihr Durchsagen direkt im Mesh. Ohne extra Hardware und ohne Kabel, alles übers Handy.
 Leider nur für Android, ich habe keinen Mac und kaufe mir auch keinen.

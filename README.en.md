@@ -157,15 +157,17 @@ their buffer into the same chain.
 
 | Stage, in order | Crossover off | Crossover on | Announcement |
 |---|---|---|---|
-| Buffer, delay, delay pot | on | on | bypassed |
-| Mono (L+R)/2 | on | on | – |
-| LR4 crossover | – | on | as set |
-| Subsonic high-pass | – | on | as set |
-| Gain sub / wideband | – | on | as set |
-| Sub phase 180° | – | on | as set |
-| Compressor | on | on | off |
-| Pot, volume | on | on | on |
-| Limiter −0.5 dBFS, 1.3 ms look-ahead | on | on | without look-ahead |
+| Buffer, delay, delay pot | X | X | - |
+| Mono (L+R)/2 | X | X | - |
+| LR4 crossover | - | X | (X) |
+| Subsonic high-pass | - | X | (X) |
+| Gain sub / wideband | - | X | (X) |
+| Sub phase 180° | - | X | (X) |
+| Compressor | X | X | - |
+| Pot, volume | X | X | X |
+| Limiter −0.5 dBFS, 1.3 ms look-ahead | X | X | X |
+
+**X** active, **-** off, **(X)** as the crossover is set.
 
 Only the buffer, the delay and the limiter's look-ahead (1.3 ms) add latency. Announcements bypass everything that
 delays.
@@ -266,7 +268,9 @@ A WS2812 flashes red, green and blue at startup and then shows the state:
 
 ---
 
-## Announcements
+## SnapAnnounce App
+
+<img src="docs/snapannounce-icon.png" alt="SnapAnnounce icon" width="72" align="left">
 
 With **SnapAnnounce** you start announcements right in the mesh. No extra hardware, no cables, all from your phone.
 Android only, sorry: I don't have a Mac and I'm not buying one.
