@@ -97,26 +97,24 @@ static const char *TAG = "AUDIO_SINK";
 #define RING_BYTES_PER_MS    ((AUDIO_I2S_SAMPLE_RATE / 1000U) * sizeof(int16_t))
 
 /*
- * A chunk timestamp that misses the buffered stream's continuation by more
- * than this is a discontinuity. The buffered audio is kept and only the
- * timeline follows the shift -- the usual cause is the *server* correcting
- * its own capture timeline (TIMESTAMP_RESYNC_THRESHOLD_US in audio_i2s.c),
- * which relabels its timestamps without interrupting the audio itself.
- * Measured on device: with four clients the server's capture loop ran
- * ~450 us per frame behind, hit its 100 ms threshold every ~4.5 s and
- * re-anchored. Dropping the buffer for that meant re-prebuffering 2.4 s
- * every 4.5 s, i.e. near-permanent silence.
+ * Every chunk is checked against where the previous one ended, and any
+ * difference is followed: the buffered audio is kept and only its labelling
+ * moves. The usual cause is the *server* correcting its own capture
+ * timeline (audio_i2s.c): a slew of a few us per frame, or a re-anchor
+ * (TIMESTAMP_RESYNC_THRESHOLD_US) that relabels its timestamps without
+ * interrupting the audio itself. Dropping the buffer for that meant
+ * re-prebuffering 2.4 s every few seconds, i.e. near-permanent silence.
  *
- * Half a re-anchor, on purpose. At 100 ms, as before, the server's
- * 103-104 ms re-anchors sat right on the threshold: one client saw the
- * shift and followed it, the next measured just under and did not, and
- * the two played ~100 ms apart (an echo) until the second one happened to
- * see a later chunk above it (2026-10-01, reproducible by reloading the
- * server's page). It cannot go much lower either: while the player has a
- * frame staged for the resampler (up to ~20 ms) the ring looks that much
- * short, and 5 ms flagged a dozen false shifts a minute.
+ * A gap beyond this one is also stepped out right away
+ * (SHIFT_SNAP_THRESHOLD_US) instead of resampled. It used to be measured
+ * against the ring's fill, which looks up to ~20 ms short while the player
+ * has a frame staged, so only gaps above 50 ms could be told apart, and the
+ * server's slew piled up unseen until it did: each client then jumped
+ * 50 ms at its own moment, up to minutes apart, an echo until the last one
+ * followed (2026-10-02). Against the previous chunk's end the gap is exact,
+ * the same on every client, and the slew is followed as it happens.
  */
-#define STREAM_DISCONTINUITY_US (50LL * 1000LL)
+#define STREAM_DISCONTINUITY_US (5LL * 1000LL)
 
 /*
  * Beyond this the stream is treated as a genuinely new one and the buffer
@@ -138,9 +136,9 @@ static const char *TAG = "AUDIO_SINK";
 /*
  * Right after the timeline followed a shift (STREAM_DISCONTINUITY_US),
  * whatever scheduling error is left beyond this is removed in one step
- * too, not by resampling. A shift is only seen above 100 ms, and what is
- * left of it can land just under HARD_RESYNC_THRESHOLD_US: 96 ms measured
- * on 2026-10-01, which the 200 ppm control took minutes to work off -- an
+ * too, not by resampling. A shift used to be seen only above 100 ms, and
+ * what was left of it could land just under HARD_RESYNC_THRESHOLD_US: 96 ms
+ * measured on 2026-10-01, which the 200 ppm control took minutes to work off -- an
  * echo against the other speakers all that time. One short hold or skip
  * is the lesser evil.
  */
@@ -245,6 +243,9 @@ static int64_t s_last_stats_us;
 static int64_t s_head_ts_us;
 static int64_t s_head_ts_remainder;
 static bool s_head_ts_valid;
+/* Server timestamp where the last chunk written to the ring ended, see
+ * STREAM_DISCONTINUITY_US. Guarded by the ring lock. */
+static int64_t s_next_chunk_ts_us;
 
 /* server_clock - local esp_timer clock, from snapclient.c's time sync. */
 static volatile int64_t s_server_offset_us;
@@ -1322,15 +1323,7 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm,
     if (!s_head_ts_valid || s_ring.fill == 0U) {
         timeline_anchor_locked(chunk_ts_us);
     } else {
-        /*
-         * Ignores the one or two samples the player may still hold staged
-         * in front of the ring (~40 us) -- irrelevant against a 100 ms
-         * threshold, and reading its counter from this task would be a
-         * cross-task read for no benefit.
-         */
-        const int64_t expected_us =
-            s_head_ts_us + samples_to_us((int64_t)(s_ring.fill / sizeof(int16_t)));
-        const int64_t gap_us = chunk_ts_us - expected_us;
+        const int64_t gap_us = chunk_ts_us - s_next_chunk_ts_us;
         if (gap_us > STREAM_RESTART_US || gap_us < -STREAM_RESTART_US) {
             s_ring.write_pos = 0;
             s_ring.read_pos = 0;
@@ -1340,22 +1333,30 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm,
             s_timeline_reset_pending = true;
             s_shift_snap_pending = false;
             s_discontinuity_count++;
-        } else if (gap_us > STREAM_DISCONTINUITY_US || gap_us < -STREAM_DISCONTINUITY_US) {
+        } else if (gap_us != 0) {
             /*
              * Follow the shift and keep everything buffered: the audio is
              * still continuous, only its labelling moved. The scheduler
-             * sees the error change by gap_us and corrects that much once,
-             * instead of the buffer being thrown away and rebuilt.
+             * sees the error change by gap_us; a slew's few us are left to
+             * the resampler, a step is taken out at once.
              */
             s_head_ts_us += gap_us;
-            s_timeline_shift_count++;
-            s_shift_snap_pending = true;
+            if (gap_us > STREAM_DISCONTINUITY_US || gap_us < -STREAM_DISCONTINUITY_US) {
+                s_timeline_shift_count++;
+                s_shift_snap_pending = true;
+            }
         }
     }
     xSemaphoreGive(s_ring.lock);
 
     const size_t written =
         ring_write(&s_ring, (const uint8_t *)mono_pcm, sample_count * sizeof(int16_t));
+
+    /* Whatever did not fit shows up as a gap in front of the next chunk. */
+    xSemaphoreTake(s_ring.lock, portMAX_DELAY);
+    s_next_chunk_ts_us = chunk_ts_us + samples_to_us((int64_t)(written / sizeof(int16_t)));
+    xSemaphoreGive(s_ring.lock);
+
     s_network_bytes_fed += written;
     if (written < sample_count * sizeof(int16_t)) {
         s_network_bytes_dropped += (sample_count * sizeof(int16_t)) - written;
