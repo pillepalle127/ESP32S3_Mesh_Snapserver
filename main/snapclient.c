@@ -142,14 +142,25 @@ typedef struct __attribute__((packed)) {
 #define SNAP_TIME_SLOW_INTERVAL_US  (1000LL * 1000LL)
 
 /*
- * Offset estimates are kept in a sliding window and the one with the
- * smallest round trip wins, rather than averaging: in a multi-hop mesh the
- * RTT distribution has a long tail (retries, parent scans), and a delayed
- * packet biases its own offset estimate by roughly half the excess delay.
- * The least-delayed sample is the least biased one -- same approach the
- * reference snapclient uses.
+ * Offset estimates are kept in a sliding window. Only the least-delayed
+ * third of it is used: in a multi-hop mesh the RTT distribution has a long
+ * tail (retries, parent scans), and a delayed packet biases its own offset
+ * estimate by roughly half the excess delay. Through those a straight line
+ * is fitted -- offset now plus the crystals' drift -- and its value at the
+ * present moment is published.
+ *
+ * Was: the single fastest of the last 12 measurements. When it left the
+ * window the clock jumped by that sample's own error, a few ms, and it was
+ * up to 12 s old while the crystals drift ~60 us/s apart. Every client
+ * wandered a few ms back and forth on its own, the stereo image with it
+ * (2026-10-02).
  */
-#define SNAP_TIME_WINDOW 12
+#define SNAP_TIME_WINDOW 64
+#define SNAP_TIME_MIN_FIT 3
+
+/* A measurement this far off the fitted line means the server's clock
+ * moved (it adopted a PC client's wall clock); start over. */
+#define SNAP_TIME_JUMP_US (100LL * 1000LL)
 
 /* Discard obviously broken measurements instead of letting them into the
  * window at all. */
@@ -181,11 +192,15 @@ static int16_t *s_mono_pcm; /* opus_decode() output down-mixed to mono */
 typedef struct {
     int64_t rtt_us;
     int64_t offset_us; /* server clock minus local esp_timer clock */
+    int64_t local_us;  /* esp_timer midway through the exchange */
 } time_measurement_t;
 
 static time_measurement_t s_time_window[SNAP_TIME_WINDOW];
 static size_t s_time_window_count;
 static size_t s_time_window_next;
+/* Last published offset, for the jump check and the log. */
+static int64_t s_time_published_us;
+static uint32_t s_time_publish_count;
 
 static uint16_t s_time_request_id;
 static int64_t s_time_request_sent_us;
@@ -469,23 +484,76 @@ static void time_sync_reset(void)
 }
 
 /*
- * Publishes the offset of the least-delayed measurement currently in the
- * window (see SNAP_TIME_WINDOW).
+ * Publishes the clock offset at this moment, see SNAP_TIME_WINDOW.
  */
-static void publish_best_offset(void)
+static void publish_offset(void)
 {
-    if (s_time_window_count == 0U) {
+    const size_t n = s_time_window_count;
+    if (n == 0U) {
         return;
     }
 
-    size_t best = 0;
-    for (size_t i = 1; i < s_time_window_count; ++i) {
-        if (s_time_window[i].rtt_us < s_time_window[best].rtt_us) {
-            best = i;
+    /* The fastest third, at least SNAP_TIME_MIN_FIT, by selection. */
+    size_t order[SNAP_TIME_WINDOW];
+    for (size_t i = 0; i < n; ++i) {
+        order[i] = i;
+    }
+    size_t used = n / 3U;
+    if (used < SNAP_TIME_MIN_FIT) {
+        used = (n < SNAP_TIME_MIN_FIT) ? n : SNAP_TIME_MIN_FIT;
+    }
+    for (size_t i = 0; i < used; ++i) {
+        size_t best = i;
+        for (size_t j = i + 1U; j < n; ++j) {
+            if (s_time_window[order[j]].rtt_us < s_time_window[order[best]].rtt_us) {
+                best = j;
+            }
+        }
+        const size_t tmp = order[i];
+        order[i] = order[best];
+        order[best] = tmp;
+    }
+
+    /* Least squares, x in s before now, y in us relative to the fastest
+     * sample; the intercept is the offset now. */
+    const int64_t now_us = esp_timer_get_time();
+    const int64_t base_us = s_time_window[order[0]].offset_us;
+    double sx = 0.0, sy = 0.0, sxx = 0.0, sxy = 0.0;
+    for (size_t i = 0; i < used; ++i) {
+        const time_measurement_t *m = &s_time_window[order[i]];
+        const double x = (double)(m->local_us - now_us) / 1e6;
+        const double y = (double)(m->offset_us - base_us);
+        sx += x;
+        sy += y;
+        sxx += x * x;
+        sxy += x * y;
+    }
+    const double count = (double)used;
+    const double denom = count * sxx - sx * sx;
+    double drift_ppm = 0.0;
+    double offset_now = sy / count;
+    /* A slope needs samples spread over time; a wild one (several crystals'
+     * worth) means too few or bad ones, and the mean is safer. */
+    if (used >= SNAP_TIME_MIN_FIT && denom > 1e-9) {
+        const double slope = (count * sxy - sx * sy) / denom;
+        if (slope > -500.0 && slope < 500.0) {
+            drift_ppm = slope;
+            offset_now = (sy - slope * sx) / count;
         }
     }
 
-    audio_sink_set_server_time_offset(s_time_window[best].offset_us, true);
+    const int64_t offset_us = base_us + (int64_t)offset_now;
+    const int64_t step_us = offset_us - s_time_published_us;
+    s_time_published_us = offset_us;
+    audio_sink_set_server_time_offset(offset_us, true);
+
+    if ((++s_time_publish_count % 30U) == 0U) {
+        ESP_LOGI(TAG, "Time sync: %u of %u samples, rtt %lld..%lld us, drift %+.1f ppm, last step %+lld us",
+                 (unsigned)used, (unsigned)n,
+                 (long long)s_time_window[order[0]].rtt_us,
+                 (long long)s_time_window[order[used - 1U]].rtt_us,
+                 drift_ppm, (long long)step_us);
+    }
 }
 
 /*
@@ -548,14 +616,25 @@ static void handle_time_reply(const snap_base_t *header)
 
     const int64_t offset_us = ((t2 - t1) + (t3 - t4)) / 2;
 
+    if (s_time_window_count >= SNAP_TIME_MIN_FIT) {
+        const int64_t off_line_us = offset_us - s_time_published_us;
+        if (off_line_us > SNAP_TIME_JUMP_US + rtt_us || off_line_us < -SNAP_TIME_JUMP_US - rtt_us) {
+            ESP_LOGW(TAG, "Server clock moved by %lld ms, time sync starts over",
+                     (long long)(off_line_us / 1000LL));
+            s_time_window_count = 0;
+            s_time_window_next = 0;
+        }
+    }
+
     s_time_window[s_time_window_next].rtt_us = rtt_us;
     s_time_window[s_time_window_next].offset_us = offset_us;
+    s_time_window[s_time_window_next].local_us = t1 + (t4 - t1) / 2;
     s_time_window_next = (s_time_window_next + 1U) % SNAP_TIME_WINDOW;
     if (s_time_window_count < SNAP_TIME_WINDOW) {
         s_time_window_count++;
     }
 
-    publish_best_offset();
+    publish_offset();
 }
 
 static esp_err_t opus_decoder_prepare(void)
