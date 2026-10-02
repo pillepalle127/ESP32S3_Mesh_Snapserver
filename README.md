@@ -176,8 +176,10 @@ verzögert.
 
 ## Synchronisation
 
-Die Clients gleichen ihre Uhr laufend mit dem Server ab und spielen jeden Block zu seiner Soll-Zeit. Kleine
-Abweichungen gleicht ein Resampler aus, große ein harter Sprung. Der Regelfehler liegt bei wenigen Millisekunden.
+Die Clients gleichen ihre Uhr laufend mit dem Server ab und spielen jeden Block zu seiner Soll-Zeit. Die Uhr ergibt
+sich aus einer Ausgleichsgeraden durch die schnellsten Messungen der letzten 64 s. Kleine Abweichungen gleicht ein
+Resampler aus. Korrigiert der Server seine Zeitachse, springen alle Clients beim selben Block. Bei mir liegen die
+Lautsprecher damit unter 2–3 ms beieinander.
 
 ---
 

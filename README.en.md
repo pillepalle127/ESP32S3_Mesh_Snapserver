@@ -174,8 +174,9 @@ delays.
 
 ## Synchronisation
 
-The clients keep their clock aligned with the server and play every block at its scheduled time. A resampler
-corrects small deviations, large ones cause a hard jump. The remaining error is a few milliseconds.
+The clients keep their clock aligned with the server and play every block at its scheduled time. The clock comes from
+a line fitted through the fastest measurements of the last 64 s. A resampler corrects small deviations. When the server
+corrects its timeline, all clients jump at the same block. Here the speakers stay within 2–3 ms of each other.
 
 ---
 
