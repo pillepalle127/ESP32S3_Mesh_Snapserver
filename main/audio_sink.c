@@ -147,6 +147,17 @@ static const char *TAG = "AUDIO_SINK";
 #define SHIFT_SNAP_THRESHOLD_US (1LL * 1000LL)
 
 /*
+ * An error beyond this that lasts SOFT_RESYNC_FRAMES in a row is stepped
+ * out the same way, whatever caused it. Below HARD_RESYNC_THRESHOLD_US it
+ * used to be left to the PI control, which pulls in ~1.5 ms per 30 s: after
+ * a reconnect 7788 sat 18 ms behind the others for many minutes, an echo
+ * (2026-10-02). Single frames scatter by a few ms (the TX DMA works in 5 ms
+ * blocks); half a second in a row is no outlier.
+ */
+#define SOFT_RESYNC_THRESHOLD_US (5LL * 1000LL)
+#define SOFT_RESYNC_FRAMES       25
+
+/*
  * PI gains for the fine correction, in ppm per us of error and ppm per
  * (us * s) of accumulated error. Deliberately slow: a 10 ms error asks for
  * ~15 ppm, which is inaudible and still closes that gap in well under a
@@ -952,9 +963,22 @@ static bool render_network_frame(int16_t *playout_mono)
          * Holding until the error is actually gone starts playback on time
          * and leaves the controller nothing but real crystal drift to do.
          */
-        /* Just after a shift the step threshold is SHIFT_SNAP_THRESHOLD_US. */
-        const bool snap = s_shift_snap_pending;
+        /* Just after a shift, or after SOFT_RESYNC_FRAMES off by more than
+         * SOFT_RESYNC_THRESHOLD_US, the step threshold is
+         * SHIFT_SNAP_THRESHOLD_US. */
+        static int off_frames;
+        bool snap = s_shift_snap_pending;
         s_shift_snap_pending = false;
+        if (error_us > SOFT_RESYNC_THRESHOLD_US || error_us < -SOFT_RESYNC_THRESHOLD_US) {
+            if (++off_frames >= SOFT_RESYNC_FRAMES) {
+                snap = true;
+            }
+        } else {
+            off_frames = 0;
+        }
+        if (snap) {
+            off_frames = 0;
+        }
         const int64_t step_us = snap ? SHIFT_SNAP_THRESHOLD_US : HARD_RESYNC_THRESHOLD_US;
 
         if (error_us > step_us || (holding && error_us > 0)) {
