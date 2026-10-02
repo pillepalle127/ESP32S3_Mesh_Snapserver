@@ -1411,8 +1411,20 @@ void audio_sink_set_server_time_offset(int64_t offset_us, bool valid)
 
 void audio_sink_set_stream_timing(uint32_t buffer_ms, int32_t latency_ms)
 {
-    s_stream_buffer_us = (int64_t)buffer_ms * 1000LL;
-    s_stream_latency_us = (int64_t)latency_ms * 1000LL;
+    const int64_t buffer_us = (int64_t)buffer_ms * 1000LL;
+    const int64_t latency_us = (int64_t)latency_ms * 1000LL;
+    /*
+     * A new latency or buffer moves the schedule; take it in one step like
+     * a shift (SHIFT_SNAP_THRESHOLD_US). Below HARD_RESYNC_THRESHOLD_US it
+     * was left to the PI control, which needed minutes for 55 ms -- no way
+     * to set a speaker's delay by ear (2026-10-02). ServerSettings also
+     * arrive for every volume change, so only an actual change counts.
+     */
+    if (buffer_us != s_stream_buffer_us || latency_us != s_stream_latency_us) {
+        s_stream_buffer_us = buffer_us;
+        s_stream_latency_us = latency_us;
+        s_shift_snap_pending = true;
+    }
 }
 
 void audio_sink_set_volume(int32_t percent, bool muted)
@@ -1462,7 +1474,10 @@ void audio_sink_set_local_input_threshold_db(int8_t threshold_db)
 
 void audio_sink_set_delay_trim_ms(int16_t delay_trim_ms)
 {
-    s_delay_trim_ms = delay_trim_ms;
+    if (delay_trim_ms != s_delay_trim_ms) {
+        s_delay_trim_ms = delay_trim_ms;
+        s_shift_snap_pending = true; /* see audio_sink_set_stream_timing() */
+    }
 }
 
 void audio_sink_apply_delay_trim(uint8_t role, uint16_t buffer_ms, int16_t trim_ms)
