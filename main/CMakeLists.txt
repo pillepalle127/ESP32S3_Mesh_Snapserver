@@ -38,7 +38,15 @@ idf_component_register(
         mesh_lite
         espressif__iot_bridge
 		json
+        espressif__tinyusb
+        usb
 )
+
+# TinyUSB reads its configuration from a tusb_config.h on its own include
+# path. Ours is in main/tusb; the one esp_tinyusb would bring is replaced
+# by an empty stand-in, see components/esp_tinyusb.
+idf_component_get_property(tusb_lib espressif__tinyusb COMPONENT_LIB)
+target_include_directories(${tusb_lib} PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/tusb")
 
 # The config page goes out gzip-compressed (49 KB -> 14 KB). Sending it
 # uncompressed took ~300 ms per load and slowed the server's capture loop

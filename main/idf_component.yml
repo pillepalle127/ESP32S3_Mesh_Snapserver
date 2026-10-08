@@ -4,3 +4,4 @@ dependencies:
   esphome/micro-opus: "^0.4.1"
   espressif/mesh_lite: "^1.0.2"
   espressif/mdns: "^1.2"
+  espressif/tinyusb: "^0.21.0"
