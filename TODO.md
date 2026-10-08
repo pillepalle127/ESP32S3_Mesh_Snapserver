@@ -1,5 +1,36 @@
 # Bugfix-Backlog
 
+## Offen, Stand 2026-10-07
+
+Kurzliste; Einzelheiten in den Einträgen weiter unten.
+
+- **Nächste Release-Notizen:** Slave-Takt 80 MHz und Glitch-Filter auf
+  BCLK/LRCLK (in v0.5.2 als Änderung genannt) sind wieder ausgebaut,
+  siehe „Knistern am 7788“. Der Ein/Aus-Taster schaltet erst nach 1 s
+  Halten ein.
+- **Features:** OTA über die Web-Seite; USB-Audio (Server-Eingang,
+  Client als Mikrofon); Root-Failover-Wächter im Client; Erkennung, ob das
+  Handy bei Durchsagen direkt am Root hängt.
+- **Ein/Aus-Taster:** Ausstehende Client-Einstellungen (3 s verzögert
+  gespeichert) gehen beim Ausschalten verloren; es fehlt ein Flush in
+  `client_store` vor dem Deep Sleep.
+- **Rechenzeit:** Opus als Fixed-Point messen; Encoder-Anstieg während
+  Durchsagen; `tiT`/`wifi` auf Kern 0 während Durchsagen.
+- **Durchsage:** Tests 1–5; `voice_dropped` (Mailbox-Größe);
+  `docs/code-review-voice.md` nachziehen.
+- **Mesh/Robustheit:** Relay mit mehreren Kindern; hängender Zweig am
+  Server; Einbruch beim Abgang eines Clients; `SNAPSERVER_MAX_CLIENTS = 10`
+  ungetestet; Fusion-Intervall und Reconnect-Intervall beobachten;
+  Aussetzer beim Beitritt eines Clients.
+- **Messung:** Versatz Server ↔ Clients an den Lautsprechern;
+  `audio_i2s_clock_ppm()` reparieren oder entfernen.
+- **Aufräumen:** Diagnose-Code (`cpu_stats.c`, `heap … children=`,
+  Decodierzeit) behalten oder entfernen; Screenshots in `docs/`.
+- **Auf Hardware nicht abgehakt:** Pin-Seite, App-Geräteliste,
+  Provisioning (Stufe 5), Board mit weniger als 16 MB Flash.
+
+## Code-Analyse und Stufen 1–6
+
 Aus einer Code-Analyse (2026-09-16) auf `test/fixup`. Alle identifizierten
 Bugs sind umgesetzt:
 
@@ -39,7 +70,7 @@ Bugs sind umgesetzt:
   Save), und ein Save während aktivem Provisioning-AP rebootet jetzt immer.
   Auf dem Gerät verifiziert: normaler Mesh-Boot ohne Regression, Config-Web-
   server startet jetzt vor Audio-Init. Nicht auf dem Gerät verifizierbar
-  (kein WLAN-fähiges Zweitgerät in dieser Sandbox verfügbar): Passwort-
+  (damals kein WLAN-fähiges Zweitgerät verfügbar): Passwort-
   Ablehnung <8 Zeichen per curl, 32-Zeichen-SSID im WLAN-Scan, volles
   3-Minuten-Timeout-ohne-Reboot-Fenster, Stresstest paralleler Saves
   während des Grace-Windows — siehe Plan-Datei für den vollständigen
@@ -67,13 +98,85 @@ Bugs sind umgesetzt:
   Wert aus `device_config`, Client dimensioniert seinen Ringpuffer danach).
   Auf dem Gerät verifiziert: Build sauber, sowohl mit
   `CONFIG_SNAPSERVER_ENABLE_MESH_LITE=y` als auch `=n`. Nicht verifiziert
-  (kein zweites WLAN-fähiges Testgerät in dieser Sandbox verfügbar):
+  (damals kein zweites WLAN-fähiges Testgerät verfügbar):
   tatsächlicher Mesh-Join als Non-Root, Snapcast-Wiedergabe, automatische
   Quellenumschaltung auf den lokalen Eingang, Rollenwechsel per Reboot.
   Stufe 2 (noch offen): Zeit-Sync (`SNAP_MSG_TIME`) und Drift-Kompensation,
   damit mehrere Clients über Stunden synchron bleiben — siehe Plan-Datei.
 
 ## Nicht als Bug, aber vorgemerkt
+
+- **Knistern am 7788 als I2S-Slave eines ADAU1701 (2026-10-02; vorerst als
+  gelöst betrachtet 2026-10-07, bei Bedarf neu aufmachen).** 7788 bekommt
+  BCLK/LRCLK vom ADAU1701 und knisterte mehrmals pro Minute; 14E4 spielte
+  denselben Stream sauber. Gemessen: stummgeschaltet kein Knistern; leiser
+  gedreht bleiben die Klicks gleich laut, also kein Clipping. Die ESP-Seite
+  lieferte lückenlos (Zähler für TX-Leerlauf 0, keine Sprünge, kein
+  Unterlauf im Ring). Ohne hörbare Wirkung versucht: DOUT mit 5 mA
+  (sofort zurückgenommen), Slave-Takt 80 MHz statt 24,576 MHz und
+  Glitch-Filter auf BCLK/LRCLK (8505ab4, ausgebaut 2026-10-07; die
+  DMA-Zähler aus demselben Commit bleiben). Nicht mehr geprüft: Format des
+  Serial Ports in SigmaStudio (I2S, BCLK 64 fs), Clipping im DSP-Programm,
+  Serienwiderstände 33–47 Ω, Masse, Betrieb ohne USB-Isolator.
+
+- **Durchsage: Rechenzeit vor dem USB-Eingang klären (vorgemerkt
+  2026-09-30).** Reihenfolge: erst die beiden Kern-Punkte, dann NVS, dann
+  USB.
+  1. **Reserve auf Kern 1 bei Durchsagen.** Die Komplexität des
+     Musik-Encoders sinkt während einer Durchsage schon auf 0
+     (`VOICE_MUSIC_COMPLEXITY` in `voice_announce.c`). Offen: Opus als
+     Fixed-Point bauen (`CONFIG_OPUS_FLOATING_POINT=y` heute) und messen, ob
+     das auf dem S3 mit seiner FPU überhaupt schneller ist. Seit 2026-09-29
+     kosten Begrenzer-Vorausschau und Kompressor auf Kern 1 zusätzlich etwa
+     8 Prozentpunkte (14E4 als Client: `audio_sink` 44 → 52 %). Seit dem
+     Build mit `-O2` (9fcced3, 2026-10-02) braucht der Encoder laut
+     v0.5.2 etwa 75 statt 90–97 % eines Kerns.
+  2. **Anstieg von tiT/wifi auf Kern 0 bei Durchsagen verstehen.** Drei
+     UDP-Ströme mit je ~25 kbit/s erklären ihn nicht. Verdacht: viele kleine
+     Pakete, Retransmits oder das Mesh-Relay. Messen (Pakete je Sekunde,
+     Retransmits), bevor Kern 0 weitere Aufgaben bekommt.
+  3. **NVS-Schreibzugriffe in `client_store` entprellen (erledigt
+     2026-10-02, 3b60e7f).** Der Server schreibt erst 3 s nach der letzten
+     Änderung, in eigenem Task. Vorher stand die Aufnahmeschleife bei jedem
+     Schritt eines Lautstärke-Sliders 53 ms, bei 40 ms I2S-Puffer.
+  4. **USB-Audio, je Rolle eine Richtung, kein Duplex auf einem Gerät.**
+     - Server: USB als **Eingang** (UAC2-Wiedergabe vom PC), Feedback-Endpoint
+       auf dem I2S-Takt, Jitter-Puffer im PSRAM, USB-Task auf Kern 0.
+       Quellenwahl USB / I2S, etwa automatisch nach Aktivität.
+     - Client: USB als **Ausgang**, der Client ist USB-*Gerät* (UAC2-Aufnahme):
+       ein PC am Client bekommt den synchronen Mesh-Ton als Mikrofon. Takt
+       einfach, die Aufnahme läuft im geregelten I2S-Takt des Clients.
+       Nicht gemeint: Client als USB-Host für einen USB-DAC (Takt vom DAC,
+       `usb_host_uac` meist nur UAC 1.0, deutlich aufwendiger).
+     - Der native USB-Port gehört dann dem Audio; Log und Flashen über die
+       COM-Buchse (CH343) der YD-Boards.
+     - NVS: Die UAC2-Lautstärke vom PC nicht speichern (der PC setzt sie
+       beim Verbinden neu) oder nur nach Ruhezeit. Grund neben dem
+       Verschleiß: Jeder Flash-Schreib- oder Löschvorgang schaltet den Cache
+       ab, Code im Flash und das PSRAM (Jitter-Puffer) stehen dann bis zu
+       einige zehn ms. Deshalb Punkt 3 vorher, USB-Interrupts im IRAM, und
+       den Jitter-Puffer so groß, dass er einen Schreibvorgang überbrückt.
+
+- **Ein/Aus-Taster als Soft-Off per Deep Sleep (vorgemerkt 2026-09-30,
+  umgesetzt 2026-10-01, 4ba38ce).** Taster an einem RTC-fähigen Pin
+  (GPIO 1–21) gegen GND, wählbar auf der Pin-Seite. 2 s halten = aus: LED
+  dunkel, DOUT auf LOW gehalten (als Master auch BCLK/LRCLK), nach dem
+  Loslassen Deep Sleep. Grenze: Der Chip braucht im Deep Sleep µA, das
+  Board nicht -- LDO, Power-LED, WS2812 (~1 mA auch dunkel), PCM5102A und
+  CH343 ziehen weiter einige mA. Echtes Aus bleibt der Schalter am Poti.
+
+  Einschalten erst nach 1 s Halten (2026-10-08, auf Hardware noch nicht
+  getestet). Bis dahin weckte jeder Druck, ein Stoß in der Tasche schaltete
+  das Gerät ein. Jetzt prüft `power_button_boot()` als Erstes in
+  `app_main`, ob der Taster 1 s unten bleibt; sonst geht der ESP sofort
+  wieder schlafen, ohne NVS anzufassen und ohne die gehaltenen Pins
+  freizugeben. Zu prüfen: kurzer Druck bleibt aus, 1 s Halten schaltet
+  ein, Halten bis über 2 s schaltet danach nicht gleich wieder aus.
+  **Offen:**
+  `power_button.c` sichert keine ausstehenden NVS-Schreibvorgänge.
+  `client_store` schreibt seit 3b60e7f erst 3 s nach der letzten Änderung
+  und hat keine Flush-Funktion; wer den Server in diesen 3 s ausschaltet,
+  verliert die letzte Änderung.
 
 - **Pinbelegung und Geräteliste (2026-09-23), auf dem Gerät noch nicht
   getestet.** Gebaut mit IDF 5.4.3, die Webseite gegen eine nachgebaute API
@@ -105,9 +208,10 @@ Bugs sind umgesetzt:
   Daten (Prozessbindung ans WLAN), WebView-Dialog beim Factory Reset,
   Delay-Knöpfe auf schmalen Displays.
 
-- **Unkomplizierte Verteilung (umgesetzt 2026-09-23, erster Lauf steht
-  aus).** `.github/workflows/release.yml` baut bei einem Tag `v*` Firmware
-  (`espressif/esp-idf-ci-action`, IDF 5.4.3, nur aus `sdkconfig.defaults`)
+- **Unkomplizierte Verteilung (umgesetzt 2026-09-23, läuft seit v0.2.0;
+  zuletzt v0.5.3 am 2026-10-02 mit Firmware-Teilen, Gesamt-Image, APK und
+  `THIRD_PARTY_LICENSES.txt`).** `.github/workflows/release.yml` baut bei
+  einem Tag `v*` Firmware (`espressif/esp-idf-ci-action`, IDF 5.4.3, nur aus `sdkconfig.defaults`)
   und das signierte APK, hängt beides an das GitHub-Release und stellt die
   Flash-Seite (`flasher/`, ESP Web Tools) auf GitHub Pages. Ein manueller
   Lauf baut nur, als Probe vor dem Tag.
@@ -119,14 +223,15 @@ Bugs sind umgesetzt:
   - `sdkconfig.defaults` ergibt jetzt exakt das `sdkconfig` der Geräte
     (frischer Klon, 0 Abweichungen). Wer eine Option per `menuconfig`
     ändert, muss sie dort nachtragen, sonst baut CI etwas anderes.
-  - Der Keystore der App liegt beim Nutzer und als Secret in GitHub; geht
+  - Der Keystore der App liegt bei mir und als Secret in GitHub; geht
     er verloren, lässt sich die App nur noch per Deinstallieren updaten.
   - Offen: OTA über die Web-Oberfläche. Braucht OTA-Partitionen (siehe
     nächster Punkt) und einmal ein komplettes Neuflashen mit Löschen.
     Später denkbar: F-Droid oder Play Store.
 
-- **Firmware auch auf Boards mit weniger Flash (umgesetzt 2026-09-24, auf
-  Hardware noch ungetestet).** Image-Header auf 4 MB
+- **Firmware auch auf Boards mit weniger Flash (umgesetzt 2026-09-24; läuft
+  auf den 16-MB-Boards, ein Board mit 4 oder 8 MB Flash ist ungetestet).**
+  Image-Header auf 4 MB
   (`CONFIG_ESPTOOLPY_FLASHSIZE_4MB`), `partitions.csv` passt in 4 MB. Dasselbe
   Image läuft damit auf N8R8 und N16R8. ESP-IDF bricht nur ab, wenn der Chip
   *kleiner* ist als der Header (`esp_flash_spi_init.c`); ein größerer bleibt
@@ -218,7 +323,7 @@ Bugs sind umgesetzt:
   Router-Config) vermutlich nicht direkt zutrifft. `esp_mesh_lite_core`
   liegt nur als vorkompilierte `.a` vor (`lib/libesp_mesh_lite_esp32s3.a`),
   daher nicht quellcodeseitig verifizierbar, ob `disallowed_level` auch in
-  diesem Pfad greift. Risiko laut Nutzer als kritisch eingestuft: würde
+  diesem Pfad greift. Ich stufe das Risiko als kritisch ein: würde
   der Client dennoch Root werden, kollidiert er mit dem echten Server-Root
   und bleibt es dauerhaft, da nichts in unserem eigenen Code den
   Mesh-Level nach dem Boot überprüft.
@@ -231,8 +336,23 @@ Bugs sind umgesetzt:
 
   Pflicht-Testszenario vor Stufe 2: Server im laufenden Betrieb
   ausschalten, während ein Client verbunden ist, und das Client-Log
-  beobachten — aktuell ungetestet (kein zweites WLAN-fähiges Testgerät in
-  dieser Sandbox verfügbar).
+  beobachten — bisher ungetestet.
+
+  **Stand 2026-10-07, Doku von Mesh-Lite 1.0.2 nachgelesen:** Drei
+  Stellen sprechen dafür, dass der Fall nicht eintritt, belegt ist es
+  weiterhin nicht. (1) `User_Guide.md`, Abschnitt „Root Node Failure“:
+  „If all nodes except the disconnected root node are not allowed to be
+  Level 1, self-healing cannot be performed.“ Das ist unser Aufbau. (2)
+  `CHANGELOG.md` zu 1.0.2: „The device disallowed as root node will not
+  request to be included in the will list“, also nicht in die Liste der
+  Root-Kandidaten. (3) Espressifs Beispiel `no_router` trennt Root und
+  Kinder genau wie wir (`set_allowed_level(1)` / `set_disallowed_level(1)`).
+  Ein Server-Neustart bei laufenden Clients kam seitdem oft vor; ein
+  Client als Root ist dabei nicht aufgefallen, gezielt geprüft wurde es
+  aber nie. Zur Reaktion des Wächters: `esp_wifi_stop()` lässt den Client
+  bis zum Aus- und Einschalten stumm, auch wenn der Server nach Sekunden
+  zurück ist. Die Alternative ist ein Neustart, dann begrenzt auf einen
+  pro Minute, damit keine Schleife entsteht.
 
 - Stufe 6 Nachbesserungen (erster echter Zwei-Geräte-Test auf `test/
   ServerClient`, 2026-09-17): vier Bugs beim tatsächlichen Betrieb
@@ -265,11 +385,11 @@ Bugs sind umgesetzt:
   Auf dem Gerät verifiziert: Client verbindet nach den Fixes zuverlässig
   zum Server, Ringpuffer füllt sich wie erwartet, `output_rms`-Log
   bestätigt echtes Signal am Ausgang. Nicht behoben: deutliches Knistern
-  im Audio, das laut Nutzer auch am **Server** selbst auftritt (dort ohne
+  im Audio, das bei mir auch am **Server** selbst auftritt (dort ohne
   jede Code-/HW-Änderung an diesem Pfad) und nur bei aktivem Stream zu
   hören ist, nicht bei Stille — daher software-, nicht hardwarebedingt.
   Klingt nach ca. einer Minute Laufzeit spürbar ab. Ursache nicht
-  identifiziert, auf Nutzerwunsch zurückgestellt statt weiter untersucht.
+  identifiziert, von mir zurückgestellt statt weiter untersucht.
 
   **Wieder aufgetreten 2026-09-23:** nach einem Flash des Servers (19:43)
   knackten Server-Lautsprecher und alle Clients, auch der Android-Snapclient,
@@ -281,6 +401,9 @@ Bugs sind umgesetzt:
   Zustand, den der Server beim Start einnimmt, nicht an Quelle, Funk oder
   Last. Nächster Schritt, wenn es wieder auftritt: Uhrzeit notieren und den
   Server-Log um diesen Start herum mit einem sauberen Start vergleichen.
+
+  **Vorerst als gelöst betrachtet (2026-10-07), bei Bedarf neu aufmachen.**
+  Die Artefakte vom 2026-09-20 mit ähnlichem Bild waren Fehler A (unten).
 
   **Stand 2026-09-24 -- mehrere unabhängige Fehler um den TinySine:**
   - *Stream und A2DP überlagert (geklärt):* Auf dem Android lief die
@@ -411,8 +534,8 @@ Bugs sind umgesetzt:
   (`WIFI_PS_MIN_MODEM`, Listen-Interval 3 ⇒ bis zu ~307 ms Funkstille) —
   das passt sowohl zu den vollgelaufenen TCP-Puffern als auch zu den
   verpassten Managementframes und bringt bei netzbetriebenen Lautsprechern
-  ohnehin nichts. `esp_wifi_set_ps(WIFI_PS_NONE)` in beiden Rollen; laut
-  Nutzer läuft es damit spürbar besser.
+  ohnehin nichts. `esp_wifi_set_ps(WIFI_PS_NONE)` in beiden Rollen; bei mir
+  läuft es damit spürbar besser.
 
   Offen und noch nicht gemessen: Synchronität zweier Clients über längere
   Zeit, Verhalten bei Parent-Wechsel, Wirkung von `delay_trim_ms`, und ob
@@ -497,7 +620,7 @@ Bugs sind umgesetzt:
   `SERVER_TASK_PRIORITY` auf 4, `CTRL_SERVER_PRIORITY`/`CTRL_CONN_PRIORITY`
   auf 3.
 
-  **Ergebnis beim Nutzer: deutlich schlechter, nicht besser.** Nicht weiter
+  **Ergebnis bei mir: deutlich schlechter, nicht besser.** Nicht weiter
   diagnostiziert, Änderung direkt verworfen (nie committet, `git checkout`
   auf `snapserver.c`/`snapcontrol.c`). Vermutung, nicht verifiziert: die
   Time-Antworten laufen über `client_task`, das jetzt gegen Sender *und*
@@ -537,10 +660,10 @@ Bugs sind umgesetzt:
   am Stall-Watchdog. Bei Wiederauftreten das Log des Parents mitschneiden.
 
 - **Sprachdurchsagen (`test/voice`): Stand und Offenes (2026-09-19).**
-  Nichts davon ist committet. Letzter Stand auf Gerät: Server geflasht mit
-  getrenntem Relay-/Speaker-Task, Clients auf dem Stand davor (Heap- und
-  CPU-Zeile schon drin), App mit 16 kHz installiert. Urteil des Nutzers:
-  „hört sich viel besser an“.
+  Seit 2026-09-19 committet (773851a ff.) und in `main`. Stand damals auf
+  Gerät: Server geflasht mit getrenntem Relay-/Speaker-Task, Clients auf
+  dem Stand davor (Heap- und CPU-Zeile schon drin), App mit 16 kHz
+  installiert. Hört sich viel besser an.
 
   Gemessen bei der letzten Durchsage:
   - Clients: `voice_underrun` 0–2,4 % statt 15 %, Kern 1 zu 65 % frei.
@@ -570,9 +693,8 @@ Bugs sind umgesetzt:
 
   **Offen, Durchsage:**
   - **Server-Kern 1:** Während einer Durchsage die Komplexität des
-    Musik-Encoders senken (`audio_opus_set_complexity()` gibt es schon, mit
-    Übergabe an den Encoder-Task). Die Musik hört in der Zeit niemand. Das
-    sollte etwa ein Drittel der Encoder-Last sparen. Ungeklärt: Warum steigt
+    Musik-Encoders senken (erledigt: `VOICE_MUSIC_COMPLEXITY` 0 in
+    `voice_announce.c`). Ungeklärt bleibt: Warum steigt
     der Encoder während der Durchsage von 55 % auf 78 %? Vermutung:
     Encoder und Decoder stören sich im gemeinsamen PSRAM-Cache. Nicht
     gemessen.
@@ -591,12 +713,10 @@ Bugs sind umgesetzt:
     direkt am Root hängt, plus gezieltes Verbinden per
     `WifiNetworkSpecifier`. Siehe den Eintrag zur Standort-Berechtigung
     unten, dort steht der Weg ohne Berechtigung.
-  - **`tools/voice_test.py`** sendet noch rohes PCM und passt nicht mehr zur
-    Opus-Firmware.
+  - **`tools/voice_test.py`** sendete rohes PCM und passte nicht mehr zur
+    Opus-Firmware. Entfernt 2026-10-07.
   - **`docs/code-review-voice.md`:** Status von M3 (Vorpuffer) nachtragen,
     ist umgesetzt. Den Umbau auf zwei Server-Tasks ergänzen.
-  - **Commits:** in logischen Gruppen (Firmware, App, Tool, Doku),
-    erst nach den Tests und nach Absprache.
 
   **Offen, Robustheit (gehört eher auf `test/ServerClient`):**
   - **Relay hängt sich auf**, wenn mehrere Kinder an ihm hängen (heute
@@ -605,11 +725,15 @@ Bugs sind umgesetzt:
     macht solche Ketten zum Normalfall, sie dürfen nicht zum Totalausfall
     führen. Erst messen (Test 4), dann als Kandidat
     `CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y` (WLAN- und lwIP-Puffer im
-    PSRAM) versuchen.
+    PSRAM) versuchen. Gesetzt seit 2026-09-23 (60a13e3); ob die Hänger
+    damit weg sind, ist nicht festgehalten.
   - **Server erstickt an einem hängenden Zweig:** interner Heap bis auf
     172 B bzw. 128 B (`min_ever`), `send stalled` bei allen. Er muss früher
     erkennen, dass ein Client nichts abnimmt, und aufhören, dessen Pakete in
-    die WLAN-Puffer zu schieben, statt 20 s zu warten.
+    die WLAN-Puffer zu schieben, statt 20 s zu warten. Seit 2026-10-01
+    (44fc601) schließt der Server einen Client, wenn 3 s lang mehr
+    verworfen als zugestellt wird; ob das diesen Fall abdeckt, ist nicht
+    festgehalten.
   - **Musik-Aussetzer bei 14E4 trotz −11 dBm** direkt am Server:
     `chunks/s=0` für mehrere Sekunden, `skipped=315`, die anderen Clients
     in derselben Zeit sauber. Einmal gesehen, Ursache unbekannt.
@@ -655,6 +779,12 @@ Bugs sind umgesetzt:
      Client. **Das ist die erste Stelle, an der man drehen sollte**, falls
      die Lautsprecher je neu auszurichten sind. `delay_trim_ms` steht dafür
      nicht mehr zur Verfügung, es ist im Server ausgebaut.
+
+  **Stand 2026-10-02:** Zeitabgleich und Sprünge der Clients überarbeitet,
+  siehe `docs/releases/v0.5.1.md` bis `v0.5.3.md`. Laut v0.5.2 liegen die
+  Clients untereinander unter 2–3 ms (vorher 5–8 ms); seit v0.5.3 wirken
+  Latenz und Delay je Client sofort und auf das Sample genau. Die Messung
+  Server ↔ Clients am Lautsprecher fehlt weiterhin.
 
   **Drift-Regelung:** `AUDIO_RESAMPLE_MAX_PPM` und
   `CONTROL_INTEGRAL_CLAMP_PPM` standen auf 200 bzw. 100 ppm. Beobachtet
