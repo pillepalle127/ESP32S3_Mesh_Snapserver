@@ -68,7 +68,10 @@ static const char *TAG = "USB_AUDIO";
 /*
  * UAC1 stereo speaker with an asynchronous data endpoint and a feedback
  * (synch) endpoint, taken from uac2_speaker_fb/src/usb_descriptors.h. One
- * sample rate, 48 kHz. bRefresh 0 on the synch endpoint, as there: Windows
+ * sample rate, 48 kHz. Volume and mute on the master channel only (the
+ * example has them per channel too): with both, Linux showed 100 % while
+ * the master stood at -20 dB, and the signal came in 20 dB low (B688,
+ * 2026-10-08). With the master alone the host sets 0 dB at 100 %. bRefresh 0 on the synch endpoint, as there: Windows
  * and macOS schedule the feedback by bRefresh, Linux by bInterval, and the
  * DWC2 driver needs both to mean every frame.
  */
@@ -95,7 +98,7 @@ static const char *TAG = "USB_AUDIO";
   TUD_AUDIO10_DESC_CS_AC(0x0100, (TUD_AUDIO10_DESC_INPUT_TERM_LEN + TUD_AUDIO10_DESC_OUTPUT_TERM_LEN + TUD_AUDIO10_DESC_FEATURE_UNIT_LEN(2)), ((_itfnum) + 1)),\
   TUD_AUDIO10_DESC_INPUT_TERM(UAC1_ENTITY_INPUT_TERMINAL, AUDIO_TERM_TYPE_USB_STREAMING, 0x00, 0x02, AUDIO10_CHANNEL_CONFIG_LEFT_FRONT | AUDIO10_CHANNEL_CONFIG_RIGHT_FRONT, 0x00, 0x00),\
   TUD_AUDIO10_DESC_OUTPUT_TERM(UAC1_ENTITY_OUTPUT_TERMINAL, AUDIO_TERM_TYPE_OUT_DESKTOP_SPEAKER, 0x00, UAC1_ENTITY_FEATURE_UNIT, 0x00),\
-  TUD_AUDIO10_DESC_FEATURE_UNIT(UAC1_ENTITY_FEATURE_UNIT, UAC1_ENTITY_INPUT_TERMINAL, 0x00, (AUDIO10_FU_CONTROL_BM_MUTE | AUDIO10_FU_CONTROL_BM_VOLUME), (AUDIO10_FU_CONTROL_BM_MUTE | AUDIO10_FU_CONTROL_BM_VOLUME), (AUDIO10_FU_CONTROL_BM_MUTE | AUDIO10_FU_CONTROL_BM_VOLUME)),\
+  TUD_AUDIO10_DESC_FEATURE_UNIT(UAC1_ENTITY_FEATURE_UNIT, UAC1_ENTITY_INPUT_TERMINAL, 0x00, (AUDIO10_FU_CONTROL_BM_MUTE | AUDIO10_FU_CONTROL_BM_VOLUME), 0x00, 0x00),\
   TUD_AUDIO10_DESC_STD_AS_INT((uint8_t)((_itfnum) + 1), 0x00, 0x00, 0x00),\
   TUD_AUDIO10_DESC_STD_AS_INT((uint8_t)((_itfnum) + 1), 0x01, 0x02, 0x00),\
   TUD_AUDIO10_DESC_CS_AS_INT(UAC1_ENTITY_INPUT_TERMINAL, 0x00, AUDIO10_DATA_FORMAT_TYPE_I_PCM),\
@@ -134,7 +137,7 @@ static const tusb_desc_device_t s_desc_device = {
     .bMaxPacketSize0 = CFG_TUD_ENDPOINT0_SIZE,
     .idVendor = 0x303A,      /* Espressif */
     .idProduct = 0x8000,     /* Espressif's test PID */
-    .bcdDevice = 0x0100,
+    .bcdDevice = 0x0101,     /* 1.01: volume/mute on master only */
     .iManufacturer = STRID_MANUFACTURER,
     .iProduct = STRID_PRODUCT,
     .iSerialNumber = STRID_SERIAL,
@@ -168,8 +171,9 @@ static bool s_prebuffering = true;
 static bool s_active;
 static int64_t s_last_signal_us;
 
-/* Host volume/mute per channel, 0 = master; 1/256 dB. Set by control
- * requests (TinyUSB task), turned into gains for the capture loop. */
+/* Host volume/mute, 1/256 dB. Only the master (index 0) is offered; the
+ * channel slots stay 0. Set by control requests (TinyUSB task), turned
+ * into gains for the capture loop. */
 static int16_t s_volume[3];
 static uint8_t s_mute[3];
 static volatile float s_gain[2] = { 1.0f, 1.0f };
@@ -319,7 +323,7 @@ bool tud_audio_set_req_entity_cb(uint8_t rhport, tusb_control_request_t const *p
     (void)rhport;
     const uint8_t channel = TU_U16_LOW(p_request->wValue);
     const uint8_t ctrl = TU_U16_HIGH(p_request->wValue);
-    if (TU_U16_HIGH(p_request->wIndex) != UAC1_ENTITY_FEATURE_UNIT || channel > 2U ||
+    if (TU_U16_HIGH(p_request->wIndex) != UAC1_ENTITY_FEATURE_UNIT || channel != 0U ||
         p_request->bRequest != AUDIO10_CS_REQ_SET_CUR) {
         return false;
     }
@@ -345,7 +349,7 @@ bool tud_audio_get_req_entity_cb(uint8_t rhport, tusb_control_request_t const *p
 {
     const uint8_t channel = TU_U16_LOW(p_request->wValue);
     const uint8_t ctrl = TU_U16_HIGH(p_request->wValue);
-    if (TU_U16_HIGH(p_request->wIndex) != UAC1_ENTITY_FEATURE_UNIT || channel > 2U) {
+    if (TU_U16_HIGH(p_request->wIndex) != UAC1_ENTITY_FEATURE_UNIT || channel != 0U) {
         return false;
     }
 
