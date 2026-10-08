@@ -7,10 +7,13 @@
 
 #include <string.h>
 
+#include "audio_sink.h"
 #include "device_config.h"
 #include "esp_event.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "provisioning.h"
 #include "snapclient.h"
@@ -31,7 +34,23 @@ static const char *TAG = "MESH_CLIENT";
 
 #if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
 
+/* Root guard, see root_guard_cb(): checked once a second, acted on after
+ * this many level-1 readings in a row, never before this uptime, and only
+ * once the local input has been off this long. */
+#define ROOT_GUARD_PERIOD_US      (1000LL * 1000LL)
+#define ROOT_GUARD_CONFIRM_CHECKS 5U
+#define ROOT_GUARD_MIN_UPTIME_US  (60LL * 1000LL * 1000LL)
+#define ROOT_GUARD_LOCAL_QUIET_US (60LL * 1000LL * 1000LL)
+
 static bool s_snapclient_started;
+static esp_timer_handle_t s_root_guard_timer;
+static uint8_t s_last_level;
+static uint32_t s_root_checks;
+/* Last check that found the local input playing; 0 = not since boot. */
+static int64_t s_local_input_us;
+/* What the guard last logged while held off, so each state logs once. */
+static bool s_root_logged_local;
+static bool s_root_logged_countdown;
 
 /*
  * Resolves which Snapserver to connect to: the mesh root, from
@@ -123,6 +142,95 @@ static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, voi
     if (id == WIFI_EVENT_STA_DISCONNECTED) {
         ESP_LOGW(TAG, "Lost parent, aborting any open Snapserver connection");
         snapclient_set_network_available(false);
+    }
+}
+
+/*
+ * A client must never be the mesh root: it would open a second mesh under
+ * the same SSID, find itself as the Snapserver, and anything that attached
+ * to it would stay silent. esp_mesh_lite_set_disallowed_level(1) is meant to
+ * rule that out, and Mesh-Lite 1.0.2's User_Guide says self-healing cannot
+ * promote a node that is not allowed on level 1 -- but the library is
+ * precompiled, so nothing here can confirm that holds when the root fails.
+ * Nothing else in this firmware looks at the level after the join, and
+ * force_mesh_rejoin() only drops a parent link a root does not have.
+ *
+ * So: on level 1 for ROOT_GUARD_CONFIRM_CHECKS seconds, restart and join
+ * again as a relay. Not esp_wifi_stop(): that would leave the speaker
+ * silent until someone power-cycles it, even when the server is back a few
+ * seconds later. Not before ROOT_GUARD_MIN_UPTIME_US either, so a device
+ * that keeps ending up as root restarts at most once a minute. And not
+ * while it plays its local I2S input: that needs no mesh, and a restart
+ * would only cut it. The restart comes ROOT_GUARD_LOCAL_QUIET_US after the
+ * local input stopped; if it starts again in between, that wait starts
+ * over once it stops again.
+ *
+ * Every level change is logged, which also shows what a node reports while
+ * it has no parent.
+ */
+static void root_guard_cb(void *arg)
+{
+    (void)arg;
+
+    const int64_t now_us = esp_timer_get_time();
+    /* On every check, root or not: the wait counts from when the local
+     * input actually stopped, even if that was before this became root. */
+    const bool local_playing = audio_sink_current_source() == AUDIO_SINK_SOURCE_LOCAL_INPUT;
+    if (local_playing) {
+        s_local_input_us = now_us;
+    }
+
+    const uint8_t level = esp_mesh_lite_get_level();
+    if (level != s_last_level) {
+        ESP_LOGI(TAG, "Mesh level %u -> %u", (unsigned)s_last_level, (unsigned)level);
+        s_last_level = level;
+    }
+
+    if (level != 1U) {
+        s_root_checks = 0;
+        s_root_logged_local = false;
+        s_root_logged_countdown = false;
+        return;
+    }
+    ++s_root_checks;
+    if (s_root_checks == 1U) {
+        ESP_LOGE(TAG, "Client is mesh root (level 1); restarting unless that clears");
+    }
+    if (s_root_checks < ROOT_GUARD_CONFIRM_CHECKS || now_us < ROOT_GUARD_MIN_UPTIME_US) {
+        return;
+    }
+    if (local_playing) {
+        if (!s_root_logged_local) {
+            ESP_LOGW(TAG, "Mesh root, but playing the local input: restart %u s after it stops",
+                     (unsigned)(ROOT_GUARD_LOCAL_QUIET_US / 1000000LL));
+            s_root_logged_local = true;
+            s_root_logged_countdown = false;
+        }
+        return;
+    }
+    if (s_local_input_us != 0 && now_us - s_local_input_us < ROOT_GUARD_LOCAL_QUIET_US) {
+        if (!s_root_logged_countdown) {
+            ESP_LOGW(TAG, "Local input stopped: restarting in %u s unless it starts again",
+                     (unsigned)((ROOT_GUARD_LOCAL_QUIET_US - (now_us - s_local_input_us)) / 1000000LL));
+            s_root_logged_countdown = true;
+            s_root_logged_local = false;
+        }
+        return;
+    }
+    ESP_LOGE(TAG, "Still mesh root after %lu s: restarting to rejoin as a relay",
+             (unsigned long)s_root_checks);
+    esp_restart();
+}
+
+static void start_root_guard(void)
+{
+    const esp_timer_create_args_t args = {
+        .callback = &root_guard_cb,
+        .name = "root_guard",
+    };
+    if (esp_timer_create(&args, &s_root_guard_timer) != ESP_OK ||
+        esp_timer_start_periodic(s_root_guard_timer, ROOT_GUARD_PERIOD_US) != ESP_OK) {
+        ESP_LOGW(TAG, "Root guard unavailable: a client that becomes root stays root");
     }
 }
 
@@ -228,6 +336,9 @@ static esp_err_t start_client_mesh(const device_config_t *cfg)
     esp_mesh_lite_core_log_enable(false);
     esp_mesh_lite_connect();
     esp_mesh_lite_start();
+    /* Only now: Mesh-Lite has to be running before it is asked for the
+     * level (see webconfig.c). */
+    start_root_guard();
 
     /* After the start: Mesh-Lite reconfigures the SoftAP, so this has to
      * undo its PMF setting rather than pre-empt it. See the header. */
