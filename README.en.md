@@ -91,7 +91,7 @@ ESP's USB socket, the battery is on VIN, and a pot with switch turns it on and s
 |---|---|
 | ESP32-S3 board | ≥ 4 MB flash, octal PSRAM, e.g. YD-ESP32-S3 N16R8 |
 | DAC | PCM5102A with jack |
-| Charger | TP4056 with protection (DW01) |
+| Charger | TP4056 module with protection (DW01), load on OUT+/OUT− |
 | Battery | 18650 Li-ion |
 | Pot | 10 kΩ linear with switch |
 
@@ -130,25 +130,40 @@ The clients keep their clock aligned with the server. Here the speakers stay wit
 
 <img src="docs/webui-server.png" alt="Settings page of the server with the device list" width="300" align="right">
 
-Every device has a settings page at its IP or `snapserver-<MAC>.local` / `snapclient-<MAC>.local`. The server's page
-lists all speakers with name, volume, mute and delay; **Settings** opens a client's settings.
+Every device has a settings page at its IP or `snapserver-<MAC>.local` / `snapclient-<MAC>.local`. The values survive
+updates. From top to bottom, as in the picture of the server's page:
 
-* **Role, mesh / Wi-Fi:** the same on all devices.
-* **Buffer (server):** default 3000 ms.
-* **Playback (client):** source, volume, mute.
-* **USB sound card (server):** see [below](#usb-sound-card).
-* **Crossover, subsonic, compressor:** apply immediately.
-* **Pins, Opus:** collapsed.
+**Status:** mesh active or not, connected clients (our own and other Snapcast clients), firmware version, boot-fail
+streak and uptime.
 
-Role, mesh, buffer, USB sound card and pins restart the device.
+**Devices (server only):** every speaker with name, depth in the mesh (hops), volume, mute and delay. You can change
+the name here, ± flips the sign of the delay. The server remembers the values per device, also when they come from a
+Snapcast app. **Settings** opens a client's page, however deep it sits in the mesh.
 
-**Setting up the compressor:** match the branches with the gains, pot and source at maximum. Compressor on, ratio 3,
-lower the threshold until loud passages come down by 3–6 dB. Then raise make-up until the limiter rarely steps in.
+**Role:** server or client. On the server the **buffer** (default 3000 ms, applies to all devices) and the
+**USB sound card** (see [below](#usb-sound-card)). On a client the **playback** instead: source (auto, network or
+local I2S input), threshold for the local input, volume and mute. While a server is connected, the server sets the
+volume.
+
+**Mesh / Wi-Fi:** mesh on or off, name, password, channel and the maximum mesh depth. The same on all devices.
+
+**DSP / crossover:** crossover on or off, crossover frequency (40–500 Hz), gain for sub and wideband (−24 to +18 dB),
+subsonic high-pass on the sub (15–60 Hz, rule of thumb 0.75 × F3), sub phase 180° and the output that carries the sub.
+
+**Compressor:** threshold, ratio and make-up, on both branches before the pot. To set it up, match the branches with
+the gains, pot and source at maximum. Compressor on, ratio 3, lower the threshold until loud passages come down by
+3–6 dB. Then raise make-up until the limiter rarely steps in.
+
+**Pins** and **Opus** are collapsed. Pins see [below](#pins), Opus is bitrate and complexity of the server's encoder.
+
+Crossover and compressor apply as you change them, everything else with **Save**. Role, mesh, buffer, USB sound card
+and pins restart the device. **Factory Reset** sets everything back after a confirmation. **Restart for flashing**
+only shows with the USB sound card on.
 
 ### USB sound card
 
-The server can be a sound card for your PC on the socket labelled "USB", no driver needed. So far I have tested it on
-Linux. While the PC plays, it replaces the I2S input. The volume on the PC applies to the whole mesh, so leave it at
+The server can be a sound card for your PC on the socket labelled "USB", no driver needed. I have tested it on Linux and
+Windows 11. While the PC plays, it replaces the I2S input. The volume on the PC applies to the whole mesh, so leave it at
 100 % there. Log and flashing then go through the socket labelled "COM" or through **Restart for flashing** on the
 server's page.
 
@@ -156,11 +171,20 @@ server's page.
 
 ## Pins
 
-The pins can be reassigned in the web UI. If the device does not start with them, it falls back to the default.
+The pins can be reassigned in the web UI without reflashing. **Load wiring preset** sets common layouts in one go. The
+firmware rejects double assignments and unsuitable pins (flash, PSRAM, USB, strapping pins). If the device fails to
+start three times with a new layout, it falls back to the default.
 
-* **I2S clock:** normally from the ESP. If another device provides the clock (e.g. an ADAU1701), set it to **External**.
-* **Power button:** from a GPIO (1–21) to GND. Hold 2 s = off (deep sleep), hold 1 s = on.
-* **Pots:** 10 kΩ for volume and delay on an ADC1 pin (GPIO 1–10), direction reversible.
+* **I2S:** BCLK, LRCLK, DIN (from the Bluetooth module or ADC) and DOUT (to the DAC).
+* **I2S clock:** normally the ESP generates BCLK and LRCLK. If another device provides the clock, e.g. a DSP like the
+  ADAU1701, set it to **External**. Without that clock it stays silent.
+* **Status LED:** data line of the WS2812.
+* **Power button:** from a GPIO (1–21) to GND, no other parts. Hold 2 s = off (deep sleep), hold 1 s = on. Only the
+  ESP sleeps, DAC and amplifier on the battery keep drawing current.
+* **Pots:** 10 kΩ for volume and delay, wiper on an ADC1 pin (GPIO 1–10). Direction reversible, range of the delay
+  pot adjustable.
+
+The status LED flashes red, green and blue at startup and then shows the state:
 
 | Status LED | Meaning |
 |---|---|
@@ -176,7 +200,7 @@ The pins can be reassigned in the web UI. If the device does not start with them
 
 ## SnapAnnounce App
 
-<img src="docs/snapannounce-icon.png" alt="SnapAnnounce icon" width="72" align="left">
+<img src="docs/snapannounce-icon.png" alt="SnapAnnounce icon" width="72" align="right">
 
 With **SnapAnnounce** you start announcements right in the mesh. No extra hardware, no cables, all from your phone.
 Android only, sorry: I don't have a Mac and I'm not buying one.

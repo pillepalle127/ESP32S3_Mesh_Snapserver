@@ -91,7 +91,7 @@ Gehäuse zum Drucken (FreeCAD, 3MF) in [`mechanics/housing/`](mechanics/housing/
 |---|---|
 | ESP32-S3-Board | ≥ 4 MB Flash, Octal-PSRAM, z. B. YD-ESP32-S3 N16R8 |
 | DAC | PCM5102A mit Klinke |
-| Lademodul | TP4056 mit Schutzschaltung (DW01) |
+| Lademodul | TP4056-Modul mit Schutz (DW01), Last an OUT+/OUT− |
 | Akku | 18650 Li-Ion |
 | Poti | 10 kΩ linear mit Schalter |
 
@@ -131,25 +131,41 @@ Die Clients gleichen ihre Uhr laufend mit dem Server ab. Bei mir liegen die Laut
 <img src="docs/webui-server.png" alt="Einstellungsseite des Servers mit Geräteliste" width="300" align="right">
 
 Jedes Gerät hat eine Einstellungsseite unter seiner IP oder `snapserver-<MAC>.local` bzw. `snapclient-<MAC>.local`.
-Auf der Seite des Servers stehen alle Lautsprecher mit Name, Lautstärke, Stumm und Delay; **Einstellungen** öffnet
-die eines Clients.
+Die Werte bleiben bei Updates erhalten. Von oben nach unten, wie im Bild die Seite des Servers:
 
-* **Rolle, Mesh / WLAN:** auf allen Geräten gleich.
-* **Puffer (Server):** Vorgabe 3000 ms.
-* **Wiedergabe (Client):** Quelle, Lautstärke, Stumm.
-* **USB-Soundkarte (Server):** siehe [unten](#usb-soundkarte).
-* **Weiche, Subsonic, Kompressor:** wirken sofort.
-* **Pins, Opus:** eingeklappt.
+**Status:** Mesh aktiv oder nicht, verbundene Clients (eigene und fremde Snapcast-Clients), Firmware-Stand,
+Fehlstarts in Folge und Laufzeit.
 
-Rolle, Mesh, Puffer, USB-Soundkarte und Pins starten das Gerät neu.
+**Geräte (nur Server):** jeder Lautsprecher mit Namen, Tiefe im Mesh (Hops), Lautstärke, Stumm und Delay. Den Namen
+könnt ihr hier ändern, ± kehrt das Vorzeichen des Delays um. Der Server merkt sich die Werte je Gerät, auch wenn sie
+aus einer Snapcast-App kommen. **Einstellungen** öffnet die Seite eines Clients, egal wie tief er im Mesh hängt.
 
-**Kompressor einstellen:** Zweige mit den Gains abgleichen, Poti und Quelle auf Maximum. Kompressor an, Verhältnis 3,
-Schwelle senken, bis laute Stellen um 3–6 dB sinken. Dann Aufholen erhöhen, bis der Begrenzer nur selten eingreift.
+**Rolle:** Server oder Client. Am Server der **Puffer** (Vorgabe 3000 ms, gilt für alle Geräte) und die
+**USB-Soundkarte** (siehe [unten](#usb-soundkarte)). Am Client stattdessen die **Wiedergabe**: Quelle (automatisch,
+Netzwerk oder lokaler I2S-Eingang), Schwelle für den lokalen Eingang, Lautstärke und Stumm. Solange ein Server
+verbunden ist, stellt er die Lautstärke ein.
+
+**Mesh / WLAN:** Mesh an oder aus, Name, Passwort, Kanal und die maximale Tiefe des Mesh. Auf allen Geräten gleich.
+
+**DSP / Weiche:** Weiche an oder aus, Trennfrequenz (40–500 Hz), Verstärkung für Sub und Breitband (−24 bis
++18 dB), Subsonic-Hochpass im Sub (15–60 Hz, Richtwert 0,75 × F3), Sub-Phase 180° und der Ausgang, auf dem der Sub
+liegt.
+
+**Kompressor:** Schwelle, Verhältnis und Aufholen, auf beiden Zweigen vor dem Poti. Zum Einstellen die Zweige mit den
+Gains abgleichen, Poti und Quelle auf Maximum. Kompressor an, Verhältnis 3, Schwelle senken, bis laute Stellen um
+3–6 dB sinken. Dann Aufholen erhöhen, bis der Begrenzer nur selten eingreift.
+
+**Pins** und **Opus** sind eingeklappt. Pins siehe [unten](#pins), Opus sind Bitrate und Rechenaufwand des Encoders
+am Server.
+
+Weiche und Kompressor wirken beim Ändern, alles andere mit **Speichern**. Rolle, Mesh, Puffer, USB-Soundkarte und
+Pins starten das Gerät neu. **Werkseinstellungen** setzt nach einer Rückfrage alles zurück. **Neustart zum Flashen**
+erscheint nur bei eingeschalteter USB-Soundkarte.
 
 ### USB-Soundkarte
 
-Der Server kann an der Buchse „USB“ eine Soundkarte für den PC sein, ohne Treiber. Getestet habe ich bisher unter
-Linux. Spielt der PC, ersetzt er den I2S-Eingang. Die Lautstärke am PC gilt für das ganze Mesh, also dort auf 100 %
+Der Server kann an der Buchse „USB“ eine Soundkarte für den PC sein, ohne Treiber. Getestet habe ich unter Linux und
+Windows 11. Spielt der PC, ersetzt er den I2S-Eingang. Die Lautstärke am PC gilt für das ganze Mesh, also dort auf 100 %
 lassen. Log und Flashen laufen dann über die Buchse „COM“ oder über **Neustart zum Flashen** auf der Seite des
 Servers.
 
@@ -157,11 +173,20 @@ Servers.
 
 ## Pins
 
-Die Pins lassen sich in der Web-UI umbelegen. Startet das Gerät damit nicht, fällt es auf die Standardbelegung zurück.
+Die Pins lassen sich in der Web-UI umbelegen, ohne neu zu flashen. **Vorlage für die Verdrahtung** setzt gängige
+Belegungen auf einmal. Die Firmware lehnt Doppelbelegungen und ungeeignete Pins ab (Flash, PSRAM, USB,
+Strapping-Pins). Startet das Gerät mit einer neuen Belegung dreimal nicht, fällt es auf die Standardbelegung zurück.
 
-* **I2S-Takt:** normal vom ESP. Gibt ein anderes Gerät den Takt vor (z. B. ein ADAU1701), auf **Extern** stellen.
-* **Ein/Aus-Taster:** von einem GPIO (1–21) gegen GND. 2 s halten = aus (Deep Sleep), 1 s halten = an.
-* **Potis:** 10 kΩ für Lautstärke und Delay an einem ADC1-Pin (GPIO 1–10), Drehrichtung umkehrbar.
+* **I2S:** BCLK, LRCLK, DIN (vom Bluetooth-Modul oder ADC) und DOUT (zum DAC).
+* **I2S-Takt:** Normal erzeugt der ESP BCLK und LRCLK. Gibt ein anderes Gerät den Takt vor, z. B. ein DSP wie der
+  ADAU1701, auf **Extern** stellen. Ohne diesen Takt bleibt es still.
+* **Status-LED:** Datenleitung der WS2812.
+* **Ein/Aus-Taster:** von einem GPIO (1–21) gegen GND, ohne weitere Bauteile. 2 s halten = aus (Deep Sleep),
+  1 s halten = an. Nur der ESP schläft, DAC und Verstärker am Akku ziehen weiter Strom.
+* **Potis:** 10 kΩ für Lautstärke und Delay, Schleifer an einem ADC1-Pin (GPIO 1–10). Drehrichtung umkehrbar,
+  Bereich des Delay-Potis einstellbar.
+
+Die Status-LED blitzt beim Start rot, grün und blau und zeigt danach den Zustand:
 
 | Status-LED | Bedeutung |
 |---|---|
@@ -177,7 +202,7 @@ Die Pins lassen sich in der Web-UI umbelegen. Startet das Gerät damit nicht, f�
 
 ## SnapAnnounce App
 
-<img src="docs/snapannounce-icon.png" alt="SnapAnnounce-Icon" width="72" align="left">
+<img src="docs/snapannounce-icon.png" alt="SnapAnnounce-Icon" width="72" align="right">
 
 Mit **SnapAnnounce** startet ihr Durchsagen direkt im Mesh. Ohne extra Hardware und ohne Kabel, alles übers Handy.
 Leider nur für Android, ich habe keinen Mac und kaufe mir auch keinen.

@@ -1,16 +1,21 @@
 # Bugfix-Backlog
 
-## Offen, Stand 2026-10-07
+## Offen, Stand 2026-10-08
 
 Kurzliste; Einzelheiten in den Einträgen weiter unten.
 
 - **Nächste Release-Notizen:** Slave-Takt 80 MHz und Glitch-Filter auf
   BCLK/LRCLK (in v0.5.2 als Änderung genannt) sind wieder ausgebaut,
   siehe „Knistern am 7788“. Der Ein/Aus-Taster schaltet erst nach 1 s
-  Halten ein. Opus läuft mit Festkomma statt Gleitkomma.
-- **Features:** OTA über die Web-Seite; USB-Audio (Server-Eingang,
-  Client als Mikrofon); Erkennung, ob das Handy bei Durchsagen direkt am
-  Root hängt.
+  Halten ein. Opus läuft mit Festkomma statt Gleitkomma. Mit
+  `feat/usb-uac`: USB-Soundkarte am Server (Schalter in der Web-UI,
+  Neustart zum Flashen).
+- **Features:** OTA über die Web-Seite; USB-Audio am Client als Mikrofon;
+  Erkennung, ob das Handy bei Durchsagen direkt am Root hängt.
+- **USB-Soundkarte (`feat/usb-uac`):** Flashen unter Windows nach
+  „Neustart zum Flashen“ ungetestet; Dauerlauf unter Windows (FIFO,
+  Ausgleichs-Frames); TinyUSB belegt 10,5 KB internes
+  RAM auf jedem Gerät, auch ohne USB-Audio (FIFO kleiner oder ins PSRAM).
 - **Ein/Aus-Taster:** Ausstehende Client-Einstellungen (3 s verzögert
   gespeichert) gehen beim Ausschalten verloren; es fehlt ein Flush in
   `client_store` vor dem Deep Sleep.
@@ -25,7 +30,7 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
 - **Messung:** Versatz Server ↔ Clients an den Lautsprechern;
   `audio_i2s_clock_ppm()` reparieren oder entfernen.
 - **Aufräumen:** Diagnose-Code (`cpu_stats.c`, `heap … children=`,
-  Decodierzeit) behalten oder entfernen; Screenshots in `docs/`.
+  Decodierzeit) behalten oder entfernen.
 - **Auf Hardware nicht abgehakt:** Root-Wächter im Client (Server bei
   laufenden Clients ausschalten); Ein/Aus-Taster mit 1 s Halten;
   Pin-Seite, App-Geräteliste, Provisioning (Stufe 5), Board mit weniger
@@ -174,6 +179,29 @@ Bugs sind umgesetzt:
        ab, Code im Flash und das PSRAM (Jitter-Puffer) stehen dann bis zu
        einige zehn ms. Deshalb Punkt 3 vorher, USB-Interrupts im IRAM, und
        den Jitter-Puffer so groß, dass er einen Schreibvorgang überbrückt.
+
+     **Server-Eingang umgesetzt 2026-10-08 (Branch `feat/usb-uac`).**
+     `main/usb_audio.c`: UAC1 statt UAC2 (Full-Speed; Windows ab 7 und Linux
+     bringen UAC1-Treiber mit und lesen das Feedback nach Spec),
+     48 kHz, Stereo, 16 Bit, Feedback über den FIFO-Füllstand (TinyUSB
+     `AUDIO_FEEDBACK_METHOD_FIFO_COUNT`). Die Aufnahmeschleife leert den
+     FIFO im I2S-Takt; spielt der PC (Signal in den letzten 2 s), ersetzen
+     seine Samples die vom I2S. Notfall-Ausgleich ±1 Frame, wenn der
+     Füllstand mehr als 8 ms neben dem Sollwert liegt. Lautstärke und Stumm
+     nur am Master, nicht gespeichert. Schalter `usb_audio` in der Web-UI
+     (Neustart), nur Server. „Neustart zum Flashen“ startet in den
+     Download-Modus des ROM; danach normal mit `--before usb_reset`
+     flashen (mit `no_reset` bleibt DTR = GPIO0 aktiv, der Reset danach
+     landet wieder im Download-Modus). Kein Timeout dort, bewusst so
+     gelassen. Der Wechsel zwischen OTG und USB-Serial-JTAG trennt jeweils
+     erst sauber vom Bus, sonst bemerkt der Host nichts.
+
+     Geprüft: Linux (Erkennung, Wiedergabe, FIFO um die Hälfte, keine
+     Unterläufe oder Ausgleichs-Frames), Windows 11 (Wiedergabe, Umschalten
+     PC / I2S / Durchsage, USB-Audio aus → native Buchse wieder COM),
+     Neustart zum Flashen und Flashen über die native Buchse am Linux-Host
+     (B688, Log über COM). Kosten: TinyUSB 10,5 KB internes RAM fest, mit
+     USB-Audio an rund 4,5 KB mehr; `opus_audio` unverändert.
 
 - **Ein/Aus-Taster als Soft-Off per Deep Sleep (vorgemerkt 2026-09-30,
   umgesetzt 2026-10-01, 4ba38ce).** Taster an einem RTC-fähigen Pin
