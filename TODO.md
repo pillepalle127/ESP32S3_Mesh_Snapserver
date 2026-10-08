@@ -9,8 +9,8 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
   siehe „Knistern am 7788“. Der Ein/Aus-Taster schaltet erst nach 1 s
   Halten ein.
 - **Features:** OTA über die Web-Seite; USB-Audio (Server-Eingang,
-  Client als Mikrofon); Root-Failover-Wächter im Client; Erkennung, ob das
-  Handy bei Durchsagen direkt am Root hängt.
+  Client als Mikrofon); Erkennung, ob das Handy bei Durchsagen direkt am
+  Root hängt.
 - **Ein/Aus-Taster:** Ausstehende Client-Einstellungen (3 s verzögert
   gespeichert) gehen beim Ausschalten verloren; es fehlt ein Flush in
   `client_store` vor dem Deep Sleep.
@@ -26,8 +26,10 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
   `audio_i2s_clock_ppm()` reparieren oder entfernen.
 - **Aufräumen:** Diagnose-Code (`cpu_stats.c`, `heap … children=`,
   Decodierzeit) behalten oder entfernen; Screenshots in `docs/`.
-- **Auf Hardware nicht abgehakt:** Pin-Seite, App-Geräteliste,
-  Provisioning (Stufe 5), Board mit weniger als 16 MB Flash.
+- **Auf Hardware nicht abgehakt:** Root-Wächter im Client (Server bei
+  laufenden Clients ausschalten); Ein/Aus-Taster mit 1 s Halten;
+  Pin-Seite, App-Geräteliste, Provisioning (Stufe 5), Board mit weniger
+  als 16 MB Flash.
 
 ## Code-Analyse und Stufen 1–6
 
@@ -211,10 +213,10 @@ Bugs sind umgesetzt:
 - **Unkomplizierte Verteilung (umgesetzt 2026-09-23, läuft seit v0.2.0;
   zuletzt v0.5.3 am 2026-10-02 mit Firmware-Teilen, Gesamt-Image, APK und
   `THIRD_PARTY_LICENSES.txt`).** `.github/workflows/release.yml` baut bei
-  einem Tag `v*` Firmware (`espressif/esp-idf-ci-action`, IDF 5.4.3, nur aus `sdkconfig.defaults`)
-  und das signierte APK, hängt beides an das GitHub-Release und stellt die
-  Flash-Seite (`flasher/`, ESP Web Tools) auf GitHub Pages. Ein manueller
-  Lauf baut nur, als Probe vor dem Tag.
+  einem Tag `v*` Firmware (`espressif/esp-idf-ci-action`, IDF 5.4.3, nur
+  aus `sdkconfig.defaults`) und das signierte APK, hängt beides an das
+  GitHub-Release und stellt die Flash-Seite (`flasher/`, ESP Web Tools)
+  auf GitHub Pages. Ein manueller Lauf baut nur, als Probe vor dem Tag.
   - **Updates schreiben vier Teile** (Bootloader `0x0`, Partitionstabelle
     `0x8000`, App `0x10000`, leeres `otadata` `0x3D0000`). Das Gesamt-Image
     aus `merge_bin` füllt
@@ -311,11 +313,12 @@ Bugs sind umgesetzt:
     Server-Seite, der Weg läuft über dessen Snapcast-Verbindung (siehe
     „Nächste Schritte dazu" oben). Die IP-Links sind entfallen.
 
-- **Root-Failover-Risiko im Client-Modus (aus Analysegespräch 2026-09-17,
-  zurückgestellt):** `esp_mesh_lite_set_disallowed_level(1)` in
-  `mesh_client.c` schließt den Client beim regulären Beitritt sicher von
-  der Root-Rolle aus (API-Vertrag, keine Timeout-basierte Übernahme). Die
-  Mesh-Lite-Doku beschreibt aber einen separaten Selbstheilungspfad bei
+- **Root-Failover-Risiko im Client-Modus (aus Analysegespräch 2026-09-17;
+  Wächter umgesetzt 2026-10-08, auf Hardware noch nicht getestet):**
+  `esp_mesh_lite_set_disallowed_level(1)` in `mesh_client.c` schließt den
+  Client beim regulären Beitritt sicher von der Root-Rolle aus
+  (API-Vertrag, keine Timeout-basierte Übernahme). Die Mesh-Lite-Doku
+  beschreibt aber einen separaten Selbstheilungspfad bei
   Root-Ausfall ("Root Node Failure"), bei dem ein Kind-Knoten nach
   mehreren fehlgeschlagenen Reconnect-Versuchen selbst Root werden kann —
   dort beschrieben für den Router-verbundenen Modus ("connect directly to
@@ -328,7 +331,8 @@ Bugs sind umgesetzt:
   und bleibt es dauerhaft, da nichts in unserem eigenen Code den
   Mesh-Level nach dem Boot überprüft.
 
-  Vorgeschlagene Absicherung (noch nicht umgesetzt, zurückgestellt):
+  Vorgeschlagene Absicherung (2026-09-17, umgesetzt mit Neustart statt
+  `esp_wifi_stop()`, siehe unten):
   periodischer Wächter in `mesh_client.c`, der `esp_mesh_lite_get_level()`
   zyklisch abfragt und bei Level 1 sofort `esp_wifi_stop()` auslöst
   (gleiches Muster wie der Provisioning-AP-Timeout) statt den Client
@@ -353,6 +357,20 @@ Bugs sind umgesetzt:
   bis zum Aus- und Einschalten stumm, auch wenn der Server nach Sekunden
   zurück ist. Die Alternative ist ein Neustart, dann begrenzt auf einen
   pro Minute, damit keine Schleife entsteht.
+
+  **Umgesetzt 2026-10-08:** `root_guard_cb()` in `mesh_client.c` fragt
+  jede Sekunde `esp_mesh_lite_get_level()` ab. Steht der Client 5 s am
+  Stück auf Level 1, startet er neu und tritt wieder als Relay bei,
+  frühestens 60 s nach dem Start; so startet er höchstens einmal pro
+  Minute neu. Spielt er gerade seinen lokalen I2S-Eingang, startet er
+  nicht neu, sondern erst 60 s nach dessen Ende; startet der Eingang in
+  dieser Zeit wieder, beginnen die 60 s nach seinem nächsten Ende von
+  vorn. Jeder Wechsel des Levels steht im Log (`Mesh level …`).
+  Test: Server ausschalten, während mehrere Clients laufen, und deren Logs
+  1–2 min mitschneiden. Die Zeilen zeigen dann auch, welchen Level ein
+  Knoten ohne Parent meldet. Das ist nicht bekannt; meldet er dabei 1,
+  startet jeder Client ohne Server einmal pro Minute neu, und der Wächter
+  muss anders prüfen.
 
 - Stufe 6 Nachbesserungen (erster echter Zwei-Geräte-Test auf `test/
   ServerClient`, 2026-09-17): vier Bugs beim tatsächlichen Betrieb
