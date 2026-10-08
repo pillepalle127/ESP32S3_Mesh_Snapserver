@@ -54,7 +54,7 @@ esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 
 I run a **complete system** in an amplifier (PCM5102A, TinySine AudioB as Bluetooth input through a TXB0104) and the
 **[SnapStreamer](#snapstreamer-build-idea)**. Any ESP32-S3 with at least 4 MB flash, octal PSRAM and USB-Serial/JTAG
 will do, e.g. a YD-ESP32-S3 N16R8
-([schematic](https://github.com/vcc-gnd/YD-ESP32-S3/blob/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf)).
+([schematic](https://raw.githubusercontent.com/vcc-gnd/YD-ESP32-S3/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf)).
 
 | GPIO | Function |
 |---|---|
