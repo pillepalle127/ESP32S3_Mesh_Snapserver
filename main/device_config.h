@@ -105,7 +105,12 @@ typedef struct {
     uint8_t  comp_ratio_x10;      /* 10..100 */
     uint8_t  comp_makeup_db;      /* 0..24 */
 
-    uint8_t  reserved[10];
+    /* 1: the native USB port is a USB sound card feeding the server's
+     * input (usb_audio.h). Server role only; takes effect on reboot. From
+     * the reserved bytes, older blobs load it as 0 = off. */
+    uint8_t  usb_audio;
+
+    uint8_t  reserved[9];
 } device_config_t;
 
 /*

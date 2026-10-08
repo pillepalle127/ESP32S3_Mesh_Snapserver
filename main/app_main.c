@@ -19,6 +19,7 @@
 #include "status_led.h"
 #include "pots.h"
 #include "power_button.h"
+#include "usb_audio.h"
 #include "voice_announce.h"
 #include "webconfig.h"
 
@@ -114,6 +115,19 @@ void app_main(void)
     }
 
     const bool client_role = (cfg.role == DEVICE_ROLE_CLIENT);
+
+    /* USB sound card: server input only. Otherwise make sure the native
+     * port is USB-Serial-JTAG again, even after a software restart from a
+     * run that had it. Not fatal: without it the server keeps its I2S
+     * input. */
+    if (!client_role && cfg.usb_audio != 0U) {
+        const esp_err_t usb_result = usb_audio_start();
+        if (usb_result != ESP_OK) {
+            ESP_LOGW(TAG, "USB sound card unavailable: %s", esp_err_to_name(usb_result));
+        }
+    } else {
+        usb_audio_release_phy();
+    }
 
     esp_err_t result = client_role ? mesh_client_start() : mesh_root_start();
     if (result != ESP_OK) {

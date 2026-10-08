@@ -83,6 +83,7 @@
 <div id="server_fields">
   <label for="buffer_ms">Buffer (ms)</label>
   <input type="number" id="buffer_ms" min="200" max="10000" step="100">
+  <div class="checkbox-row"><input type="checkbox" id="usb_audio"><label for="usb_audio">USB sound card (native port)</label></div>
 </div>
 
 <div id="client_fields">
@@ -193,6 +194,10 @@
   <span id="resetConfirm" hidden><span>Reset all settings to defaults and reboot?</span>
     <button type="button" id="resetYes">Reset</button>
     <button type="button" id="resetNo">Cancel</button></span>
+  <button type="button" id="flashRestart" hidden>Restart for flashing</button>
+  <span id="flashConfirm" hidden><span>Restart into download mode for flashing over the native USB port?</span>
+    <button type="button" id="flashYes">Restart</button>
+    <button type="button" id="flashNo">Cancel</button></span>
 </div>
 
 <footer>ESP32-S3 Mesh Snapserver &mdash; MIT License &copy; 2026 pillepalle127</footer>
@@ -262,6 +267,10 @@ const DE = {
   'Factory Reset': 'Werkseinstellungen',
   'Reset': 'Zurücksetzen',
   'Cancel': 'Abbrechen',
+  'USB sound card (native port)': 'USB-Soundkarte (native Buchse)',
+  'Restart for flashing': 'Neustart zum Flashen',
+  'Restart into download mode for flashing over the native USB port?': 'In den Download-Modus neu starten, zum Flashen über die native USB-Buchse?',
+  'Restart': 'Neustart',
   'Toggle sign': 'Vorzeichen wechseln',
   'Mesh active': 'Mesh aktiv',
   'Provisioning mode (no config saved yet)': 'Einrichtungsmodus (noch keine Konfiguration gespeichert)',
@@ -309,6 +318,7 @@ const DE = {
   'Reset all settings to defaults and reboot?': 'Alle Einstellungen zurücksetzen und neu starten?',
   'Resetting...': 'Setzt zurück …',
   'Factory reset done, device is rebooting...': 'Zurückgesetzt, das Gerät startet neu …',
+  'Device is in download mode, ready for esptool.': 'Das Gerät ist im Download-Modus, bereit für esptool.',
   'Not applied: {0}': 'Nicht übernommen: {0}',
   'Not applied: server unreachable': 'Nicht übernommen: Server nicht erreichbar',
   'Not one of ours: only volume, mute and delay can be set':
@@ -476,6 +486,11 @@ async function loadConfig() {
   $('source_mode').value = String(cfg.source_mode);
   $('local_input_threshold_db').value = cfg.local_input_threshold_db;
   $('buffer_ms').value = cfg.buffer_ms;
+  $('usb_audio').checked = !!cfg.usb_audio;
+  // Only on the device's own page: through the server's list it would
+  // restart the server. Offered once the native port is a sound card.
+  $('flashRestart').hidden = !cfg.usb_audio;
+  $('flashConfirm').hidden = true;
   updateRoleFieldsEnabled();
   // A client's own page only; through the server its device list has it.
   $('volume_fields').hidden = !(cfg.role === 1 && selectedId === null);
@@ -762,6 +777,7 @@ $('save').addEventListener('click', async () => {
     source_mode: Number($('source_mode').value),
     local_input_threshold_db: Number($('local_input_threshold_db').value),
     buffer_ms: Number($('buffer_ms').value),
+    usb_audio: $('usb_audio').checked,
     mesh_enable: $('mesh_enable').checked,
     mesh_ssid: $('mesh_ssid').value,
     mesh_password: $('mesh_password').value,
@@ -971,6 +987,20 @@ $('resetYes').addEventListener('click', async () => {
   $('status').textContent = t('Resetting...');
   await fetch('/api/factory-reset', { method: 'POST' });
   $('status').textContent = t('Factory reset done, device is rebooting...');
+});
+
+// The device then waits in the ROM bootloader until it is flashed or reset,
+// so this asks first as well.
+function setFlashConfirm(open) {
+  $('flashRestart').hidden = open;
+  $('flashConfirm').hidden = !open;
+}
+$('flashRestart').addEventListener('click', () => setFlashConfirm(true));
+$('flashNo').addEventListener('click', () => setFlashConfirm(false));
+$('flashYes').addEventListener('click', async () => {
+  setFlashConfirm(false);
+  await fetch('/api/reboot-download', { method: 'POST' });
+  $('status').textContent = t('Device is in download mode, ready for esptool.');
 });
 
 /* ---- Device list (server only) ---- */

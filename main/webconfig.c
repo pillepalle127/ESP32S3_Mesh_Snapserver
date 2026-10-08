@@ -28,6 +28,7 @@
 #include "provisioning.h"
 #include "snapclient.h"
 #include "snapserver.h"
+#include "usb_audio.h"
 #include "sdkconfig.h"
 #if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
 #include "esp_mesh_lite.h"
@@ -52,9 +53,16 @@ static esp_timer_handle_t s_reboot_timer;
 /* Deferred reboot                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Set by POST /api/reboot-download: the delayed reboot goes into the ROM
+ * download mode instead (usb_audio_restart_to_download()). */
+static volatile bool s_reboot_to_download;
+
 static void reboot_timer_cb(void *arg)
 {
     (void)arg;
+    if (s_reboot_to_download) {
+        usb_audio_restart_to_download();
+    }
     esp_restart();
 }
 
@@ -213,6 +221,7 @@ static cJSON *build_config_json(void)
     cJSON_AddNumberToObject(root, "sub_hpf_hz", cfg.sub_hpf_hz);
     cJSON_AddBoolToObject(root, "sub_invert", cfg.sub_invert != 0U);
     cJSON_AddBoolToObject(root, "comp_enable", cfg.comp_enable != 0U);
+    cJSON_AddBoolToObject(root, "usb_audio", cfg.usb_audio != 0U);
     cJSON_AddNumberToObject(root, "comp_threshold_db", cfg.comp_threshold_db);
     cJSON_AddNumberToObject(root, "comp_ratio", cfg.comp_ratio_x10 / 10.0);
     cJSON_AddNumberToObject(root, "comp_makeup_db", cfg.comp_makeup_db);
@@ -340,7 +349,9 @@ static bool settings_changed_needing_reboot(const device_config_t *a, const devi
            /* Both roles size a multi-second buffer from this at startup --
             * the client's playback ring, the server's local output delay
             * line -- so a change only takes effect on the next boot. */
-           a->buffer_ms != b->buffer_ms;
+           a->buffer_ms != b->buffer_ms ||
+           /* TinyUSB and the USB PHY are set up once at startup. */
+           a->usb_audio != b->usb_audio;
 }
 
 static void apply_live_params(const device_config_t *cfg)
@@ -416,6 +427,9 @@ static esp_err_t apply_config_json(const cJSON *root, bool *reboot, const char *
     bool comp_enable = next.comp_enable != 0U;
     parse_bool_field(root, "comp_enable", &comp_enable);
     next.comp_enable = comp_enable ? 1U : 0U;
+    bool usb_audio = next.usb_audio != 0U;
+    parse_bool_field(root, "usb_audio", &usb_audio);
+    next.usb_audio = usb_audio ? 1U : 0U;
     /* Out of range becomes a value config_is_valid() rejects. */
     if (parse_number_field(root, "comp_threshold_db", &num)) {
         next.comp_threshold_db = (num < -128 || num > 127) ? 127 : (int8_t)num;
@@ -623,6 +637,24 @@ static esp_err_t api_factory_reset_post_handler(httpd_req_t *req)
     const esp_err_t send_result = send_json(req, resp);
 
     ESP_LOGW(TAG, "Factory reset requested via config page, rebooting shortly");
+    schedule_reboot();
+
+    return send_result;
+}
+
+/*
+ * Restart into the ROM download mode, so the native USB port takes esptool
+ * without holding BOOT -- needed once it is a USB sound card. The page
+ * offers it then; it works without USB audio as well.
+ */
+static esp_err_t api_reboot_download_post_handler(httpd_req_t *req)
+{
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "reboot", true);
+    const esp_err_t send_result = send_json(req, resp);
+
+    ESP_LOGW(TAG, "Restart into download mode requested via config page");
+    s_reboot_to_download = true;
     schedule_reboot();
 
     return send_result;
@@ -1168,8 +1200,8 @@ esp_err_t webconfig_start(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEBCONFIG_PORT;
     config.stack_size = 8192;
-    /* The default of 8 is one short of the routes registered below. */
-    config.max_uri_handlers = 12;
+    /* The default of 8 is too few for the routes registered below (12). */
+    config.max_uri_handlers = 14;
     /*
      * A browser keeps several connections open per host, an Android
      * WebView up to six, and a phone that roams to another mesh AP drops
@@ -1210,6 +1242,7 @@ esp_err_t webconfig_start(void)
         { .uri = "/api/config", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_config_post_handler },
         { .uri = "/api/volume", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_volume_post_handler },
         { .uri = "/api/factory-reset", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_factory_reset_post_handler },
+        { .uri = "/api/reboot-download", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_reboot_download_post_handler },
         { .uri = "/api/status", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)api_status_get_handler },
         { .uri = "/api/devices", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)api_devices_get_handler },
         { .uri = "/api/devices", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_devices_post_handler },
