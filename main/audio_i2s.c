@@ -12,7 +12,6 @@
 
 #include "device_config.h"
 #include "driver/gpio.h"
-#include "driver/gpio_filter.h"
 #include "driver/i2s_std.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -70,9 +69,6 @@ static const char *TAG = "AUDIO_I2S";
 #define TIMELINE_SLEW_US         5LL
 #define TIMELINE_SLEW_MASTER_US  2LL
 #define TIMELINE_DEADBAND_US   200.0f
-
-/* Slave only, see audio_i2s_start(): 156.25 kHz x 64 bit x 8 = 80 MHz. */
-#define I2S_SLAVE_CLOCK_RATE_HZ 156250U
 
 /*
  * How long a read or write waits for the I2S clock. A frame takes 20 ms,
@@ -779,19 +775,6 @@ esp_err_t audio_i2s_start(void)
     standard_config.slot_cfg.slot_bit_width = I2S_SLOT_BIT_WIDTH_32BIT;
     standard_config.slot_cfg.ws_width = 32;
 
-    /*
-     * As slave the rate is the master's; the driver only uses this to set
-     * the internal clock that samples BCLK and launches DOUT, at 8 x BCLK.
-     * For 48 kHz that is 24.576 MHz, a fractional 6.51 off the 160 MHz PLL:
-     * DOUT changed a jittery 2-3 of those cycles after the master's edge,
-     * close enough to the ADAU1701's sampling edge that a bit slipped now
-     * and then -- clicks several times a minute, with no gap in the data
-     * (2026-10-02). Asking for this rate gives 80 MHz, an exact /2.
-     */
-    if (s_i2s_slave) {
-        standard_config.clk_cfg.sample_rate_hz = I2S_SLAVE_CLOCK_RATE_HZ;
-    }
-
     result = i2s_channel_init_std_mode(s_tx_channel, &standard_config);
     if (result != ESP_OK) {
         ESP_LOGE(TAG, "TX standard mode failed: %s", esp_err_to_name(result));
@@ -824,27 +807,6 @@ esp_err_t audio_i2s_start(void)
     if (s_i2s_slave) {
         (void)gpio_pulldown_en((gpio_num_t)pins.i2s_bclk);
         (void)gpio_pulldown_en((gpio_num_t)pins.i2s_lrclk);
-
-        /*
-         * A spike on BCLK counts as an extra edge and shifts the word until
-         * the next LRCLK edge: a click, only with signal -- muted, a shifted
-         * zero is still zero (7788 on an ADAU1701, 2026-10-02). The pad's
-         * glitch filter drops pulses under two 80 MHz cycles (25 ns) and
-         * delays the real edge by as much, which a 3.072 MHz BCLK easily
-         * absorbs.
-         */
-        const gpio_num_t clock_pins[] = { (gpio_num_t)pins.i2s_bclk, (gpio_num_t)pins.i2s_lrclk };
-        for (size_t i = 0; i < sizeof(clock_pins) / sizeof(clock_pins[0]); ++i) {
-            const gpio_pin_glitch_filter_config_t filter_config = {
-                .clk_src = GLITCH_FILTER_CLK_SRC_DEFAULT,
-                .gpio_num = clock_pins[i],
-            };
-            gpio_glitch_filter_handle_t filter = NULL;
-            if (gpio_new_pin_glitch_filter(&filter_config, &filter) != ESP_OK ||
-                gpio_glitch_filter_enable(filter) != ESP_OK) {
-                ESP_LOGW(TAG, "Glitch filter on GPIO %d failed", (int)clock_pins[i]);
-            }
-        }
     }
 
     const i2s_event_callbacks_t tx_callbacks = { .on_send_q_ovf = on_tx_underflow };
