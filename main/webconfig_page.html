@@ -406,6 +406,9 @@ let selectionToken = 0;
 let configLoaded = false;
 let configBusy = false;
 let statusBusy = false;
+// Set once the device was told to restart or reset: the last message stays
+// up instead of being replaced by the next poll before the link drops.
+let statusFrozen = false;
 let serverName = '';
 
 const deviceQuery = () => '?id=' + encodeURIComponent(selectedId);
@@ -681,7 +684,7 @@ function updateServerNav(s) {
 async function loadStatus() {
   // A remote device that does not answer holds the request for seconds;
   // polls must not pile up behind it.
-  if (statusBusy) return;
+  if (statusBusy || statusFrozen) return;
   const token = selectionToken;
   statusBusy = true;
   try {
@@ -984,6 +987,7 @@ $('factoryReset').addEventListener('click', () => setResetConfirm(true));
 $('resetNo').addEventListener('click', () => setResetConfirm(false));
 $('resetYes').addEventListener('click', async () => {
   setResetConfirm(false);
+  statusFrozen = true;
   $('status').textContent = t('Resetting...');
   await fetch('/api/factory-reset', { method: 'POST' });
   $('status').textContent = t('Factory reset done, device is rebooting...');
@@ -999,8 +1003,15 @@ $('flashRestart').addEventListener('click', () => setFlashConfirm(true));
 $('flashNo').addEventListener('click', () => setFlashConfirm(false));
 $('flashYes').addEventListener('click', async () => {
   setFlashConfirm(false);
-  await fetch('/api/reboot-download', { method: 'POST' });
-  $('status').textContent = t('Device is in download mode, ready for esptool.');
+  try {
+    const res = await fetch('/api/reboot-download', { method: 'POST' });
+    statusFrozen = res.ok;
+    $('status').textContent = res.ok
+      ? t('Device is in download mode, ready for esptool.')
+      : t('Not applied: {0}', await res.text());
+  } catch (e) {
+    $('status').textContent = t('Not applied: server unreachable');
+  }
 });
 
 /* ---- Device list (server only) ---- */

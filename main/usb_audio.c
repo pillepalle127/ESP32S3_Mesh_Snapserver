@@ -534,6 +534,17 @@ esp_err_t usb_audio_start(void)
     snprintf(s_serial, sizeof(s_serial), "%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
+    /*
+     * Take USB-Serial-JTAG off the bus first, so the host sees its port go
+     * away before the sound card appears. Switched straight over, D+ can
+     * stay high throughout and the host keeps the old device (seen after
+     * esptool's reset on 2026-10-08). The override stays set while OTG
+     * owns the pads; route_phy_to_serial_jtag() clears it.
+     */
+    const usb_serial_jtag_pull_override_vals_t detached = { .dp_pd = true, .dm_pd = true };
+    usb_serial_jtag_ll_phy_enable_pull_override(&detached);
+    vTaskDelay(pdMS_TO_TICKS(200));
+
     const usb_phy_config_t phy_conf = {
         .controller = USB_PHY_CTRL_OTG,
         .target = USB_PHY_TARGET_INT,
@@ -561,6 +572,16 @@ static void route_phy_to_serial_jtag(void)
 {
     usb_serial_jtag_ll_phy_enable_external(false);
     usb_serial_jtag_ll_phy_enable_pad(true);
+    /*
+     * USJ's own pull-up again, see usb_audio_start(). The pull bits go back
+     * to their reset values (D+ pull-up, no pull-downs) before the override
+     * is dropped: left as set there, the board vanished from the bus in
+     * download mode (B688, 2026-10-08), and a software restart does not
+     * reset USJ.
+     */
+    const usb_serial_jtag_pull_override_vals_t reset_values = { .dp_pu = true };
+    usb_serial_jtag_ll_phy_enable_pull_override(&reset_values);
+    usb_serial_jtag_ll_phy_disable_pull_override();
 }
 
 void usb_audio_release_phy(void)
@@ -574,6 +595,16 @@ void usb_audio_release_phy(void)
 void usb_audio_restart_to_download(void)
 {
     ESP_LOGW(TAG, "Restarting into download mode on the native USB port");
+    /*
+     * The host has to see the sound card go away first. Handed straight to
+     * USB-Serial-JTAG, D+ never drops -- USJ pulls it up as OTG did, and a
+     * software restart does not reset USJ -- so the host keeps the old
+     * device and never enumerates the ROM's serial port (B688, 2026-10-08).
+     */
+    if (s_started) {
+        (void)tud_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
     route_phy_to_serial_jtag();
     REG_WRITE(RTC_CNTL_OPTION1_REG, RTC_CNTL_FORCE_DOWNLOAD_BOOT);
     esp_restart();

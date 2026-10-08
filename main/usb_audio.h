@@ -62,9 +62,11 @@ void usb_audio_take_stats(usb_audio_stats_t *out);
 
 /*
  * Restarts into the ROM download mode on USB-Serial-JTAG, so esptool can
- * flash through the native port without holding BOOT (connect with
- * --before no_reset). Works whether or not USB audio is running. Does not
- * return.
+ * flash through the native port without holding BOOT. Flash as usual,
+ * with --before usb_reset: USJ maps DTR to GPIO0, and with
+ * --before no_reset DTR stays asserted, so esptool's reset afterwards
+ * lands in download mode again (B688, 2026-10-08). Works whether or not
+ * USB audio is running. Does not return.
  */
 void usb_audio_restart_to_download(void);
 
