@@ -87,11 +87,14 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "Starting ESP32-S3 Mini Snapserver");
 
+    /* Before anything claims a pin the last switch-off may still hold, and
+     * before NVS: a wake-up that goes back to sleep must not count as a
+     * boot of a pin set on trial (device_config_load()). */
+    power_button_boot();
+
     ESP_ERROR_CHECK(initialize_nvs());
     ESP_ERROR_CHECK(initialize_network_stack());
     ESP_ERROR_CHECK(device_config_load());
-    /* Before anything claims a pin the last switch-off may still hold. */
-    power_button_boot();
 
     device_config_t cfg;
     device_config_get(&cfg);

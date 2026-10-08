@@ -164,7 +164,7 @@ typedef struct {
  * before, which older blobs hold as 0, so they read as master unchanged.
  *
  * power_button is the push button that switches the device off (held 2 s,
- * deep sleep) and on again (any press), wired to GND; 0 means none. It
+ * deep sleep) and on again (held 1 s), wired to GND; 0 means none. It
  * must be an RTC pin (pinmap_is_rtc()), the only ones that can wake the
  * chip. The last reserved byte before, so older blobs read as "none".
  *

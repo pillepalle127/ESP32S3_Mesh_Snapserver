@@ -248,7 +248,7 @@ still.
 
 ### Ein/Aus-Taster
 
-Ein Taster von einem GPIO (1–21) gegen GND, ohne weitere Bauteile. 2 s halten schaltet aus, drücken schaltet ein.
+Ein Taster von einem GPIO (1–21) gegen GND, ohne weitere Bauteile. 2 s halten schaltet aus, 1 s halten schaltet ein.
 Aus heißt Deep Sleep: Nur der ESP schläft, DAC, Verstärker und Spannungsregler am Akku ziehen weiter Strom.
 
 ### Potis

@@ -1,6 +1,6 @@
 /**
  * @file power_button.c
- * @brief Switch-off by a held button, switch-on by any press (deep sleep).
+ * @brief Switch-off and switch-on by a held button (deep sleep).
  */
 
 #include "power_button.h"
@@ -9,6 +9,7 @@
 
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
+#include "esp_attr.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "freertos/FreeRTOS.h"
@@ -24,6 +25,10 @@ static const char *TAG = "POWER_BUTTON";
 #define RELEASE_MS 100U
 
 static device_pins_t s_pins;
+
+/* The GPIO armed as wake-up, kept through deep sleep: power_button_boot()
+ * runs before the config is loaded. */
+static RTC_DATA_ATTR uint8_t s_wake_button;
 
 static bool pressed(void)
 {
@@ -58,6 +63,42 @@ static void hold_low(uint8_t gpio)
     (void)gpio_hold_en((gpio_num_t)gpio);
 }
 
+/* Deep sleep until the button goes down. Must be up already: the wake-up
+ * is on the level and would fire at once. */
+static void sleep_until_press(gpio_num_t button)
+{
+    (void)esp_sleep_enable_ext0_wakeup(button, 0);
+    /* The digital pull-up is gone in deep sleep; the RTC one takes over. */
+    (void)rtc_gpio_pullup_en(button);
+    (void)rtc_gpio_pulldown_dis(button);
+    s_wake_button = (uint8_t)button;
+    esp_deep_sleep_start();
+}
+
+/*
+ * True if the button that woke the chip stays down for
+ * POWER_BUTTON_WAKE_HOLD_MS. Up for RELEASE_MS counts as let go, so a
+ * bouncing contact does not.
+ */
+static bool held_after_wake(gpio_num_t button)
+{
+    /* Still the RTC pin the wake-up used; set up again rather than relied on. */
+    (void)rtc_gpio_init(button);
+    (void)rtc_gpio_set_direction(button, RTC_GPIO_MODE_INPUT_ONLY);
+    (void)rtc_gpio_pullup_en(button);
+    (void)rtc_gpio_pulldown_dis(button);
+
+    uint32_t up_ms = 0;
+    for (uint32_t waited_ms = 0; waited_ms < POWER_BUTTON_WAKE_HOLD_MS; waited_ms += POLL_MS) {
+        vTaskDelay(pdMS_TO_TICKS(POLL_MS));
+        up_ms = rtc_gpio_get_level(button) == 0 ? 0U : up_ms + POLL_MS;
+        if (up_ms >= RELEASE_MS) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static void switch_off(void)
 {
     ESP_LOGW(TAG, "Button held %u ms: switching off", (unsigned)POWER_BUTTON_HOLD_MS);
@@ -80,17 +121,11 @@ static void switch_off(void)
     gpio_deep_sleep_hold_en();
 #endif
 
-    /* The wake-up below is on the level: still pressed, it would fire at once. */
     wait_for_release();
 
-    const gpio_num_t button = (gpio_num_t)s_pins.power_button;
-    (void)esp_sleep_enable_ext0_wakeup(button, 0);
-    /* The digital pull-up is gone in deep sleep; the RTC one takes over. */
-    (void)rtc_gpio_pullup_en(button);
-    (void)rtc_gpio_pulldown_dis(button);
-
-    ESP_LOGI(TAG, "Off. A press on the button switches on again.");
-    esp_deep_sleep_start();
+    ESP_LOGI(TAG, "Off. Hold the button %u ms to switch on again.",
+             (unsigned)POWER_BUTTON_WAKE_HOLD_MS);
+    sleep_until_press((gpio_num_t)s_pins.power_button);
 }
 
 static void button_task(void *arg)
@@ -112,6 +147,21 @@ static void button_task(void *arg)
 
 void power_button_boot(void)
 {
+    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0 && s_wake_button != 0U) {
+        const gpio_num_t button = (gpio_num_t)s_wake_button;
+        /*
+         * A knock in a bag must not switch the device on. Back to sleep
+         * before the pads below are released, so the outputs stay at
+         * silence and the LED dark throughout.
+         */
+        if (!held_after_wake(button)) {
+            ESP_LOGI(TAG, "Button let go within %u ms: back to sleep",
+                     (unsigned)POWER_BUTTON_WAKE_HOLD_MS);
+            sleep_until_press(button);
+        }
+        ESP_LOGI(TAG, "Switched on by the power button");
+    }
+
     /*
      * The pads switch_off() held stay held after the wake-up until released.
      * Every usable pin, not just the current assignment: a save may have
@@ -124,10 +174,6 @@ void power_button_boot(void)
         if (pinmap_blocked_reason(gpio) == NULL) {
             (void)gpio_hold_dis((gpio_num_t)gpio);
         }
-    }
-
-    if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
-        ESP_LOGI(TAG, "Switched on by the power button");
     }
 }
 

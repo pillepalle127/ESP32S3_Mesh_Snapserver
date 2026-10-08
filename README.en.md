@@ -243,7 +243,7 @@ set **I2S clock** to **External**. Source, DAC and ESP then run on its clock. Wi
 
 ### Power button
 
-A button from a GPIO (1–21) to GND, no other parts. Hold it for 2 s to switch off, press it to switch on. Off means
+A button from a GPIO (1–21) to GND, no other parts. Hold it for 2 s to switch off, for 1 s to switch on. Off means
 deep sleep: only the ESP sleeps, DAC, amplifier and regulator on the battery keep drawing current.
 
 ### Pots

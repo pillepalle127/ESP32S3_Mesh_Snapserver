@@ -8,8 +8,9 @@
  *
  * Held for POWER_BUTTON_HOLD_MS while running, it switches the device off:
  * LED dark, I2S output held at silence, then deep sleep once the button is
- * let go. Any press wakes it, which is a normal boot. A short press while
- * running does nothing.
+ * let go. Any press wakes the chip, but it only switches on if the button
+ * stays down for POWER_BUTTON_WAKE_HOLD_MS; let go earlier, it goes
+ * straight back to sleep. A short press while running does nothing.
  *
  * Deep sleep only stops the ESP. Whatever else hangs on the battery -- the
  * board's regulator, DAC, DSP, amplifier -- keeps drawing current.
@@ -21,10 +22,13 @@
 #include "device_config.h"
 
 #define POWER_BUTTON_HOLD_MS 2000U
+#define POWER_BUTTON_WAKE_HOLD_MS 1000U
 
 /*
- * Releases the pins the last switch-off held at silence, and logs whether
- * the button woke the device. Call before anything claims a pin.
+ * After a wake-up by the button: back to deep sleep unless it is held for
+ * POWER_BUTTON_WAKE_HOLD_MS (blocks that long). Then releases the pins the
+ * last switch-off held at silence. Call first in app_main, before NVS is
+ * touched or anything claims a pin.
  */
 void power_button_boot(void);
 
