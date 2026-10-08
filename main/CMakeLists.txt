@@ -20,6 +20,7 @@ idf_component_register(
         "power_button.c"
         "voice_announce.c"
         "webconfig.c"
+        "usb_audio.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer

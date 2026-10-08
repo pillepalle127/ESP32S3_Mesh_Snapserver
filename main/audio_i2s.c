@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "usb_audio.h"
 
 static const char *TAG = "AUDIO_I2S";
 
@@ -996,7 +997,13 @@ static void note_clock_timeout(void)
     }
 }
 
-static esp_err_t capture_mono_from_rx(int16_t *mono, size_t mono_samples)
+/*
+ * usb_source: the server's capture, where a PC playing into the USB sound
+ * card replaces what came in over I2S (usb_audio_fill_stereo()). The I2S
+ * read stays either way -- its timing is what drains the USB FIFO at the
+ * server's clock. Not for a client's local input.
+ */
+static esp_err_t capture_mono_from_rx(int16_t *mono, size_t mono_samples, bool usb_source)
 {
     const size_t stereo_bytes =
         mono_samples * AUDIO_I2S_CHANNELS * sizeof(int16_t);
@@ -1023,6 +1030,10 @@ static esp_err_t capture_mono_from_rx(int16_t *mono, size_t mono_samples)
                  (unsigned)bytes_read,
                  (unsigned)stereo_bytes);
         return ESP_FAIL;
+    }
+
+    if (usb_source) {
+        (void)usb_audio_fill_stereo(s_input_stereo, mono_samples);
     }
 
     for (size_t i = 0; i < mono_samples; ++i) {
@@ -1337,7 +1348,7 @@ esp_err_t audio_i2s_capture_mono(int16_t *mono, size_t mono_samples)
         return ESP_ERR_INVALID_ARG;
     }
 
-    return capture_mono_from_rx(mono, mono_samples);
+    return capture_mono_from_rx(mono, mono_samples, false);
 }
 
 esp_err_t audio_i2s_write_mono(const int16_t *mono, size_t mono_samples)
@@ -1502,7 +1513,7 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
                  (long long)((entry_us - s_capture_left_us) / 1000LL),
                  (unsigned)(DMA_DESC_NUM * DMA_FRAME_NUM * 1000U / AUDIO_I2S_SAMPLE_RATE));
     }
-    esp_err_t result = capture_mono_from_rx(mono, mono_samples);
+    esp_err_t result = capture_mono_from_rx(mono, mono_samples, true);
     s_capture_left_us = esp_timer_get_time();
     if (result != ESP_OK) {
         return result;

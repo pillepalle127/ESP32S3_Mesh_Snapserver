@@ -40,6 +40,7 @@
 #include "freertos/idf_additions.h"
 #include "audio_i2s.h"
 #include "audio_opus.h"
+#include "usb_audio.h"
 
 static const char *TAG = "SNAPSERVER";
 
@@ -1532,6 +1533,31 @@ static int level1_match_rssi(const char *mac, const wifi_sta_list_t *sta_list)
     return 127;
 }
 
+/*
+ * USB sound card (usb_audio.h), only once a host has enumerated it. The
+ * FIFO level should hover around half; dropped/doubled frames mean the
+ * host is not following the feedback.
+ */
+static void log_usb_audio_stats(void)
+{
+    static bool s_was_active;
+    usb_audio_stats_t usb;
+    usb_audio_take_stats(&usb);
+    if (usb.active != s_was_active) {
+        ESP_LOGI(TAG, "%s", usb.active ? "USB audio: PC is playing, replacing the I2S input"
+                                       : "USB audio: PC stopped, back to the I2S input");
+        s_was_active = usb.active;
+    }
+    if (!usb.mounted) {
+        return;
+    }
+    ESP_LOGI(TAG, "USB audio: %s, FIFO %lu/%lu B, underrun %lu, dropped %lu, doubled %lu frames, host %d dB%s",
+             usb.active ? "playing" : (usb.streaming ? "open, silent" : "idle"),
+             (unsigned long)usb.fill_bytes, (unsigned long)usb.fifo_bytes,
+             (unsigned long)usb.underrun_frames, (unsigned long)usb.dropped_frames,
+             (unsigned long)usb.repeated_frames, (int)usb.volume_db, usb.muted ? " muted" : "");
+}
+
 static void stats_task(void *arg)
 {
     (void)arg;
@@ -1733,6 +1759,7 @@ static void stats_task(void *arg)
                          (unsigned long)tx_dry, (unsigned long)rx_lost,
                          (unsigned)(AUDIO_I2S_DMA_FRAME_NUM * 1000U / AUDIO_I2S_SAMPLE_RATE));
             }
+            log_usb_audio_stats();
             uint32_t limited = 0;
             float limit_db = 0.0f;
             audio_i2s_take_limiter_stats(&limited, &limit_db);
