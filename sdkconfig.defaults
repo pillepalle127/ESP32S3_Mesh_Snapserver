@@ -65,3 +65,10 @@ CONFIG_LWIP_TCP_OOSEQ_MAX_PBUFS=4
 
 # -Og left the Opus encoder at 88-97 % of a core on the server, and it lost capture
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# Fixed-point Opus. micro-opus defaults to float on the S3; measured on
+# esp-BDFC (2026-10-08, 20 ms frames, same test signal) fixed point is
+# faster everywhere: music encode c=5 9.4 -> 8.8 ms, c=0 (during an
+# announcement) 6.8 -> 5.5 ms, music decode 3.6 -> 3.3 ms, voice decode
+# 2.8 -> 1.2 ms. The image is 31 kB smaller.
+# CONFIG_OPUS_FLOATING_POINT is not set

@@ -7,15 +7,15 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
 - **Nächste Release-Notizen:** Slave-Takt 80 MHz und Glitch-Filter auf
   BCLK/LRCLK (in v0.5.2 als Änderung genannt) sind wieder ausgebaut,
   siehe „Knistern am 7788“. Der Ein/Aus-Taster schaltet erst nach 1 s
-  Halten ein.
+  Halten ein. Opus läuft mit Festkomma statt Gleitkomma.
 - **Features:** OTA über die Web-Seite; USB-Audio (Server-Eingang,
   Client als Mikrofon); Erkennung, ob das Handy bei Durchsagen direkt am
   Root hängt.
 - **Ein/Aus-Taster:** Ausstehende Client-Einstellungen (3 s verzögert
   gespeichert) gehen beim Ausschalten verloren; es fehlt ein Flush in
   `client_store` vor dem Deep Sleep.
-- **Rechenzeit:** Opus als Fixed-Point messen; Encoder-Anstieg während
-  Durchsagen; `tiT`/`wifi` auf Kern 0 während Durchsagen.
+- **Rechenzeit:** Encoder-Anstieg während Durchsagen; `tiT`/`wifi` auf
+  Kern 0 während Durchsagen.
 - **Durchsage:** Tests 1–5; `voice_dropped` (Mailbox-Größe);
   `docs/code-review-voice.md` nachziehen.
 - **Mesh/Robustheit:** Relay mit mehreren Kindern; hängender Zweig am
@@ -126,13 +126,29 @@ Bugs sind umgesetzt:
   USB.
   1. **Reserve auf Kern 1 bei Durchsagen.** Die Komplexität des
      Musik-Encoders sinkt während einer Durchsage schon auf 0
-     (`VOICE_MUSIC_COMPLEXITY` in `voice_announce.c`). Offen: Opus als
-     Fixed-Point bauen (`CONFIG_OPUS_FLOATING_POINT=y` heute) und messen, ob
-     das auf dem S3 mit seiner FPU überhaupt schneller ist. Seit 2026-09-29
+     (`VOICE_MUSIC_COMPLEXITY` in `voice_announce.c`). Seit 2026-09-29
      kosten Begrenzer-Vorausschau und Kompressor auf Kern 1 zusätzlich etwa
      8 Prozentpunkte (14E4 als Client: `audio_sink` 44 → 52 %). Seit dem
      Build mit `-O2` (9fcced3, 2026-10-02) braucht der Encoder laut
      v0.5.2 etwa 75 statt 90–97 % eines Kerns.
+
+     **Festkomma statt Gleitkomma (umgestellt 2026-10-08).** Gemessen auf
+     BDFC mit einem vorübergehenden Benchmark: 250 Frames à 20 ms, festes
+     Testsignal (Akkord, Sweep, leises Rauschen), Einstellungen wie im
+     Server, eigener Task auf Kern 1 vor dem Start von WLAN und Audio.
+
+     | Messung | Gleitkomma | Festkomma |
+     |---|---|---|
+     | Encode Musik c=5, 96 kbit/s | 9412 µs | 8787 µs (−6,6 %) |
+     | Encode Musik c=0 (Durchsage) | 6807 µs | 5466 µs (−19,7 %) |
+     | Decode Musik 48 kHz (Clients) | 3593 µs | 3309 µs (−7,9 %) |
+     | Decode Sprache 16 kHz → 48 kHz | 2788 µs | 1173 µs (−58 %) |
+
+     Während einer Durchsage (Encode c=0 plus Decode Sprache) sind das
+     zusammen 47,9 statt 33,2 % von Kern 1; den echten Durchsagebetrieb
+     habe ich danach nicht gemessen. `opus_audio` im Betrieb auf BDFC:
+     38,6 → 36,7 %, mit dem Signal, das dort gerade am Eingang lag. Das
+     Image ist 31 kB kleiner. Den Klang habe ich noch nicht verglichen.
   2. **Anstieg von tiT/wifi auf Kern 0 bei Durchsagen verstehen.** Drei
      UDP-Ströme mit je ~25 kbit/s erklären ihn nicht. Verdacht: viele kleine
      Pakete, Retransmits oder das Mesh-Relay. Messen (Pakete je Sekunde,
