@@ -203,15 +203,16 @@ Die Status-LED blitzt beim Start rot, grün und blau und zeigt danach den Zustan
 
 ## WLED
 
+[WLED](https://kno.wled.ge/) ([GitHub](https://github.com/wled/WLED)) ist eine freie Firmware für ESP8266 und
+ESP32, die adressierbare LED-Streifen steuert, mit Effekten, Web-Oberfläche und App. Auf einem ESP32 oder ESP32-S3
+sind es bis zu 16 384 LEDs, höchstens 2048 pro Ausgang, auf einem ESP8266 bis zu 1536.
+
 WLED-Controller im SnapMesh reagieren auf die Musik, ohne eigenes Mikrofon.
 
 1. In WLED den Usermod **AudioReactive** einschalten, Sync auf **Receive**, Port 11988 (Standard).
 2. Das WLED ins SnapMesh-WLAN hängen, mit SSID und Passwort des Mesh.
 
-Mehr ist nicht nötig. Jedes Gerät erkennt WLEDs in seinem eigenen WLAN und schickt ihnen, was sein Lautsprecher gerade
-spielt, Durchsagen inklusive und unabhängig von der Lautstärke. Die Server-Seite listet die gefundenen WLEDs unter
-„WLED“ mit Link (`http://<Server>:<Port>/`). Der Link funktioniert aus dem ganzen Mesh, egal an welchem Gerät das WLED
-hängt.
+Die Server-Seite listet jedes WLED mit Link (`http://<Server>:<Port>/`).
 
 Bis zu vier WLEDs pro Gerät. Das Gerät mit WLED braucht dafür 3–5 % eines Kerns. Die WLED-eigene Synchronisation
 zwischen WLEDs (Effekte, Farben) kommt nicht über Gerätegrenzen.
