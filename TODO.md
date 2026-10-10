@@ -1,6 +1,6 @@
 # Bugfix-Backlog
 
-## Offen, Stand 2026-10-07
+## Offen, Stand 2026-10-10
 
 Kurzliste; Einzelheiten in den Einträgen weiter unten.
 
@@ -14,10 +14,20 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
 - **Ein/Aus-Taster:** Ausstehende Client-Einstellungen (3 s verzögert
   gespeichert) gehen beim Ausschalten verloren; es fehlt ein Flush in
   `client_store` vor dem Deep Sleep.
-- **Rechenzeit:** Encoder-Anstieg während Durchsagen; `tiT`/`wifi` auf
-  Kern 0 während Durchsagen.
-- **Durchsage:** Tests 1–5; `voice_dropped` (Mailbox-Größe);
-  `docs/code-review-voice.md` nachziehen.
+- **WLED:** Peek bzw. Effekt-Test mit Musik und Durchsage; mehr als ein
+  WLED; WLED hinter einem Gerät der dritten Ebene (Weiterleitungskette)
+  auf Hardware. Siehe „WLED-Anbindung“.
+- **Rechenzeit:** `tiT`/`wifi` auf Kern 0 während Durchsagen. Der Encoder
+  ist geklärt, siehe „Encoder-Last am Server“.
+- **Durchsage:** neuen Empfang auf 14E4 und 7788 nachflashen und dort
+  messen; die App sendet leise (Pegel); Funkstörung, wenn ein Knoten
+  während einer Durchsage beitritt. `docs/code-review-voice.md`
+  nachziehen. Siehe „Durchsage: Abspielen nach Sequenznummer“.
+- **Knackser beim Speichern:** Jede gespeicherte Live-Einstellung hält die
+  Aufnahme des Servers gut 40 ms an (Flash-Schreiben), der I2S-Ausgang
+  läuft leer, alle Lautsprecher knacksen einmal (gesehen 2026-10-10).
+- **Musik-Abriss ohne Anlass:** BDFC verlor 2026-10-10 um 22:02 für 7 s die
+  Musikverbindung und baute sie neu auf (1,5 s stumm). Ursache offen.
 - **Mesh/Robustheit:** Relay mit mehreren Kindern; hängender Zweig am
   Server; Einbruch beim Abgang eines Clients; `SNAPSERVER_MAX_CLIENTS = 10`
   ungetestet; Fusion-Intervall und Reconnect-Intervall beobachten;
@@ -107,6 +117,59 @@ Bugs sind umgesetzt:
   damit mehrere Clients über Stunden synchron bleiben — siehe Plan-Datei.
 
 ## Nicht als Bug, aber vorgemerkt
+
+- **WLED-Anbindung (2026-10-10, `feat/wled-sync`).** Jedes Gerät fragt die
+  Stationen in seinem eigenen WLAN nach `/json/info`; antwortet ein WLED,
+  wertet es aus, was sein Lautsprecher gerade spielt (vor der Lautstärke,
+  Durchsagen inklusive), und schickt alle 20 ms ein AudioReactive-Paket
+  (Format „00002“, Port 11988) direkt an das WLED. Ohne WLED läuft keine
+  Analyse; einen Schalter gibt es nicht.
+  - Analyse eigener Bauart (WLED steht unter EUPL, übernommen sind nur
+    Paketformat und die 16 Frequenzbereiche): Hann-Fenster, 1024-Punkte-FFT
+    aus esp-dsp (beim Start gegen die eigene FFT geprüft, Abweichung 1e-6),
+    Bänder in dB, eine langsame Pegelautomatik, Beat aus dem Bass gegen
+    seine Schwankung der letzten halben Sekunde.
+  - Rechenzeit gemessen: Client 0,5–0,7 ms pro Frame, 3–3,6 % von Kern 1
+    (bei Stille 0,1 ms); Server 1 ms, 5 % von Kern 0. Erste Fassung mit
+    `double` und Puffern im PSRAM brauchte 1,4–1,9 ms.
+  - Erreichbarkeit: Hinter einem Client liegt das WLED hinter dessen NAPT.
+    Jeder Client bis zur zweiten Ebene leitet den Port des WLED (aus seiner
+    MAC, 20000–39999) eine Ebene nach unten weiter, der Server nimmt die
+    Verbindung selbst an (`wled_proxy.c`): sein Access Point reicht nichts
+    zwischen zwei seiner Stationen weiter (ein Laptop am Server konnte
+    einen Client am Server nicht einmal anpingen). Die Server-Seite listet
+    jedes WLED mit `http://<Server>:<Port>/`; aus dem Laptop am Server
+    getestet.
+  - Erst wurde per Multicast an alle Stationen gesendet, also auch an
+    Handys; jetzt nur noch an erkannte WLEDs.
+
+- **Durchsage: Abspielen nach Sequenznummer (2026-10-10).** Gemessen pro
+  Durchsage: kaum verlorene Pakete, aber rund zehn Abstände von 40–150 ms
+  in neun Sekunden, die meisten schon auf der Strecke Handy → Server. Die
+  alte 60-ms-PCM-Mailbox spielte dann Stille, wartete auf einen neuen
+  Vorpuffer und warf die nachkommenden Pakete weg. Jetzt
+  (`voice_playout.c`, Server und Clients): Pakete statt PCM puffern,
+  dekodieren, wenn der Frame fällig ist; ein fehlendes Paket mit Nachfolgern
+  wird verdeckt (Opus-PLC), bei einem Stau wird bis zu 100 ms verdeckt und
+  gewartet, danach läuft der Takt weiter; zu viel Puffer wird abgebaut,
+  bevorzugt das kleinste von vier Paketen (Sprechpause), je weiter über
+  dem Ziel, desto schneller. Vorpuffer unverändert 20 ms.
+  - In der Simulation gegen die alte Mailbox bei gleichen Ankunftszeiten:
+    mittlere und höchste Verzögerung gleich oder niedriger (120-ms-Stau pro
+    Sekunde: 37 statt 46 ms, Spitze 130 statt 150 ms), keine Stille in der
+    Sprache, etwa gleich viele verlorene Pakete.
+  - Auf dem Gerät (B688, BDFC, 1940): Server 552 gespielt, 7 verdeckt,
+    keine Stille in der Sprache; Clients 15–22 verdeckt; Puffer im Mittel
+    19–28 ms; der Player hielt seinen Takt (keine Neusynchronisation). Klang
+    im Hörtest gut.
+  - Jede Durchsage schreibt jetzt die Ankunftsabstände ins Log
+    („Phone -> server arrival“, „Server -> client arrival“).
+
+- **Encoder-Last am Server (2026-10-10).** `opus_audio` 67–69 % von Kern 1
+  bei Musik, der Encoder allein 9,3 ms pro Frame (47 %). Mit 32 KB
+  Befehls-Cache 63–64 % (Encoder 9,1 ms), für 16 KB internen RAM; nicht
+  übernommen. Während einer Durchsage läuft der Encoder ohnehin mit
+  Komplexität 0. Kein Handlungsbedarf.
 
 - **Knistern am 7788 als I2S-Slave eines ADAU1701 (2026-10-02; vorerst als
   gelöst betrachtet 2026-10-07, bei Bedarf neu aufmachen).** 7788 bekommt
