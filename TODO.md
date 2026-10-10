@@ -23,18 +23,24 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
   `client_store` vor dem Deep Sleep.
 - **WLED:** Peek bzw. Effekt-Test mit Musik und Durchsage; mehr als ein
   WLED; WLED hinter einem Gerät der dritten Ebene (Weiterleitungskette)
-  auf Hardware. Siehe „WLED-Anbindung“.
+  auf Hardware. An BDFC antwortete das WLED immer wieder 1,5–3 s lang
+  nicht auf Pings (neunmal in sechs Minuten, an B688 vorher nie), die
+  LED-Daten setzen dann aus; Signalstärke des WLED mitloggen. Siehe
+  „WLED-Anbindung“.
 - **Rechenzeit:** `tiT`/`wifi` auf Kern 0 während Durchsagen. Der Encoder
   ist geklärt, siehe „Encoder-Last am Server“.
 - **Durchsage:** neuen Empfang auf 14E4 und 7788 nachflashen und dort
   messen; die App sendet leise (Pegel); Funkstörung, wenn ein Knoten
-  während einer Durchsage beitritt. `docs/code-review-voice.md`
-  nachziehen. Siehe „Durchsage: Abspielen nach Sequenznummer“.
+  während einer Durchsage beitritt; zweimal 80 ms Stille in der Sprache
+  (BDFC und 1940, Pakete über 100 ms zu spät, 2026-10-10 23:33/23:34).
+  `docs/code-review-voice.md` nachziehen. Siehe „Durchsage: Abspielen nach Sequenznummer“.
 - **Knackser beim Speichern:** Jede gespeicherte Live-Einstellung hält die
   Aufnahme des Servers gut 40 ms an (Flash-Schreiben), der I2S-Ausgang
   läuft leer, alle Lautsprecher knacksen einmal (gesehen 2026-10-10).
 - **Musik-Abriss ohne Anlass:** BDFC verlor 2026-10-10 um 22:02 für 7 s die
-  Musikverbindung und baute sie neu auf (1,5 s stumm). Ursache offen.
+  Musikverbindung und baute sie neu auf (1,5 s stumm). Ursache offen. Die
+  Abrisse um 22:40 und 22:56 kamen von einem verschwundenen WLED (siehe
+  „WLED-Anbindung“); ob das auch um 22:02 so war, ist nicht belegt.
 - **Mesh/Robustheit:** Relay mit mehreren Kindern; hängender Zweig am
   Server; Einbruch beim Abgang eines Clients; `SNAPSERVER_MAX_CLIENTS = 10`
   ungetestet; Fusion-Intervall und Reconnect-Intervall beobachten;
@@ -149,6 +155,18 @@ Bugs sind umgesetzt:
     getestet.
   - Erst wurde per Multicast an alle Stationen gesendet, also auch an
     Handys; jetzt nur noch an erkannte WLEDs.
+  - Verschwundenes WLED: Ein WLED, das ausgesteckt wird oder neu startet,
+    bleibt rund 30 s in der Stationsliste des Access Points, und alles,
+    was in der Zeit an es geht, wiederholt der Funk ins Leere. Gesehen
+    2026-10-10 im Dauerlauf (22:40, WLED-Neustart an B688) und
+    nachgestellt (22:56, Stecker am WLED an BDFC gezogen): Die Musik riss
+    an BDFC und 1940 ab, beide Male genau so lange, wie das Gerät noch an
+    das WLED sendete -- auch noch, als das WLED längst an einem anderen
+    Knoten hing. Jetzt pingt jedes Gerät seine WLEDs zweimal pro Sekunde
+    und hält die Pakete an, solange 1,5 s keine Antwort kam; ein WLED, das
+    nie auf Pings antwortet, bekommt sie wie vorher. Gleicher Test
+    danach (23:04, WLED an B688): nach 1,5 s angehalten, 921 Pakete
+    zurückgehalten, 0 Sendefehler, kein Abriss, kein Unterlauf.
 
 - **Durchsage: Abspielen nach Sequenznummer (2026-10-10).** Gemessen pro
   Durchsage: kaum verlorene Pakete, aber rund zehn Abstände von 40–150 ms

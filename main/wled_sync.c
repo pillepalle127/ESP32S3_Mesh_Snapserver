@@ -20,8 +20,11 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "lwip/icmp.h"
+#include "lwip/inet_chksum.h"
 #include "lwip/ip.h"
 #include "lwip/lwip_napt.h"
+#include "lwip/prot/ip4.h"
 #include "lwip/priv/tcpip_priv.h"
 #include "lwip/sockets.h"
 #include "provisioning.h"
@@ -52,6 +55,21 @@ static const char *TAG = "WLED_SYNC";
  * reports "no data" after 2.5 s without a packet). */
 #define IDLE_EVERY_FRAMES  25U
 #define STATS_EVERY_US     (60LL * 1000000LL)
+
+/*
+ * A WLED that goes away -- unplugged, or restarting after a settings
+ * change -- stays on the access point until its inactive timer runs out,
+ * about 30 s, and every packet sent to it meanwhile is repeated by the
+ * radio for nobody. On 2026-10-10 the server kept sending 50 packets a
+ * second to a restarting WLED; in the same seconds 336 sends failed and
+ * the music to both clients behind it stalled until they were reconnected.
+ * So each WLED is pinged twice a second and gets packets only while it
+ * answered within the last 1.5 s. A WLED that never answered a ping is
+ * sent to unchecked, as before.
+ */
+#define PING_EVERY_US      (500LL * 1000LL)
+#define ANSWER_WITHIN_US   (1500LL * 1000LL)
+#define PING_ID            0x574CU /* "WL" */
 
 /*
  * Finding WLEDs. Every 5 s the station list of our own access point. A new
@@ -126,6 +144,14 @@ static station_t s_stations[MAX_STATIONS];
 static relay_t s_relays[MAX_RELAYS];
 static uint32_t s_mapped_on; /* mesh address the forwards point from */
 
+/* One WLED as the sync task sees it, see PING_EVERY_US. */
+typedef struct {
+    uint32_t ip;
+    int64_t  pinged_us;
+    int64_t  answered_us; /* 0 = never answered */
+    bool     holding;
+} reach_t;
+
 /* What the sync task sends to, written by the finder task. */
 static portMUX_TYPE s_targets_lock = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_targets[MAX_WLEDS];
@@ -162,6 +188,90 @@ static void copy_window(uint32_t written)
     memcpy(s_window + first, s_ring, (WLED_ANALYSIS_FFT_SIZE - first) * sizeof(int16_t));
 }
 
+/* Carries over what is known about each WLED still in `targets`; reach[i]
+ * then belongs to targets[i]. */
+static void update_reach(reach_t *reach, const uint32_t *targets, size_t count)
+{
+    reach_t next[MAX_WLEDS] = {0};
+    for (size_t i = 0; i < count; ++i) {
+        next[i].ip = targets[i];
+        for (size_t j = 0; j < MAX_WLEDS; ++j) {
+            if (reach[j].ip == targets[i]) {
+                next[i] = reach[j];
+                break;
+            }
+        }
+    }
+    memcpy(reach, next, sizeof(next));
+}
+
+static void send_ping(int fd, uint32_t ip, uint16_t seq)
+{
+    struct icmp_echo_hdr echo = {0};
+    ICMPH_TYPE_SET(&echo, ICMP_ECHO);
+    ICMPH_CODE_SET(&echo, 0);
+    echo.id = htons(PING_ID);
+    echo.seqno = htons(seq);
+    echo.chksum = inet_chksum(&echo, sizeof(echo));
+    const struct sockaddr_in to = {.sin_family = AF_INET, .sin_addr.s_addr = ip};
+    (void)sendto(fd, &echo, sizeof(echo), MSG_DONTWAIT, (const struct sockaddr *)&to, sizeof(to));
+}
+
+/* Notes the echo replies that came in. A raw socket gets the IP header
+ * too, and every ICMP packet for this node. */
+static void take_answers(int fd, reach_t *reach, size_t count, int64_t now_us)
+{
+    uint32_t buf[16];
+    struct sockaddr_in from;
+    socklen_t from_len = sizeof(from);
+    int got;
+    while ((got = recvfrom(fd, buf, sizeof(buf), MSG_DONTWAIT, (struct sockaddr *)&from,
+                           &from_len)) > 0) {
+        from_len = sizeof(from);
+        const struct ip_hdr *iph = (const struct ip_hdr *)buf;
+        const size_t header = IPH_HL_BYTES(iph);
+        if ((size_t)got < header + sizeof(struct icmp_echo_hdr)) {
+            continue;
+        }
+        const struct icmp_echo_hdr *echo = (const struct icmp_echo_hdr *)((uint8_t *)buf + header);
+        if (ICMPH_TYPE(echo) != ICMP_ER || echo->id != htons(PING_ID)) {
+            continue;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            if (reach[i].ip == from.sin_addr.s_addr) {
+                reach[i].answered_us = now_us;
+            }
+        }
+    }
+}
+
+/* Pings each WLED when due and decides who gets packets now. */
+static void check_reach(int fd, reach_t *reach, size_t count, int64_t now_us, uint16_t *seq)
+{
+    if (fd < 0) {
+        return;
+    }
+    take_answers(fd, reach, count, now_us);
+    for (size_t i = 0; i < count; ++i) {
+        reach_t *r = &reach[i];
+        if (now_us - r->pinged_us >= PING_EVERY_US) {
+            send_ping(fd, r->ip, (*seq)++);
+            r->pinged_us = now_us;
+        }
+        const bool holding = r->answered_us != 0 && now_us - r->answered_us > ANSWER_WITHIN_US;
+        if (holding != r->holding) {
+            const esp_ip4_addr_t addr = {.addr = r->ip};
+            if (holding) {
+                ESP_LOGW(TAG, "WLED at " IPSTR " not answering, holding its packets",
+                         IP2STR(&addr));
+            } else {
+                ESP_LOGI(TAG, "WLED at " IPSTR " answering again", IP2STR(&addr));
+            }
+            r->holding = holding;
+        }
+    }
+}
+
 static void sync_task(void *arg)
 {
     (void)arg;
@@ -174,6 +284,13 @@ static void sync_task(void *arg)
         .sin_family = AF_INET,
         .sin_port = htons(SYNC_PORT),
     };
+    const int ping_fd = socket(AF_INET, SOCK_RAW, IPPROTO_ICMP);
+    if (ping_fd < 0) {
+        ESP_LOGW(TAG, "No ping socket (errno %d): sending to WLEDs unchecked", errno);
+    }
+    reach_t reach[MAX_WLEDS] = {0};
+    uint16_t ping_seq = 0U;
+    int64_t last_run_us = 0;
 
     uint32_t read = __atomic_load_n(&s_written, __ATOMIC_ACQUIRE);
     uint32_t idle_frames = 0U;
@@ -182,6 +299,7 @@ static void sync_task(void *arg)
     int64_t stats_since_us = esp_timer_get_time();
     uint32_t frames = 0U;
     uint32_t sent = 0U;
+    uint32_t held = 0U;
     uint32_t skipped = 0U;
     uint32_t send_errors = 0U;
     uint32_t beats = 0U;
@@ -229,9 +347,25 @@ static void sync_task(void *arg)
         memcpy(targets, s_targets, sizeof(targets));
         portEXIT_CRITICAL(&s_targets_lock);
 
+        update_reach(reach, targets, target_count);
+        if (now_us - last_run_us > PING_EVERY_US) {
+            /* Nothing was pinged while there was no audio: a fresh start. */
+            for (size_t i = 0; i < target_count; ++i) {
+                if (reach[i].answered_us != 0) {
+                    reach[i].answered_us = now_us;
+                }
+            }
+        }
+        last_run_us = now_us;
+        check_reach(ping_fd, reach, target_count, now_us, &ping_seq);
+
         idle_frames = active ? 0U : idle_frames + 1U;
         if (active || idle_frames % IDLE_EVERY_FRAMES == 0U) {
             for (size_t i = 0; i < target_count; ++i) {
+                if (reach[i].holding) {
+                    ++held;
+                    continue;
+                }
                 dst.sin_addr.s_addr = targets[i];
                 if (sendto(fd, &packet, sizeof(packet), MSG_DONTWAIT,
                            (const struct sockaddr *)&dst, sizeof(dst)) == (int)sizeof(packet)) {
@@ -246,16 +380,16 @@ static void sync_task(void *arg)
             /* Analysis time per 20 ms frame is the CPU this costs. */
             /* Beats and level are what WLED gets: level 0-255. */
             ESP_LOGI(TAG,
-                     "%u frames, %u sent to %u WLED(s), %u skipped, %u send errors, "
-                     "%u beats, level avg %.0f max %.0f, "
+                     "%u frames, %u sent to %u WLED(s), %u held (not answering), %u skipped, "
+                     "%u send errors, %u beats, level avg %.0f max %.0f, "
                      "analysis avg %lld us max %lld us (%.1f %% of a core)",
-                     (unsigned)frames, (unsigned)sent, (unsigned)target_count, (unsigned)skipped,
-                     (unsigned)send_errors, (unsigned)beats,
+                     (unsigned)frames, (unsigned)sent, (unsigned)target_count, (unsigned)held,
+                     (unsigned)skipped, (unsigned)send_errors, (unsigned)beats,
                      (double)(frames ? level_sum / (float)frames : 0.0f), (double)level_max,
                      frames ? busy_us / frames : 0LL, max_us,
                      (double)busy_us * 100.0 / (double)(now_us - stats_since_us));
             stats_since_us = now_us;
-            frames = sent = skipped = send_errors = beats = 0U;
+            frames = sent = held = skipped = send_errors = beats = 0U;
             level_sum = level_max = 0.0f;
             busy_us = max_us = 0;
         }

@@ -9,7 +9,10 @@
  * its output -- at the moment it plays, so the lights match the speaker,
  * not the stream 3 s ahead -- and send it one 44-byte packet per 20 ms
  * frame, straight to the WLED's address on port 11988. Phones and mesh
- * nodes on the same access point get nothing.
+ * nodes on the same access point get nothing. Each WLED is also pinged
+ * twice a second; one that stops answering gets no packets until it does
+ * again, so a WLED that is unplugged or restarting does not tie up the
+ * radio the music shares.
  *
  * A WLED behind a client sits behind that client's NAPT and could not be
  * reached from the rest of the mesh. So each WLED gets a port from its MAC,
