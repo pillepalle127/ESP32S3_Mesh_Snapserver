@@ -1,3 +1,6 @@
+# The target lives here too: sdkconfig is not in git, and without this a
+# fresh checkout builds for the plain ESP32 unless set-target ran first.
+CONFIG_IDF_TARGET="esp32s3"
 # 4 MB in the image header: IDF refuses to boot when the chip is smaller than
 # the header says, and a larger chip just leaves the rest unused. So one
 # image serves 4, 8 and 16 MB boards; partitions.csv fits in 4 MB.
