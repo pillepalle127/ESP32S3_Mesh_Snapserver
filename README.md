@@ -272,6 +272,23 @@ Eine WS2812 blitzt beim Start rot, grün und blau und zeigt danach den Zustand:
 
 ---
 
+## WLED
+
+WLED-Controller im SnapMesh reagieren auf die Musik, ohne eigenes Mikrofon.
+
+1. In WLED den Usermod **AudioReactive** einschalten, Sync auf **Receive**, Port 11988 (Standard).
+2. Das WLED ins SnapMesh-WLAN hängen, mit SSID und Passwort des Mesh.
+
+Mehr ist nicht nötig. Jedes Gerät erkennt WLEDs in seinem eigenen WLAN und schickt ihnen, was sein Lautsprecher gerade
+spielt, Durchsagen inklusive und unabhängig von der Lautstärke. Die Server-Seite listet die gefundenen WLEDs unter
+„WLED“ mit Link (`http://<Server>:<Port>/`). Der Link funktioniert aus dem ganzen Mesh, egal an welchem Gerät das WLED
+hängt.
+
+Bis zu vier WLEDs pro Gerät. Das Gerät mit WLED braucht dafür 3–5 % eines Kerns. Die WLED-eigene Synchronisation
+zwischen WLEDs (Effekte, Farben) kommt nicht über Gerätegrenzen.
+
+---
+
 ## SnapAnnounce App
 
 <img src="docs/snapannounce-icon.png" alt="SnapAnnounce-Icon" width="72" align="left">

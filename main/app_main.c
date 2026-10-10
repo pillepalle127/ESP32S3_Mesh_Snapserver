@@ -21,6 +21,7 @@
 #include "power_button.h"
 #include "voice_announce.h"
 #include "webconfig.h"
+#include "wled_sync.h"
 
 static const char *TAG = "APP";
 
@@ -142,6 +143,9 @@ void app_main(void)
      * also calls it -- is a harmless no-op the second time.
      */
     ESP_ERROR_CHECK(audio_i2s_start());
+
+    /* Not fatal: without it WLEDs just stay dark. */
+    (void)wled_sync_start(!client_role);
 
     /* The volume set for this speaker on the page or in the app. */
     {

@@ -72,6 +72,11 @@
 <div id="device_list"></div>
 </div>
 
+<div id="wled_section" hidden>
+<h2>WLED</h2>
+<div id="wled_list"></div>
+</div>
+
 <h2 id="settings_title" hidden></h2>
 
 <h2>Role</h2>
@@ -320,6 +325,8 @@ const DE = {
   'knob {0} %': 'Poti {0} %',
   'no volume knob': 'ohne Lautstärke',
   'This server ({0})': 'Dieser Server ({0})',
+  'no address in the mesh yet': 'noch ohne Adresse im Mesh',
+  'at {0}': 'an {0}',
 };
 
 function t(text, ...args) {
@@ -1087,6 +1094,52 @@ function updateDeviceRow(row, dev) {
 
 let devicesBusy = false;
 
+// WLEDs found by any device, each with the link that reaches it from the
+// whole mesh (the devices forward a port up to the server's network). Read
+// from each device's status, less often than the list: a client answers
+// over the server's relay.
+let wledDevices = [];
+let wledBusy = false;
+
+async function loadWleds() {
+  if (wledBusy || !hasDeviceList || embedded) return;
+  wledBusy = true;
+  const found = [];
+  try {
+    const targets = [{ name: serverName, url: '/api/status' },
+      ...wledDevices.map((c) => ({ name: c.name, url: '/api/devices/status?id=' + encodeURIComponent(c.id) }))];
+    for (const target of targets) {
+      try {
+        const res = await fetch(target.url);
+        if (!res.ok) continue;
+        const s = await res.json();
+        for (const w of s.wleds || []) found.push({ name: w.name, url: w.url, device: target.name });
+      } catch (e) {
+        // A device that does not answer just shows no WLEDs this round.
+      }
+    }
+  } finally {
+    wledBusy = false;
+  }
+  const list = $('wled_list');
+  list.textContent = '';
+  for (const w of found) {
+    const row = document.createElement('div');
+    if (w.url) {
+      const link = document.createElement('a');
+      link.href = w.url;
+      link.target = '_blank';
+      link.textContent = w.name;
+      row.append(link, ' \u00b7 ' + w.url.replace(/^http:\/\//, '').replace(/\/$/, ''));
+    } else {
+      row.append(w.name + ' \u00b7 ' + t('no address in the mesh yet'));
+    }
+    row.append(' \u00b7 ' + t('at {0}', w.device));
+    list.append(row);
+  }
+  $('wled_section').hidden = found.length === 0;
+}
+
 async function loadDevices() {
   if (devicesBusy) return;
   devicesBusy = true;
@@ -1110,6 +1163,7 @@ async function loadDevices() {
     return (ha - hb) || a.name.localeCompare(b.name);
   });
   const devices = [Object.assign({ server: true, name: serverName }, d.server), ...clients];
+  wledDevices = clients.filter((c) => c.own);
 
   const list = $('device_list');
   const seen = new Set();
@@ -1165,6 +1219,8 @@ loadDevices();
 // the device list so joins, leaves and changes from other controllers show.
 setInterval(loadStatus, 2000);
 setInterval(loadDevices, 3000);
+setTimeout(loadWleds, 1500);
+setInterval(loadWleds, 15000);
 </script>
 </body>
 </html>

@@ -20,6 +20,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "wled_sync.h"
 
 static const char *TAG = "AUDIO_SINK";
 
@@ -1232,6 +1233,8 @@ static void player_task(void *arg)
         /* The LED shows the signal, not the speaker: measured before the
          * volume, so it keeps moving at any volume setting. */
         status_led_set_level_db(rms_dbfs(chosen, AUDIO_SINK_FRAME_SAMPLES));
+        /* WLED gets the same, for the same reason. */
+        wled_sync_feed(chosen, AUDIO_SINK_FRAME_SAMPLES);
 
         const float gain = s_volume_gain;
         if (gain < 1.0f) {

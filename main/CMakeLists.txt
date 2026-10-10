@@ -20,6 +20,9 @@ idf_component_register(
         "power_button.c"
         "voice_announce.c"
         "webconfig.c"
+        "wled_analysis.c"
+        "wled_sync.c"
+        "wled_proxy.c"
     INCLUDE_DIRS "."
     REQUIRES
         esp_timer
@@ -31,6 +34,7 @@ idf_component_register(
         esp_driver_i2s
         esp_driver_rmt
         esp_http_server
+        esp_http_client
         lwip
         mdns
         nvs_flash

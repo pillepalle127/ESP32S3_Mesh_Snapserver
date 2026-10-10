@@ -1,4 +1,6 @@
 dependencies:
+  # S3-optimised FFT for the WLED analysis (wled_analysis.c).
+  espressif/esp-dsp: "^1.8.2"
   idf:
     version: ">=5.1.0"
   esphome/micro-opus: "^0.4.1"

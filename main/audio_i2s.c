@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "wled_sync.h"
 
 static const char *TAG = "AUDIO_I2S";
 
@@ -1578,6 +1579,10 @@ esp_err_t audio_i2s_read_frame(int16_t *mono,
     if (s_voice_active) {
         output = assemble_voice_frame(mono_samples);
     }
+
+    /* What this speaker plays, before the volume: the lights follow the
+     * music, not the knob. */
+    wled_sync_feed(output, mono_samples);
 
     return apply_dsp_and_output(output, mono_samples);
 }

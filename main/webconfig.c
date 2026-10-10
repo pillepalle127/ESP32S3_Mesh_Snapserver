@@ -28,6 +28,8 @@
 #include "provisioning.h"
 #include "snapclient.h"
 #include "snapserver.h"
+#include "wled_sync.h"
+#include "lwip/sockets.h"
 #include "sdkconfig.h"
 #if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
 #include "esp_mesh_lite.h"
@@ -740,12 +742,71 @@ static cJSON *build_status_json(void)
         }
     }
 
+    /* WLEDs on this device's access point, each with the link that reaches
+     * it from anywhere in the mesh (wled_sync.h). */
+    wled_sync_info_t wleds[4];
+    const size_t wled_count = wled_sync_list(wleds, sizeof(wleds) / sizeof(wleds[0]));
+    cJSON *wled_list = cJSON_AddArrayToObject(root, "wleds");
+    for (size_t i = 0; i < wled_count; ++i) {
+        cJSON *entry = cJSON_CreateObject();
+        cJSON_AddStringToObject(entry, "name", wleds[i].name);
+        if (wleds[i].url[0] != '\0') {
+            cJSON_AddStringToObject(entry, "url", wleds[i].url);
+        } else {
+            cJSON_AddNullToObject(entry, "url");
+        }
+        cJSON_AddItemToArray(wled_list, entry);
+    }
+
     return root;
 }
 
 static esp_err_t api_status_get_handler(httpd_req_t *req)
 {
     return send_json(req, build_status_json());
+}
+
+/*
+ * A node below asks to have a WLED's port forwarded to it, see
+ * wled_sync_relay_forward(). Body {"port": n}; the answer {"url": ...} is
+ * where the mesh reaches it then. The node below is whoever asks.
+ */
+static esp_err_t api_wled_forward_post_handler(httpd_req_t *req)
+{
+    char body[64];
+    if (read_body(req, body, sizeof(body)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad request body");
+        return ESP_OK;
+    }
+
+    /* The server socket is dual-stack: IPv4 peers arrive mapped. */
+    uint32_t peer = 0U;
+    struct sockaddr_storage addr;
+    socklen_t addr_len = sizeof(addr);
+    if (getpeername(httpd_req_to_sockfd(req), (struct sockaddr *)&addr, &addr_len) == 0) {
+        if (addr.ss_family == AF_INET) {
+            peer = ((const struct sockaddr_in *)&addr)->sin_addr.s_addr;
+        } else if (addr.ss_family == AF_INET6) {
+            memcpy(&peer, &((const struct sockaddr_in6 *)&addr)->sin6_addr.s6_addr[12], sizeof(peer));
+        }
+    }
+
+    cJSON *request = cJSON_Parse(body);
+    const cJSON *port = cJSON_GetObjectItemCaseSensitive(request, "port");
+    char url[WLED_SYNC_URL_LEN] = "";
+    const esp_err_t result =
+        (cJSON_IsNumber(port) && port->valueint > 0 && port->valueint < 65536 && peer != 0U)
+            ? wled_sync_relay_forward(peer, (uint16_t)port->valueint, url, sizeof(url))
+            : ESP_ERR_INVALID_ARG;
+    cJSON_Delete(request);
+    if (result != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, esp_err_to_name(result));
+        return ESP_OK;
+    }
+
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddStringToObject(resp, "url", url);
+    return send_json(req, resp);
 }
 
 /*
@@ -1168,8 +1229,8 @@ esp_err_t webconfig_start(void)
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = WEBCONFIG_PORT;
     config.stack_size = 8192;
-    /* The default of 8 is one short of the routes registered below. */
-    config.max_uri_handlers = 12;
+    /* The default of 8 is too few for the routes registered below (12). */
+    config.max_uri_handlers = 13;
     /*
      * A browser keeps several connections open per host, an Android
      * WebView up to six, and a phone that roams to another mesh AP drops
@@ -1216,6 +1277,7 @@ esp_err_t webconfig_start(void)
         { .uri = "/api/devices/config", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)api_device_config_get_handler },
         { .uri = "/api/devices/config", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_device_config_post_handler },
         { .uri = "/api/devices/status", .method = HTTP_GET, .handler = timed_handler, .user_ctx = (void *)api_device_status_get_handler },
+        { .uri = "/api/wled-forward", .method = HTTP_POST, .handler = timed_handler, .user_ctx = (void *)api_wled_forward_post_handler },
     };
 
     for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); ++i) {

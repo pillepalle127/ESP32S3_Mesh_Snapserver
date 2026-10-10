@@ -19,6 +19,16 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 0.5.3
+  espressif/esp-dsp:
+    component_hash: ed9ac175b14e0414399a2b33c525579414b5bad19a2a67b12ea212def96f9a98
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.8.2
   espressif/esp_modem:
     component_hash: 06abed971065e9cb88039e011fd85ec1412c7416d3a3d84541a7a432e8d3f94d
     dependencies:
@@ -176,9 +186,10 @@ dependencies:
     version: 5.4.3
 direct_dependencies:
 - esphome/micro-opus
+- espressif/esp-dsp
 - espressif/mdns
 - espressif/mesh_lite
 - idf
-manifest_hash: 742fd53e261a8169265721ad1fb0fee7250e7e580e90fe4dc0b3301a9dc74620
+manifest_hash: b07ae0ec3578410b290007457fe6171abda086b0a895caa86d90c9fb707da162
 target: esp32s3
 version: 2.0.0
