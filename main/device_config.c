@@ -209,6 +209,7 @@ static void seed_defaults(device_config_t *cfg)
     cfg->comp_threshold_db = DEVICE_CONFIG_COMP_DEFAULT_THRESHOLD_DB;
     cfg->comp_ratio_x10 = DEVICE_CONFIG_COMP_DEFAULT_RATIO_X10;
     cfg->comp_makeup_db = DEVICE_CONFIG_COMP_DEFAULT_MAKEUP_DB;
+    cfg->usb_audio = 0U;
     cfg->sub_channel = SUBWOOFER_OUTPUT_CHANNEL;
     cfg->wideband_channel = WIDEBAND_OUTPUT_CHANNEL;
 
@@ -255,6 +256,9 @@ static bool config_is_valid(const device_config_t *cfg)
         return false;
     }
     if (cfg->sub_invert > 1U) {
+        return false;
+    }
+    if (cfg->usb_audio > 1U) {
         return false;
     }
     if (cfg->comp_enable > 1U ||

@@ -147,7 +147,7 @@ dependencies:
       require: private
       version: '>=5.0'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     targets:
     - esp32s2
@@ -189,7 +189,8 @@ direct_dependencies:
 - espressif/esp-dsp
 - espressif/mdns
 - espressif/mesh_lite
+- espressif/tinyusb
 - idf
-manifest_hash: b07ae0ec3578410b290007457fe6171abda086b0a895caa86d90c9fb707da162
+manifest_hash: ea3044554031f8522461a088abe11be069d78e39562ef969c5c375bdd122bee5
 target: esp32s3
 version: 2.0.0
