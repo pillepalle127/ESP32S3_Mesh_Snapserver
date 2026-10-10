@@ -7,7 +7,7 @@
  * Source arbitration follows the ESP32_Mesh_Snapclient reference project
  * (network vs. A2DP there, network vs. local I2S input here): exactly one
  * source is ever fed to the DSP/output stage. A live announcement (see
- * audio_sink_feed_voice()) is not a third source but an overlay: while one
+ * audio_sink_push_voice()) is not a third source but an overlay: while one
  * plays it replaces the output, and the active source keeps running
  * underneath exactly as on a muted client, so the music carries on
  * seamlessly afterwards. Two rules differ from the reference, both for
@@ -77,17 +77,18 @@ size_t audio_sink_feed_network(const int16_t *mono_pcm,
                                int64_t chunk_ts_us);
 
 /*
- * Feeds a piece of live voice-announcement PCM (from voice_announce.c's UDP
- * receive task, a level-1-only client concern). No explicit arm/disarm call
- * exists: receiving here IS the signal, so the announcement overlays the
- * output purely based on how recently this was last called (see the header
- * comment). mono_samples is typically 480 (10 ms); pushed
- * into a small fixed mailbox that is drained, never waited on -- a
- * deliberately different contract from audio_sink_feed_network()'s ring,
- * matching the announcement path's "drop stale audio rather than buffer it"
- * design.
+ * Queues one announcement packet from voice_announce.c's receive task: seq
+ * is the server's sequence number, the payload one Opus packet (len 0: the
+ * server's 10 ms silence primer). No explicit arm/disarm call exists:
+ * receiving here IS the signal, so the announcement overlays the output
+ * purely based on how recently this was last called (see the header
+ * comment). The packet is decoded when its frame is due; a missing one is
+ * concealed, a late one dropped (voice_playout.h). Never blocks.
  */
-void audio_sink_feed_voice(const int16_t *mono, size_t mono_samples);
+void audio_sink_push_voice(uint32_t seq, const uint8_t *payload, size_t len);
+
+/* A new announcement begins: forget whatever is still queued. */
+void audio_sink_reset_voice(void);
 
 /*
  * Clock synchronisation result from snapclient.c: offset_us is
@@ -114,7 +115,7 @@ void audio_sink_set_volume(int32_t percent, bool muted);
  * in ServerSettings). While it is, this speaker plays no music, whether or
  * not the announcement itself reaches it -- music in the same room would
  * clash with it. The announcement, if it arrives, is played by the overlay
- * (audio_sink_feed_voice()) and is not affected by this.
+ * (audio_sink_push_voice()) and is not affected by this.
  *
  * Separate from audio_sink_set_volume()'s mute, which is the listener's own
  * setting and silences the announcement as well.

@@ -26,7 +26,6 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "opus.h"
 #include "snapserver.h"
 #include "status_led.h"
 
@@ -37,11 +36,9 @@ static const char *TAG = "VOICE";
 #define TASK_STACK_CAPS (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 
 /*
- * Both tasks decode Opus, and the server task also pushes the announcement
- * mute (snapserver_refresh_announcement() runs the whole ServerSettings
- * send path, log lines included). Opus keeps its big temporaries on its own
- * pseudostack (PSRAM, see the micro-opus Kconfig), but still wants a few kB
- * of real stack. Both stacks are PSRAM too, so being generous is free.
+ * The server task pushes the announcement mute (snapserver_refresh_
+ * announcement() runs the whole ServerSettings send path, log lines
+ * included). Both stacks are PSRAM, so being generous is free.
  */
 #define VOICE_SERVER_TASK_STACK 10240
 #define VOICE_CLIENT_TASK_STACK 10240
@@ -51,38 +48,24 @@ static const char *TAG = "VOICE";
 #define VOICE_TASK_PRIORITY        5
 
 /*
- * The server splits the announcement into two tasks, because relaying and
- * decoding compete for very different things:
+ * voice_server_task only receives, filters and relays, and hands each
+ * packet to the local speaker's playout (audio_i2s_push_voice()). It must
+ * never wait: when it shared a loop with the decoder, every slow decode held
+ * back the next relay, and the level-1 clients ran dry 15 % of the time
+ * (2026-09-19). Core 0, next to the Wi-Fi and lwIP it feeds.
  *
- * - voice_server_task only receives, filters and relays. Cheap, and it must
- *   never wait: when it shared a loop with the decoder, every slow decode
- *   held back the next relay, and the level-1 clients -- with idle CPUs of
- *   their own -- ran dry 15 % of the time (2026-09-19). Core 0, next to the
- *   Wi-Fi and lwIP it feeds.
- *
- * - voice_speaker_task decodes for this device's own speaker. Core 1, below
- *   the music encoder: decoding on core 0 once starved IDLE0 for 15 s (task
- *   watchdog), and on core 1 the encoder must keep its deadline. If it falls
- *   behind, the queue between the two fills and this speaker drops packets;
- *   nobody else notices.
+ * Nobody here decodes any more. Both roles decode in the audio path, one
+ * packet when its frame is due (voice_playout.h), on core 1: the server in
+ * its capture loop, where the music encoder runs at complexity 0 during an
+ * announcement, a client in its player task. That once broke the client's
+ * 20 ms tick (2026-09-20) -- but then packets were decoded in bursts as they
+ * arrived, in floating point at 2.8 ms each; now it is one packet per tick
+ * at about 1.2 ms.
  */
 #define VOICE_SERVER_TASK_CORE     0
 
-/*
- * A client decodes on core 0, away from its player task (audio_sink.c runs
- * it on core 1 at the same priority). Sharing a core cost the player its
- * 20 ms tick whenever a decode burst landed: measured during an
- * announcement, the playback error drifted to -76 ms and forced a hard
- * resync, i.e. the music went out of step with the other speakers
- * (2026-09-20). Core 0 carries only the Snapcast receive task there, with
- * ~70 % idle.
- */
+/* The client's receive and relay task, on core 0 like the server's. */
 #define VOICE_CLIENT_TASK_CORE     0
-#define VOICE_SPEAKER_TASK_CORE    1
-#define VOICE_SPEAKER_TASK_PRIORITY 4
-#define VOICE_SPEAKER_TASK_STACK 10240
-/* 6 x 20 ms. Deeper would only turn a CPU shortage into latency. */
-#define VOICE_SPEAKER_QUEUE_DEPTH    6
 
 /*
  * Wire format.
@@ -127,13 +110,6 @@ static const char *TAG = "VOICE";
 
 /* Diagnostics: echo back one in this many packets, see voice_server_task. */
 #define VOICE_ECHO_EVERY            50U
-#define VOICE_SAMPLE_RATE        48000
-#define VOICE_MAX_DECODE_SAMPLES  5760U   /* 120 ms, Opus' longest frame */
-#define VOICE_PRIMER_SAMPLES       480U   /* 10 ms of silence per primer */
-/* Up to this many lost packets in a row are concealed by Opus' own packet
- * loss concealment instead of leaving a gap; beyond that it is a real
- * dropout, and inventing more audio would only add latency. */
-#define VOICE_PLC_MAX_FRAMES         3
 
 #define VOICE_FRAME_US           10000LL
 
@@ -177,93 +153,73 @@ static const char *TAG = "VOICE";
  */
 #define VOICE_SESSION_GAP_US   (1000LL * 1000LL)
 
+/* Client side: how often an idle receiver wakes to see whether an
+ * announcement has ended and its statistics are due. */
+#define VOICE_CLIENT_IDLE_LOG_MS  500
+
 /* ------------------------------------------------------------------ */
-/* Opus decoding, shared by both roles                                */
+/* Arrival timing, shared by both roles                               */
 /* ------------------------------------------------------------------ */
+
+/*
+ * How evenly the packets of one announcement arrived, logged at its end:
+ * the phone's 20 ms packets at the server, the server's at each client.
+ * Gaps say how long the playout had to bridge; "bunched" packets (under
+ * 5 ms after the one before) say how much arrived at once afterwards.
+ * Together they show which leg delivers in bursts.
+ */
+#define ARRIVAL_BUNCH_US 5000LL
 
 typedef struct {
-    OpusDecoder *decoder;
-    int16_t *pcm;              /* VOICE_MAX_DECODE_SAMPLES, PSRAM      */
-    int last_frame_samples;    /* frame size to conceal a lost packet  */
-    /* Decode cost of the current announcement, logged at its end. */
-    uint32_t decode_count;
-    int64_t decode_total_us;
-    int64_t decode_max_us;
-} voice_decoder_t;
+    uint32_t packets;
+    uint32_t lost;          /* sequence numbers that never came */
+    uint32_t gaps_40;       /* intervals over 40, 60, 100 ms */
+    uint32_t gaps_60;
+    uint32_t gaps_100;
+    int64_t  max_gap_us;
+    uint32_t bunched;
+    uint32_t run;           /* current run of bunched packets */
+    uint32_t longest_run;
+    int64_t  last_us;
+} arrival_stats_t;
 
-static esp_err_t voice_decoder_init(voice_decoder_t *d)
+static void arrival_note(arrival_stats_t *a, int64_t now_us, uint32_t lost)
 {
-    int err = OPUS_OK;
-    d->decoder = opus_decoder_create(VOICE_SAMPLE_RATE, 1, &err);
-    if (d->decoder == NULL || err != OPUS_OK) {
-        ESP_LOGE(TAG, "opus_decoder_create failed: %s (%d)", opus_strerror(err), err);
-        d->decoder = NULL;
-        return ESP_FAIL;
-    }
-
-    d->pcm = heap_caps_malloc(VOICE_MAX_DECODE_SAMPLES * sizeof(int16_t),
-                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (d->pcm == NULL) {
-        d->pcm = heap_caps_malloc(VOICE_MAX_DECODE_SAMPLES * sizeof(int16_t), MALLOC_CAP_8BIT);
-    }
-    if (d->pcm == NULL) {
-        opus_decoder_destroy(d->decoder);
-        d->decoder = NULL;
-        return ESP_ERR_NO_MEM;
-    }
-
-    d->last_frame_samples = 960;
-    return ESP_OK;
-}
-
-/* Logs and clears the decode cost since the last reset. */
-static void voice_decoder_log_stats(voice_decoder_t *d, const char *who)
-{
-    if (d->decode_count == 0) {
-        return;
-    }
-    ESP_LOGI(TAG, "%s decode: packets=%lu avg=%lld us max=%lld us",
-             who, (unsigned long)d->decode_count,
-             d->decode_total_us / d->decode_count, d->decode_max_us);
-    d->decode_count = 0;
-    d->decode_total_us = 0;
-    d->decode_max_us = 0;
-}
-
-static void voice_decoder_reset(voice_decoder_t *d)
-{
-    (void)opus_decoder_ctl(d->decoder, OPUS_RESET_STATE);
-    d->last_frame_samples = 960;
-}
-
-static int voice_decode_raw(voice_decoder_t *d, const uint8_t *payload, size_t len)
-{
-    int n;
-    if (payload == NULL) {
-        n = opus_decode(d->decoder, NULL, 0, d->pcm, d->last_frame_samples, 0);
-    } else {
-        n = opus_decode(d->decoder, payload, (opus_int32)len,
-                        d->pcm, (int)VOICE_MAX_DECODE_SAMPLES, 0);
-        if (n > 0) {
-            d->last_frame_samples = n;
+    if (a->packets > 0U) {
+        const int64_t gap = now_us - a->last_us;
+        if (gap > a->max_gap_us) {
+            a->max_gap_us = gap;
+        }
+        a->gaps_40 += gap > 40000LL;
+        a->gaps_60 += gap > 60000LL;
+        a->gaps_100 += gap > 100000LL;
+        if (gap < ARRIVAL_BUNCH_US) {
+            ++a->bunched;
+            if (++a->run > a->longest_run) {
+                a->longest_run = a->run;
+            }
+        } else {
+            a->run = 0;
         }
     }
-    return (n > 0) ? n : 0;
+    ++a->packets;
+    a->lost += lost;
+    a->last_us = now_us;
 }
 
-/* Decodes one payload into d->pcm, or conceals one lost packet when payload
- * is NULL. Returns the number of samples, 0 if the packet was unusable. */
-static int voice_decode(voice_decoder_t *d, const uint8_t *payload, size_t len)
+/* Logs and clears. */
+static void arrival_log(arrival_stats_t *a, const char *leg)
 {
-    const int64_t t0 = esp_timer_get_time();
-    const int n = voice_decode_raw(d, payload, len);
-    const int64_t dt = esp_timer_get_time() - t0;
-    ++d->decode_count;
-    d->decode_total_us += dt;
-    if (dt > d->decode_max_us) {
-        d->decode_max_us = dt;
+    if (a->packets > 1U) {
+        ESP_LOGI(TAG,
+                 "%s arrival: packets=%lu lost=%lu gaps>40ms=%lu >60ms=%lu >100ms=%lu "
+                 "max=%lld ms bunched=%lu longest bunch=%lu",
+                 leg, (unsigned long)a->packets, (unsigned long)a->lost,
+                 (unsigned long)a->gaps_40, (unsigned long)a->gaps_60,
+                 (unsigned long)a->gaps_100, a->max_gap_us / 1000LL,
+                 (unsigned long)a->bunched, (unsigned long)a->longest_run);
     }
-    return n;
+    memset(a, 0, sizeof(*a));
 }
 
 /* ------------------------------------------------------------------ */
@@ -272,7 +228,6 @@ static int voice_decode(voice_decoder_t *d, const uint8_t *payload, size_t len)
 
 static int s_server_fd = -1;
 static TaskHandle_t s_server_task;
-static voice_decoder_t s_server_decoder;
 
 /*
  * Announcement state. Written only with s_state_mutex held, so a stop can
@@ -456,89 +411,9 @@ static void relay_to_level1(const uint8_t *payload, size_t payload_len,
     }
 }
 
-/*
- * One message from the relay to the speaker task: an Opus payload, how many
- * packets were lost right before it, or a control marker.
- */
-#define SPEAKER_MSG_AUDIO   0
-#define SPEAKER_MSG_RESET   1   /* new announcement: fresh decoder state */
-#define SPEAKER_MSG_END     2   /* announcement over: log decode stats   */
-
-typedef struct {
-    uint8_t kind;
-    uint8_t lost;
-    uint16_t len;
-    uint8_t payload[VOICE_MAX_PAYLOAD];
-} speaker_msg_t;
-
-static QueueHandle_t s_speaker_queue;
-static StaticQueue_t s_speaker_queue_ctrl;      /* internal RAM, small   */
-static volatile uint32_t s_speaker_dropped;     /* queue full: not played */
-
-/* Relay side: never blocks, a full queue just loses this packet for the
- * own speaker. Markers are worth a short wait, they are rare. */
-static void speaker_post(const speaker_msg_t *msg)
-{
-    const TickType_t wait = (msg->kind == SPEAKER_MSG_AUDIO) ? 0 : pdMS_TO_TICKS(20);
-    if (xQueueSend(s_speaker_queue, msg, wait) != pdTRUE && msg->kind == SPEAKER_MSG_AUDIO) {
-        ++s_speaker_dropped;
-    }
-}
-
-static void voice_speaker_task(void *arg)
-{
-    (void)arg;
-    /* PSRAM: 1.3 kB is too much for internal RAM and too much for a stack
-     * that is itself in PSRAM anyway. */
-    speaker_msg_t *msg = heap_caps_malloc(sizeof(*msg), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (msg == NULL) {
-        ESP_LOGE(TAG, "voice_speaker_task: out of memory");
-        vTaskDelete(NULL);
-        return;
-    }
-
-    for (;;) {
-        if (xQueueReceive(s_speaker_queue, msg, portMAX_DELAY) != pdTRUE) {
-            continue;
-        }
-        if (msg->kind == SPEAKER_MSG_RESET) {
-            voice_decoder_reset(&s_server_decoder);
-            s_speaker_dropped = 0;
-            continue;
-        }
-        if (msg->kind == SPEAKER_MSG_END) {
-            voice_decoder_log_stats(&s_server_decoder, "Server");
-            if (s_speaker_dropped != 0U) {
-                ESP_LOGW(TAG, "Server speaker could not keep up: %lu packet(s) not played",
-                         (unsigned long)s_speaker_dropped);
-            }
-            continue;
-        }
-
-        if (msg->lost > 0 && msg->lost <= VOICE_PLC_MAX_FRAMES) {
-            for (uint8_t i = 0; i < msg->lost; ++i) {
-                const int samples = voice_decode(&s_server_decoder, NULL, 0);
-                audio_i2s_feed_voice(s_server_decoder.pcm, (size_t)samples);
-            }
-        }
-        const int samples = voice_decode(&s_server_decoder, msg->payload, msg->len);
-        if (samples > 0) {
-            audio_i2s_feed_voice(s_server_decoder.pcm, (size_t)samples);
-        }
-    }
-}
-
 static void voice_server_task(void *arg)
 {
     (void)arg;
-    /* PSRAM, not static: a static would land in scarce internal RAM. */
-    speaker_msg_t *msg = heap_caps_malloc(sizeof(*msg), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (msg == NULL) {
-        ESP_LOGE(TAG, "voice_server_task: out of memory");
-        vTaskDelete(NULL);
-        return;
-    }
-
     uint8_t buf[VOICE_MAX_PACKET + 32];
 
     uint32_t seen_session = 0;
@@ -550,6 +425,7 @@ static void voice_server_task(void *arg)
     int64_t last_audio_us = 0;
     int64_t last_primer_us = 0;
     int64_t last_refresh_us = 0;
+    arrival_stats_t arrival = {0};
 
     for (;;) {
         struct sockaddr_in from = {0};
@@ -576,8 +452,6 @@ static void voice_server_task(void *arg)
                 seen_session = session;
                 have_audio = false;
                 have_phone_sequence = false;
-                msg->kind = SPEAKER_MSG_RESET;
-                speaker_post(msg);
             }
             was_active = active;
             const size_t targets = refresh_level1_ips();
@@ -586,8 +460,7 @@ static void voice_server_task(void *arg)
             if (active) {
                 ESP_LOGI(TAG, "Announcement: %u level-1 target(s)", (unsigned)targets);
             } else {
-                msg->kind = SPEAKER_MSG_END;
-                speaker_post(msg);
+                arrival_log(&arrival, "Phone -> server");
             }
         }
 
@@ -611,6 +484,7 @@ static void voice_server_task(void *arg)
                 got_audio = true;
                 have_audio = true;
                 last_audio_us = now;
+                arrival_note(&arrival, now, lost);
             }
         }
 
@@ -658,12 +532,8 @@ static void voice_server_task(void *arg)
             const size_t payload_len = (size_t)n - VOICE_HEADER_BYTES;
             relay_to_level1(buf + VOICE_HEADER_BYTES, payload_len, &out_sequence);
 
-            /* This device's own speaker, decoded by voice_speaker_task. */
-            msg->kind = SPEAKER_MSG_AUDIO;
-            msg->lost = (lost > 255U) ? 255U : (uint8_t)lost;
-            msg->len = (uint16_t)payload_len;
-            memcpy(msg->payload, buf + VOICE_HEADER_BYTES, msg->len);
-            speaker_post(msg);
+            /* This device's own speaker: decoded when its frame is due. */
+            audio_i2s_push_voice(phone_sequence, buf + VOICE_HEADER_BYTES, payload_len);
         } else if (!have_audio && now - last_primer_us >= VOICE_FRAME_US) {
             /*
              * Until the phone's microphone is up, level-1 clients get an
@@ -690,11 +560,9 @@ esp_err_t voice_announce_start(void)
             return ESP_ERR_NO_MEM;
         }
     }
-    if (s_server_decoder.decoder == NULL) {
-        const esp_err_t err = voice_decoder_init(&s_server_decoder);
-        if (err != ESP_OK) {
-            return err;
-        }
+    const esp_err_t init_err = audio_i2s_voice_init();
+    if (init_err != ESP_OK) {
+        return init_err;
     }
 
     s_server_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -718,29 +586,6 @@ esp_err_t voice_announce_start(void)
     (void)setsockopt(s_server_fd, SOL_SOCKET, SO_SNDTIMEO, &snd_timeout, sizeof(snd_timeout));
     const struct timeval rcv_timeout = { .tv_sec = 0, .tv_usec = VOICE_POLL_MS * 1000 };
     (void)setsockopt(s_server_fd, SOL_SOCKET, SO_RCVTIMEO, &rcv_timeout, sizeof(rcv_timeout));
-
-    /* Queue storage (~8 kB) in PSRAM, only the control block internal --
-     * same split as the per-client TX queues in snapserver.c. */
-    uint8_t *queue_storage = heap_caps_malloc(VOICE_SPEAKER_QUEUE_DEPTH * sizeof(speaker_msg_t),
-                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (queue_storage != NULL) {
-        s_speaker_queue = xQueueCreateStatic(VOICE_SPEAKER_QUEUE_DEPTH, sizeof(speaker_msg_t),
-                                             queue_storage, &s_speaker_queue_ctrl);
-    }
-    if (s_speaker_queue == NULL ||
-        xTaskCreatePinnedToCoreWithCaps(voice_speaker_task,
-                                        "voice_speaker",
-                                        VOICE_SPEAKER_TASK_STACK,
-                                        NULL,
-                                        VOICE_SPEAKER_TASK_PRIORITY,
-                                        NULL,
-                                        VOICE_SPEAKER_TASK_CORE,
-                                        TASK_STACK_CAPS) != pdPASS) {
-        ESP_LOGE(TAG, "Could not create voice_speaker_task");
-        close(s_server_fd);
-        s_server_fd = -1;
-        return ESP_FAIL;
-    }
 
     if (xTaskCreatePinnedToCoreWithCaps(voice_server_task,
                                         "voice_server",
@@ -766,7 +611,6 @@ esp_err_t voice_announce_start(void)
 
 static int s_client_fd = -1;
 static TaskHandle_t s_client_task;
-static voice_decoder_t s_client_decoder;
 
 /*
  * Children of this node, i.e. the stations on its own SoftAP. Announcements
@@ -846,9 +690,19 @@ static void voice_client_task(void *arg)
     uint32_t last_sequence = 0;
     bool have_sequence = false;
     int64_t last_packet_us = 0;
+    arrival_stats_t arrival = {0};
 
     for (;;) {
         const int n = recvfrom(s_client_fd, buf, sizeof(buf), 0, NULL, NULL);
+        if (n < 0) {
+            /* Receive timeout (VOICE_CLIENT_IDLE_LOG_MS): once an
+             * announcement is over, log it now rather than at the start of
+             * the next one. */
+            if (arrival.packets > 0U && esp_timer_get_time() - last_packet_us > VOICE_SESSION_GAP_US) {
+                arrival_log(&arrival, "Server -> client");
+            }
+            continue;
+        }
         if (n < (int)VOICE_MESH_HEADER_BYTES || n > (int)VOICE_MAX_PACKET) {
             continue;
         }
@@ -860,8 +714,8 @@ static void voice_client_task(void *arg)
         if (now - last_packet_us > VOICE_SESSION_GAP_US) {
             /* New session, see VOICE_SESSION_GAP_US. */
             have_sequence = false;
-            voice_decoder_log_stats(&s_client_decoder, "Previous announcement");
-            voice_decoder_reset(&s_client_decoder);
+            arrival_log(&arrival, "Previous announcement: server -> client");
+            audio_sink_reset_voice();
             refresh_children();
             s_children_refreshed_us = now;
             if (s_child_count != 0U) {
@@ -893,25 +747,13 @@ static void voice_client_task(void *arg)
             relay_to_children(buf, (size_t)n, (uint8_t)(hops_left - 1U));
         }
 
+        /* Played when its frame is due (voice_playout.h); an empty payload
+         * is the server's 10 ms silence primer. */
         const size_t payload_len = (size_t)n - VOICE_MESH_HEADER_BYTES;
-        if (payload_len == 0) {
-            /* The server's silence primer. */
-            memset(s_client_decoder.pcm, 0, VOICE_PRIMER_SAMPLES * sizeof(int16_t));
-            audio_sink_feed_voice(s_client_decoder.pcm, VOICE_PRIMER_SAMPLES);
-            continue;
+        if (payload_len > 0U) {
+            arrival_note(&arrival, now, lost);
         }
-
-        if (lost > 0 && lost <= VOICE_PLC_MAX_FRAMES) {
-            for (uint32_t i = 0; i < lost; ++i) {
-                const int samples = voice_decode(&s_client_decoder, NULL, 0);
-                audio_sink_feed_voice(s_client_decoder.pcm, (size_t)samples);
-            }
-        }
-        const int samples = voice_decode(&s_client_decoder,
-                                         buf + VOICE_MESH_HEADER_BYTES, payload_len);
-        if (samples > 0) {
-            audio_sink_feed_voice(s_client_decoder.pcm, (size_t)samples);
-        }
+        audio_sink_push_voice(sequence, buf + VOICE_MESH_HEADER_BYTES, payload_len);
     }
 }
 
@@ -921,12 +763,6 @@ esp_err_t voice_receive_start(void)
         return ESP_OK; /* idempotent */
     }
 
-    if (s_client_decoder.decoder == NULL) {
-        const esp_err_t err = voice_decoder_init(&s_client_decoder);
-        if (err != ESP_OK) {
-            return err;
-        }
-    }
 
     s_client_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s_client_fd < 0) {
@@ -950,6 +786,10 @@ esp_err_t voice_receive_start(void)
     const struct timeval client_snd_timeout = { .tv_sec = 0, .tv_usec = VOICE_SEND_TIMEOUT_US };
     (void)setsockopt(s_client_fd, SOL_SOCKET, SO_SNDTIMEO,
                      &client_snd_timeout, sizeof(client_snd_timeout));
+    const struct timeval client_rcv_timeout = { .tv_sec = 0,
+                                                .tv_usec = VOICE_CLIENT_IDLE_LOG_MS * 1000 };
+    (void)setsockopt(s_client_fd, SOL_SOCKET, SO_RCVTIMEO,
+                     &client_rcv_timeout, sizeof(client_rcv_timeout));
 
     if (xTaskCreatePinnedToCoreWithCaps(voice_client_task,
                                         "voice_client",

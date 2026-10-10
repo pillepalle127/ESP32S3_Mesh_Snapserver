@@ -19,6 +19,7 @@ idf_component_register(
         "pots.c"
         "power_button.c"
         "voice_announce.c"
+        "voice_playout.c"
         "webconfig.c"
         "wled_analysis.c"
         "wled_sync.c"

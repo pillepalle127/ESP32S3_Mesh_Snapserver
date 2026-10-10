@@ -17,6 +17,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
+#include "voice_playout.h"
 #include "wled_sync.h"
 
 static const char *TAG = "AUDIO_I2S";
@@ -145,60 +146,14 @@ static int16_t s_delayed_mono[MAX_FRAME_SAMPLES];
 
 /*
  * Server-local voice-announcement override (see audio_i2s_set_voice_active()
- * in the header). A tiny FIFO, not a ring the size of the delay line above:
- * announcement packets arrive in 10 ms pieces against this module's 20 ms
- * frame cadence, so at most about one frame's worth is ever in flight here.
- * Guarded by s_voice_lock, a separate spinlock from s_dsp_lock below since
- * the two are never held together and this one is written from a completely
- * different task (voice_announce.c's UDP receive loop).
+ * in the header). The packets wait in a voice_playout and are decoded when
+ * this module's frame is due (assemble_voice_frame()), which conceals late
+ * or lost ones instead of playing silence. s_voice_playout is created once
+ * by audio_i2s_voice_init() and then only read.
  */
 static volatile bool s_voice_active;
-/*
- * 100 ms. The decoder shares core 1 with the music encoder, so it is
- * preempted and then delivers several packets back to back: with 60 ms the
- * mailbox overflowed on those bursts (2026-09-20, "voice mailbox: dropped"
- * next to underruns in the same 5 s). Only bursts use the extra room, so
- * the prefill below still sets the latency.
- */
-static int16_t s_voice_mailbox[MAX_FRAME_SAMPLES * 5];
-static volatile size_t s_voice_mailbox_fill;
+static voice_playout_t *s_voice_playout;
 static int16_t s_voice_frame[MAX_FRAME_SAMPLES];
-static portMUX_TYPE s_voice_lock = portMUX_INITIALIZER_UNLOCKED;
-/*
- * Prefill and diagnostics, same scheme as audio_sink.c's voice mailbox.
- * One frame (20 ms), not two: the prefill is pure latency on a path whose
- * whole point is to be quick, and it only has to cover the jitter between
- * two packets, not a network outage. Raise it again if the underrun
- * counters in the stats line start climbing.
- */
-#define VOICE_PREFILL_SAMPLES (MAX_FRAME_SAMPLES)
-/*
- * Upper bound on the queue, i.e. on the latency it adds: 60 ms. Anything
- * beyond is cut back in audio_i2s_feed_voice().
- *
- * 40 ms was tried first and traded badly: packets arrive in bursts, and
- * cutting back that hard threw away exactly the audio that would have
- * covered the gap behind the burst -- 440 ms missing and 460 ms discarded
- * within five seconds, against 40 ms of missing audio before the cap
- * existed at all (2026-09-20). 60 ms still stops the queue from ratcheting
- * up over the course of an announcement, which is what the cap is for.
- */
-#define VOICE_TARGET_FILL_SAMPLES (MAX_FRAME_SAMPLES)
-/* ~0.5 s of staying too full before the backlog is cut. Long enough that a
- * burst and the gap behind it pass undisturbed, short enough that nobody
- * hears the queue creeping up during an announcement. */
-#define VOICE_TRIM_AFTER_FEEDS  25U
-static bool s_voice_primed;
-static uint32_t s_voice_underrun_samples;
-static uint32_t s_voice_dropped_samples;
-/* Consecutive feeds that found the mailbox above its target, see there. */
-static uint32_t s_voice_above_target;
-
-
-/* Queueing delay of the announcement in this mailbox, see feed_voice(). */
-static uint32_t s_voice_wait_total_ms;
-static uint32_t s_voice_wait_count;
-static uint32_t s_voice_wait_max_ms;
 
 /*
  * s_lowpass/s_highpass hold both the biquad coefficients (b0,b1,b2,a1,a2,
@@ -1358,133 +1313,36 @@ void audio_i2s_set_announcement_output(bool active)
 
 void audio_i2s_set_voice_active(bool active)
 {
-    portENTER_CRITICAL(&s_voice_lock);
     s_voice_active = active;
-    /* Drop any residue on either transition: entering with stale leftovers
-     * would play a moment of old audio, leaving without clearing would let
-     * that tail bleed into whatever plays next. */
-    s_voice_mailbox_fill = 0;
-    s_voice_primed = false;
-    portEXIT_CRITICAL(&s_voice_lock);
+    /* Start and end both forget what is queued: entering with leftovers
+     * would play old audio, leaving without would let the tail bleed into
+     * the next announcement. */
+    voice_playout_reset(s_voice_playout);
 }
 
-void audio_i2s_take_voice_stats(uint32_t *underrun_samples, uint32_t *dropped_samples,
-                                uint32_t *wait_avg_ms, uint32_t *wait_max_ms)
+esp_err_t audio_i2s_voice_init(void)
 {
-    portENTER_CRITICAL(&s_voice_lock);
-    *wait_avg_ms = (s_voice_wait_count != 0U)
-                   ? (s_voice_wait_total_ms / s_voice_wait_count) : 0U;
-    *wait_max_ms = s_voice_wait_max_ms;
-    s_voice_wait_total_ms = 0;
-    s_voice_wait_count = 0;
-    s_voice_wait_max_ms = 0;
-    *underrun_samples = s_voice_underrun_samples;
-    *dropped_samples = s_voice_dropped_samples;
-    s_voice_underrun_samples = 0;
-    s_voice_dropped_samples = 0;
-    portEXIT_CRITICAL(&s_voice_lock);
+    if (s_voice_playout == NULL) {
+        s_voice_playout = voice_playout_create();
+    }
+    return (s_voice_playout != NULL) ? ESP_OK : ESP_ERR_NO_MEM;
 }
 
-void audio_i2s_feed_voice(const int16_t *mono, size_t mono_samples)
+void audio_i2s_take_voice_stats(voice_playout_stats_t *out)
 {
-    if (mono == NULL || mono_samples == 0U) {
-        return;
-    }
-
-    const size_t capacity = sizeof(s_voice_mailbox) / sizeof(s_voice_mailbox[0]);
-    if (mono_samples > capacity) {
-        mono += mono_samples - capacity;
-        mono_samples = capacity;
-    }
-
-    portENTER_CRITICAL(&s_voice_lock);
-    /*
-     * How long this audio will sit here before it is played: everything
-     * already queued has to go out first, at 48 kHz. Measured because it is
-     * the one part of the announcement's delay that is not a constant --
-     * the prefill and Wi-Fi jitter both show up in it.
-     */
-    const uint32_t wait_ms = (uint32_t)(s_voice_mailbox_fill * 1000U / AUDIO_I2S_SAMPLE_RATE);
-    s_voice_wait_total_ms += wait_ms;
-    ++s_voice_wait_count;
-    if (wait_ms > s_voice_wait_max_ms) {
-        s_voice_wait_max_ms = wait_ms;
-    }
-
-    /*
-     * Full: drop the *oldest* samples, not the new ones. Keeping the old
-     * would pin the latency at the mailbox's full depth after one burst of
-     * late packets and throw away the freshest speech instead.
-     */
-    if (s_voice_mailbox_fill + mono_samples > capacity) {
-        const size_t drop = s_voice_mailbox_fill + mono_samples - capacity;
-        memmove(s_voice_mailbox, s_voice_mailbox + drop,
-                (s_voice_mailbox_fill - drop) * sizeof(int16_t));
-        s_voice_mailbox_fill -= drop;
-        s_voice_dropped_samples += (uint32_t)drop;
-    }
-    memcpy(s_voice_mailbox + s_voice_mailbox_fill, mono, mono_samples * sizeof(int16_t));
-    s_voice_mailbox_fill += mono_samples;
-
-    /*
-     * Keep the queue from ratcheting up, but only when it stays too full.
-     *
-     * Feeding and playback run at the same rate, so a burst of late packets
-     * raises the fill once and it never comes back down by itself: measured
-     * 21 -> 58 ms average within ten seconds of one announcement. Cutting
-     * back the instant a burst arrives was worse, though -- it threw away
-     * exactly the audio that covers the gap behind the burst (440 ms
-     * missing per five seconds). So a burst may stay, and only a backlog
-     * that survives VOICE_TRIM_AFTER_FEEDS feeds in a row is cut back to
-     * the target. That costs one audible skip, rarely, which is the trade
-     * this whole path is built on: drop rather than buffer.
-     */
-    if (s_voice_mailbox_fill > VOICE_TARGET_FILL_SAMPLES) {
-        ++s_voice_above_target;
-    } else {
-        s_voice_above_target = 0;
-    }
-    if (s_voice_above_target >= VOICE_TRIM_AFTER_FEEDS) {
-        const size_t drop = s_voice_mailbox_fill - VOICE_TARGET_FILL_SAMPLES;
-        memmove(s_voice_mailbox, s_voice_mailbox + drop,
-                (s_voice_mailbox_fill - drop) * sizeof(int16_t));
-        s_voice_mailbox_fill -= drop;
-        s_voice_dropped_samples += (uint32_t)drop;
-        s_voice_above_target = 0;
-    }
-    portEXIT_CRITICAL(&s_voice_lock);
+    voice_playout_take_stats(s_voice_playout, out);
 }
 
-/* Drains up to mono_samples from the voice mailbox into s_voice_frame,
- * zero-filling anything not yet received -- never waits, matching the
- * announcement path's "drop rather than buffer" design throughout. */
+void audio_i2s_push_voice(uint32_t seq, const uint8_t *payload, size_t len)
+{
+    voice_playout_push(s_voice_playout, seq, payload, len);
+}
+
+/* The announcement's next frame: decoded, concealed or silent, never
+ * waited for. */
 static const int16_t *assemble_voice_frame(size_t mono_samples)
 {
-    size_t take = 0;
-
-    portENTER_CRITICAL(&s_voice_lock);
-    /* Prefill, see render_voice_frame() in audio_sink.c for why. */
-    if (!s_voice_primed && s_voice_mailbox_fill >= VOICE_PREFILL_SAMPLES) {
-        s_voice_primed = true;
-    }
-    if (s_voice_primed) {
-        take = (s_voice_mailbox_fill < mono_samples) ? s_voice_mailbox_fill : mono_samples;
-        memcpy(s_voice_frame, s_voice_mailbox, take * sizeof(int16_t));
-        if (take < s_voice_mailbox_fill) {
-            memmove(s_voice_mailbox, s_voice_mailbox + take,
-                   (s_voice_mailbox_fill - take) * sizeof(int16_t));
-        }
-        s_voice_mailbox_fill -= take;
-        if (take < mono_samples) {
-            s_voice_primed = false;
-            s_voice_underrun_samples += (uint32_t)(mono_samples - take);
-        }
-    }
-    portEXIT_CRITICAL(&s_voice_lock);
-
-    if (take < mono_samples) {
-        memset(s_voice_frame + take, 0, (mono_samples - take) * sizeof(int16_t));
-    }
+    voice_playout_render(s_voice_playout, s_voice_frame, mono_samples);
     return s_voice_frame;
 }
 

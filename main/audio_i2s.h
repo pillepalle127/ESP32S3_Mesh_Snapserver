@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "esp_err.h"
+#include "voice_playout.h"
 
 /*
  * Gemeinsamer Full-Duplex-I2S-Bus:
@@ -238,24 +239,18 @@ esp_err_t audio_i2s_write_mono(const int16_t *mono, size_t mono_samples);
  */
 void audio_i2s_set_voice_active(bool active);
 
-/*
- * Queues up to mono_samples of live announcement PCM for the server's local
- * speaker (see audio_i2s_set_voice_active()). Frames may arrive in smaller
- * pieces than one audio_i2s_read_frame() call consumes -- e.g. 480-sample
- * (10 ms) network packets against a 960-sample (20 ms) frame cadence -- and
- * are assembled FIFO; any samples still missing when a frame is due are
- * zero-filled rather than waited for, matching the "never buffer, never
- * wait" design of the whole announcement path.
- */
-void audio_i2s_feed_voice(const int16_t *mono, size_t mono_samples);
+/* Server: sets up the announcement playout for the local speaker. Called
+ * once by voice_announce_start(). */
+esp_err_t audio_i2s_voice_init(void);
 
 /*
- * Reads and clears the announcement mailbox counters: samples zero-filled
- * because it ran dry, samples dropped because it overflowed, and how long
- * arriving audio had to wait here before playback (average and worst case
- * since the last call). That wait is the announcement's only variable delay
- * on this device -- everything else in its path is a constant.
+ * Queues one announcement packet for the server's local speaker (see
+ * audio_i2s_set_voice_active()): seq is the phone's sequence number, the
+ * payload one Opus packet. It is decoded when its frame is due; a missing
+ * one is concealed, a late one dropped (voice_playout.h). Never blocks.
  */
-void audio_i2s_take_voice_stats(uint32_t *underrun_samples, uint32_t *dropped_samples,
-                                uint32_t *wait_avg_ms, uint32_t *wait_max_ms);
+void audio_i2s_push_voice(uint32_t seq, const uint8_t *payload, size_t len);
+
+/* Reads and clears the playout counters of the local speaker. */
+void audio_i2s_take_voice_stats(voice_playout_stats_t *out);
 

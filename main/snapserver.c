@@ -1744,19 +1744,18 @@ static void stats_task(void *arg)
                 ESP_LOGI(TAG, "Compressor: max -%.1f dB", (double)comp_db);
             }
 
-            uint32_t voice_underrun = 0;
-            uint32_t voice_dropped = 0;
-            uint32_t voice_wait_avg = 0;
-            uint32_t voice_wait_max = 0;
-            audio_i2s_take_voice_stats(&voice_underrun, &voice_dropped,
-                                       &voice_wait_avg, &voice_wait_max);
-            if (voice_underrun != 0U || voice_dropped != 0U || voice_wait_max != 0U) {
+            voice_playout_stats_t voice;
+            audio_i2s_take_voice_stats(&voice);
+            if (voice.played || voice.concealed || voice.late || voice.trimmed) {
                 ESP_LOGI(TAG,
-                         "voice mailbox: underrun=%lu dropped=%lu samples, "
-                         "wait avg=%lu ms max=%lu ms (+%lld ms I2S)",
-                         (unsigned long)voice_underrun, (unsigned long)voice_dropped,
-                         (unsigned long)voice_wait_avg, (unsigned long)voice_wait_max,
-                         (long long)(AUDIO_I2S_TX_LATENCY_US / 1000));
+                         "voice playout: played=%lu concealed=%lu silent=%lu late=%lu trimmed=%lu, "
+                         "queued avg=%lu ms max=%lu ms (+%lld ms I2S), decode avg=%lu us max=%lu us",
+                         (unsigned long)voice.played, (unsigned long)voice.concealed,
+                         (unsigned long)voice.silent, (unsigned long)voice.late,
+                         (unsigned long)voice.trimmed, (unsigned long)voice.fill_avg_ms,
+                         (unsigned long)voice.fill_max_ms,
+                         (long long)(AUDIO_I2S_TX_LATENCY_US / 1000),
+                         (unsigned long)voice.decode_avg_us, (unsigned long)voice.decode_max_us);
             }
             cpu_stats_log(TAG, 2);
             last_peak_us = now_us;
