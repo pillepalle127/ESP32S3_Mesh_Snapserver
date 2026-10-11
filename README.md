@@ -220,6 +220,7 @@ Bis zu vier WLED Controller pro Snapmesh Gerät. Das Gerät an dem WLED hängt, 
 
 Mit **SnapAnnounce** startet ihr Durchsagen direkt im Mesh. Ohne extra Hardware und ohne Kabel, alles übers Handy.
 Leider nur für Android, ich habe keinen Mac und kaufe mir auch keinen.
+Das Handy ins SnapMesh-WLAN hängen, mit SSID und Passwort des Mesh.
 
 Die Musik pausiert solange. Durchsagen laufen ohne Puffer und reichen deshalb **nur zwei Mesh-Ebenen** tief.
 
