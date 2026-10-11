@@ -203,7 +203,7 @@ Die Status-LED blitzt beim Start rot, grün und blau und zeigt danach den Zustan
 
 [WLED](https://kno.wled.ge/) ([GitHub](https://github.com/wled/WLED)) ist eine freie Firmware für ESP8266 und
 ESP32, die adressierbare LED-Streifen steuert, mit Effekten, Web-Oberfläche und App. 
-WLED-Controller im SnapMesh reagieren auf die Musik, ohne eigenes Mikrofon.
+Snapmech unterstützt das native WLED Sync Protokoll. Damit können WLED-Controller im SnapMesh auf den Audio Strom reagieren, ohne eigenes Mikrofon.
 
 1. In WLED den Usermod **AudioReactive** einschalten, Sync auf **Receive**, Port 11988 (Standard).
 2. Das WLED ins SnapMesh-WLAN hängen, mit SSID und Passwort des Mesh.
