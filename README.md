@@ -52,10 +52,9 @@ esptool --chip esp32s3 --before usb_reset write_flash 0x0 bootloader.bin 0x8000 
 
 ## Hardware
 
-Bei mir laufen ein **Komplettsystem** im Verstärker (PCM5102A, TinySine AudioB als Bluetooth-Eingang über einen
-TXB0104) und der **[SnapStreamer](#bauvorschlag-snapstreamer)**. Geeignet ist jeder ESP32-S3 mit mindestens 4 MB
-Flash, Octal-PSRAM und USB-Serial/JTAG, z. B. ein YD-ESP32-S3 N16R8
-([Schaltplan](https://raw.githubusercontent.com/vcc-gnd/YD-ESP32-S3/main/5-public-YD-ESP32-S3-Hardware%20info/YD-ESP32-S3-SCH-V1.4.pdf)).
+Geeignet ist jeder ESP32-S3 mit mindestens 4 MB
+Flash, Octal-PSRAM und USB-Serial/JTAG.
+Ich nutze die billigsten Clone (beim schnellen Ali < 5€), bislang recht zufrieden.
 
 | GPIO | Funktion |
 |---|---|
@@ -73,8 +72,7 @@ Die Belegung lässt sich ändern, siehe [Pins](#pins).
 
 ## Bauvorschlag: SnapStreamer
 
-Ihr habt einen Verstärker oder Aktivlautsprecher und wollt ihn ins Mesh holen? Der SnapStreamer ist meine Idee
-dazu: ESP32-S3, DAC und Akku so dicht wie möglich in einem kleinen Gehäuse.
+Ihr habt einen Verstärker oder Aktivlautsprecher und wollt ihn ins Mesh holen? Der SnapStreamer kann das leisten: ESP32-S3, DAC und Akku eng gepackt im kleinen Gehäuse.
 
 <table>
   <tr>
@@ -204,9 +202,7 @@ Die Status-LED blitzt beim Start rot, grün und blau und zeigt danach den Zustan
 ## WLED
 
 [WLED](https://kno.wled.ge/) ([GitHub](https://github.com/wled/WLED)) ist eine freie Firmware für ESP8266 und
-ESP32, die adressierbare LED-Streifen steuert, mit Effekten, Web-Oberfläche und App. Auf einem ESP32 oder ESP32-S3
-sind es bis zu 16 384 LEDs, höchstens 2048 pro Ausgang, auf einem ESP8266 bis zu 1536.
-
+ESP32, die adressierbare LED-Streifen steuert, mit Effekten, Web-Oberfläche und App. 
 WLED-Controller im SnapMesh reagieren auf die Musik, ohne eigenes Mikrofon.
 
 1. In WLED den Usermod **AudioReactive** einschalten, Sync auf **Receive**, Port 11988 (Standard).
@@ -214,8 +210,7 @@ WLED-Controller im SnapMesh reagieren auf die Musik, ohne eigenes Mikrofon.
 
 Die Server-Seite listet jedes WLED mit Link (`http://<Server>:<Port>/`).
 
-Bis zu vier WLEDs pro Gerät. Das Gerät mit WLED braucht dafür 3–5 % eines Kerns. Die WLED-eigene Synchronisation
-zwischen WLEDs (Effekte, Farben) kommt nicht über Gerätegrenzen.
+Bis zu vier WLED Controller pro Snapmesh Gerät. Das Gerät an dem WLED hängt, braucht dafür 3–5 % eines Kerns. 
 
 ---
 
