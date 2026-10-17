@@ -20,6 +20,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -55,3 +56,21 @@ void client_store_put(const char *id, const client_store_entry_t *entry);
  * which is followed by a reboot anyway.
  */
 void client_store_erase_all(void);
+
+/* One stored client, for handing the store to the next server. */
+typedef struct {
+    char id[64];
+    client_store_entry_t entry;
+} client_store_record_t;
+
+/* Copies up to max stored clients into out, most recently written first. */
+size_t client_store_list(client_store_record_t *out, size_t max);
+
+/*
+ * Writes records straight to NVS, for a client that is about to restart as
+ * the server and has no store running (client_store_init() is server
+ * only). first is the position of records[0] in the old server's list, so
+ * the list can come in parts; 0 forgets everything stored so far. Writes
+ * flash: call from a task with an internal-RAM stack.
+ */
+esp_err_t client_store_import(const client_store_record_t *records, size_t count, size_t first);

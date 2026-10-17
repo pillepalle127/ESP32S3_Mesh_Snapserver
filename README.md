@@ -144,6 +144,14 @@ aus einer Snapcast-App kommen. **Einstellungen** öffnet die Seite eines Clients
 Netzwerk oder lokaler I2S-Eingang), Schwelle für den lokalen Eingang, Lautstärke und Stumm. Solange ein Server
 verbunden ist, stellt er die Lautstärke ein.
 
+**Server wechseln:** In den Einstellungen eines Clients die Rolle auf Server stellen und speichern. Der Client wird
+Server, der bisherige Server wird Client. Namen, Lautstärken und Delays der Clients gehen mit. Die Musik ist dabei
+etwa 10 s weg. Am Server selbst ist die Rolle gesperrt, sonst gäbe es keinen Server mehr.
+
+Ein Gerät, das als Server eingestellt ist, schaut beim Start nach, ob schon ein Server läuft. Dann läuft es als
+Client, und in der Geräteliste steht bei ihm „als Server eingestellt“. Werden zwei solche Geräte gleichzeitig
+eingeschaltet, werden beide Server. Dann eins davon kurz vom Strom nehmen.
+
 **Mesh / WLAN:** Mesh an oder aus, Name, Passwort, Kanal und die maximale Tiefe des Mesh. Auf allen Geräten gleich.
 
 **DSP / Weiche:** Weiche an oder aus, Trennfrequenz (40–500 Hz), Verstärkung für Sub und Breitband (−24 bis

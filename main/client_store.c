@@ -281,6 +281,84 @@ void client_store_put(const char *id, const client_store_entry_t *entry)
     }
 }
 
+size_t client_store_list(client_store_record_t *out, size_t max)
+{
+    if (s_entries == NULL || out == NULL) {
+        return 0U;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    /* Newest first: if the next server cannot take them all, the oldest go. */
+    const stored_t *order[CLIENT_STORE_MAX];
+    size_t used = 0;
+    for (size_t i = 0; i < CLIENT_STORE_MAX; ++i) {
+        if (s_entries[i].id[0] == '\0') {
+            continue;
+        }
+        size_t at = used++;
+        while (at > 0U && order[at - 1U]->seq < s_entries[i].seq) {
+            order[at] = order[at - 1U];
+            --at;
+        }
+        order[at] = &s_entries[i];
+    }
+
+    const size_t count = (used < max) ? used : max;
+    for (size_t i = 0; i < count; ++i) {
+        client_store_record_t *r = &out[i];
+        strlcpy(r->id, order[i]->id, sizeof(r->id));
+        r->entry.volume_percent = order[i]->volume_percent;
+        r->entry.muted = order[i]->muted != 0U;
+        r->entry.latency_ms = order[i]->latency_ms;
+        strlcpy(r->entry.name, order[i]->name, sizeof(r->entry.name));
+    }
+    xSemaphoreGive(s_lock);
+    return count;
+}
+
+esp_err_t client_store_import(const client_store_record_t *records, size_t count, size_t first)
+{
+    nvs_handle_t handle;
+    esp_err_t result = nvs_open(STORE_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open failed: %s", esp_err_to_name(result));
+        return result;
+    }
+    if (first == 0U) {
+        result = nvs_erase_all(handle);
+    }
+
+    /* The list comes newest first; seq counts up, so the oldest gets the
+     * lowest and is the first to go when the new server's store is full. */
+    for (size_t i = 0; i < count && first + i < CLIENT_STORE_MAX && result == ESP_OK; ++i) {
+        stored_t entry = {
+            .version = STORE_VERSION,
+            .muted = records[i].entry.muted ? 1U : 0U,
+            .latency_ms = (int16_t)((records[i].entry.latency_ms > INT16_MAX) ? INT16_MAX
+                                  : (records[i].entry.latency_ms < INT16_MIN) ? INT16_MIN
+                                  : records[i].entry.latency_ms),
+            .volume_percent = records[i].entry.volume_percent,
+            .seq = (uint32_t)(CLIENT_STORE_MAX - (first + i)),
+        };
+        strlcpy(entry.id, records[i].id, sizeof(entry.id));
+        strlcpy(entry.name, records[i].entry.name, sizeof(entry.name));
+        if (entry.id[0] == '\0') {
+            continue;
+        }
+        char key[NVS_KEY_NAME_MAX_SIZE];
+        make_key(entry.id, key);
+        result = nvs_set_blob(handle, key, &entry, sizeof(entry));
+    }
+    if (result == ESP_OK) {
+        result = nvs_commit(handle);
+    }
+    if (result != ESP_OK) {
+        ESP_LOGW(TAG, "Taking over client settings failed: %s", esp_err_to_name(result));
+    }
+    nvs_close(handle);
+    return result;
+}
+
 void client_store_erase_all(void)
 {
     nvs_handle_t handle;

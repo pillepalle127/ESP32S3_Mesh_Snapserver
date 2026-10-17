@@ -44,6 +44,11 @@ static const char *TAG = "WEBCONFIG";
 #define WEBCONFIG_MAX_BODY 1536
 #define WEBCONFIG_REBOOT_DELAY_US (1500LL * 1000LL)
 
+/* Clients per request when the server hands its per-client settings to
+ * the next server: eight fit easily in one, the limit is RX_MAX (4 kB) in
+ * snapserver.c. */
+#define HANDOVER_CLIENTS_PER_REQUEST 8
+
 /* gzip-compressed at build time, see main/CMakeLists.txt. */
 extern const uint8_t webconfig_page_gz_start[] asm("_binary_webconfig_page_html_gz_start");
 extern const uint8_t webconfig_page_gz_end[] asm("_binary_webconfig_page_html_gz_end");
@@ -232,7 +237,10 @@ static cJSON *build_config_json(void)
     cJSON_AddNumberToObject(root, "opus_bitrate", cfg.opus_bitrate);
     cJSON_AddNumberToObject(root, "opus_complexity", cfg.opus_complexity);
 
-    cJSON_AddNumberToObject(root, "role", cfg.role);
+    /* The role it runs, which is what a save keeps; the stored one only
+     * differs on a device set to server that found another one at start. */
+    cJSON_AddNumberToObject(root, "role", device_config_running_role());
+    cJSON_AddNumberToObject(root, "configured_role", cfg.role);
     cJSON_AddNumberToObject(root, "buffer_ms", cfg.buffer_ms);
     cJSON_AddNumberToObject(root, "delay_trim_ms", cfg.delay_trim_ms);
     cJSON_AddNumberToObject(root, "source_mode", cfg.source_mode);
@@ -347,7 +355,9 @@ static bool settings_changed_needing_reboot(const device_config_t *a, const devi
            strcmp(a->mesh_password, b->mesh_password) != 0 ||
            a->mesh_channel != b->mesh_channel ||
            a->mesh_max_level != b->mesh_max_level ||
-           a->role != b->role ||
+           /* Not a->role: a device set to server that runs as a client
+            * (server_probe.h) needs no restart for being stored a client. */
+           b->role != device_config_running_role() ||
            /* Both roles size a multi-second buffer from this at startup --
             * the client's playback ring, the server's local output delay
             * line -- so a change only takes effect on the next boot. */
@@ -393,7 +403,8 @@ static void apply_live_params(const device_config_t *cfg)
      * moved.
      */
     if (!pots_delay_active()) {
-        audio_sink_apply_delay_trim(cfg->role, cfg->buffer_ms, cfg->delay_trim_ms);
+        audio_sink_apply_delay_trim(device_config_running_role(), cfg->buffer_ms,
+                                    cfg->delay_trim_ms);
     }
 }
 
@@ -454,6 +465,19 @@ static esp_err_t apply_config_json(const cJSON *root, bool *reboot, const char *
     if (parse_number_field(root, "source_mode", &num)) next.source_mode = (uint8_t)num;
     if (parse_number_field(root, "local_input_threshold_db", &num)) {
         next.local_input_threshold_db = (int8_t)num;
+    }
+
+    /*
+     * A running server cannot just stop being one, the mesh would be left
+     * without a server: it hands the role on by making a client the server
+     * (hand_over_to_client()). A provisioning boot runs no mesh, so there
+     * it can, which is how a new board becomes a client.
+     */
+    if (device_config_running_role() == DEVICE_ROLE_SERVER &&
+        provisioning_get_active_reason() == PROVISIONING_REASON_NONE &&
+        next.role != DEVICE_ROLE_SERVER) {
+        *err = "the server hands its role over: make another device the server";
+        return ESP_ERR_INVALID_ARG;
     }
 
     device_pots_t old_pots;
@@ -576,9 +600,7 @@ static esp_err_t api_config_post_handler(httpd_req_t *req)
  */
 static esp_err_t api_volume_post_handler(httpd_req_t *req)
 {
-    device_config_t cfg;
-    device_config_get(&cfg);
-    if (cfg.role != DEVICE_ROLE_CLIENT) {
+    if (device_config_running_role() != DEVICE_ROLE_CLIENT) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST,
                             "clients only; the server's volume is in its device list");
         return ESP_OK;
@@ -700,6 +722,10 @@ static cJSON *build_status_json(void)
     cJSON_AddNumberToObject(root, "boot_fail_count", cfg.boot_fail_count);
     cJSON_AddNumberToObject(root, "uptime_s", esp_timer_get_time() / 1000000);
     cJSON_AddStringToObject(root, "device_id", device_id);
+    /* What it runs as, and what it is set to; see build_config_json(). */
+    const uint8_t role = device_config_running_role();
+    cJSON_AddNumberToObject(root, "role", role);
+    cJSON_AddNumberToObject(root, "configured_role", cfg.role);
     /* The release tag in a CI build, `git describe` otherwise. */
     cJSON_AddStringToObject(root, "version", esp_app_get_description()->version);
 
@@ -724,7 +750,7 @@ static cJSON *build_status_json(void)
     cJSON_AddBoolToObject(root, "pins_reverted", device_config_pins_reverted());
 
     /* Server role: how many speakers it feeds right now. */
-    if (cfg.role == DEVICE_ROLE_SERVER) {
+    if (role == DEVICE_ROLE_SERVER) {
         size_t own = 0;
         const size_t total = snapserver_client_count(&own);
         cJSON *clients = cJSON_AddObjectToObject(root, "clients");
@@ -736,7 +762,7 @@ static cJSON *build_status_json(void)
      * The address is the one the client dials, which is reachable from
      * anywhere in the mesh -- unlike the client addresses the server lists,
      * which only work one hop down. */
-    if (cfg.role == DEVICE_ROLE_CLIENT) {
+    if (role == DEVICE_ROLE_CLIENT) {
         char server_host[64];
         const bool connected = snapclient_get_server(server_host, sizeof(server_host));
         if (server_host[0] != '\0') {
@@ -844,10 +870,55 @@ static esp_err_t api_wled_forward_post_handler(httpd_req_t *req)
 }
 
 /*
+ * Part of the server's per-client settings, ahead of this client taking
+ * over as the server (hand_over_to_client()): {"first": n, "clients":
+ * [[id, name, volume_percent, muted, latency_ms], ...]}.
+ */
+static cJSON *import_clients(const cJSON *request)
+{
+    const cJSON *first = cJSON_GetObjectItemCaseSensitive(request, "first");
+    const cJSON *clients = cJSON_GetObjectItemCaseSensitive(request, "clients");
+    cJSON *resp = cJSON_CreateObject();
+    if (!cJSON_IsNumber(first) || first->valueint < 0 || !cJSON_IsArray(clients)) {
+        cJSON_AddStringToObject(resp, "error", "bad request");
+        return resp;
+    }
+
+    client_store_record_t records[HANDOVER_CLIENTS_PER_REQUEST];
+    size_t count = 0;
+    const cJSON *item = NULL;
+    cJSON_ArrayForEach(item, clients) {
+        if (count == HANDOVER_CLIENTS_PER_REQUEST) {
+            break;
+        }
+        const cJSON *id = cJSON_GetArrayItem(item, 0);
+        const cJSON *name = cJSON_GetArrayItem(item, 1);
+        const cJSON *volume = cJSON_GetArrayItem(item, 2);
+        const cJSON *muted = cJSON_GetArrayItem(item, 3);
+        const cJSON *latency = cJSON_GetArrayItem(item, 4);
+        if (!cJSON_IsString(id) || !cJSON_IsString(name) || !cJSON_IsNumber(volume) ||
+            !cJSON_IsBool(muted) || !cJSON_IsNumber(latency)) {
+            continue;
+        }
+        client_store_record_t *r = &records[count++];
+        strlcpy(r->id, id->valuestring, sizeof(r->id));
+        strlcpy(r->entry.name, name->valuestring, sizeof(r->entry.name));
+        r->entry.volume_percent = volume->valueint;
+        r->entry.muted = cJSON_IsTrue(muted);
+        r->entry.latency_ms = latency->valueint;
+    }
+    if (client_store_import(records, count, (size_t)first->valueint) != ESP_OK) {
+        cJSON_AddStringToObject(resp, "error", "storing the client settings failed");
+    }
+    return resp;
+}
+
+/*
  * Client role: a request the server forwards from its device list over the
  * Snapcast connection (snapserver_remote_request()), because it cannot
  * reach this page itself once the client sits behind another node's NAPT.
- * Answers exactly what the matching route here would.
+ * Answers exactly what the matching route here would, plus the two steps
+ * of taking over as the server (hand_over_to_client()).
  */
 char *webconfig_handle_remote_request(const char *json, size_t len)
 {
@@ -869,10 +940,22 @@ char *webconfig_handle_remote_request(const char *json, size_t len)
         resp = cJSON_CreateObject();
         if (cJSON_IsObject(config) &&
             apply_config_json(config, &needs_reboot, &err) == ESP_OK) {
-            cJSON_AddBoolToObject(resp, "reboot", needs_reboot);
+            /* Taking over: the next boot waits for the old server to go. If
+             * the marker cannot be stored, the old one stays the server and
+             * this one, finding it at its start, its client. */
+            device_config_t saved;
+            device_config_get(&saved);
+            if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(request, "takeover")) &&
+                saved.role == DEVICE_ROLE_SERVER && device_config_set_handover() != ESP_OK) {
+                cJSON_AddStringToObject(resp, "error", "storing the handover failed");
+            } else {
+                cJSON_AddBoolToObject(resp, "reboot", needs_reboot);
+            }
         } else {
             cJSON_AddStringToObject(resp, "error", err);
         }
+    } else if (strcmp(op->valuestring, "clients_import") == 0) {
+        resp = import_clients(request);
     } else {
         resp = cJSON_CreateObject();
         cJSON_AddStringToObject(resp, "error", "unknown op");
@@ -927,7 +1010,7 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
 
     cJSON *root = cJSON_CreateObject();
     cJSON_AddNumberToObject(root, "delay_max_ms", DEVICE_CONFIG_DELAY_TRIM_MAX_MS);
-    if (cfg.role != DEVICE_ROLE_SERVER) {
+    if (device_config_running_role() != DEVICE_ROLE_SERVER) {
         /* Clients know nothing about their siblings. */
         cJSON_AddNullToObject(root, "clients");
         return send_json(req, root);
@@ -970,6 +1053,8 @@ static esp_err_t api_devices_get_handler(httpd_req_t *req)
         cJSON_AddNumberToObject(entry, "volume_percent", c->volume_percent);
         cJSON_AddBoolToObject(entry, "muted", c->muted);
         cJSON_AddNumberToObject(entry, "delay_ms", -c->latency_ms);
+        /* Set to server, but found this one running at its start. */
+        cJSON_AddBoolToObject(entry, "configured_server", c->configured_server);
         cJSON_AddItemToArray(list, entry);
     }
     free(clients);
@@ -1136,13 +1221,29 @@ static bool query_device_id(httpd_req_t *req, char *id, size_t id_len)
     return out > 0U;
 }
 
+/* The answer to the page when a request to a client went nowhere. */
+static esp_err_t send_remote_failure(httpd_req_t *req, esp_err_t rc)
+{
+    switch (rc) {
+    case ESP_ERR_NOT_FOUND:
+        return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "device not connected");
+    case ESP_ERR_TIMEOUT:
+        httpd_resp_set_status(req, "504 Gateway Timeout");
+        return httpd_resp_sendstr(req, "device did not answer");
+    case ESP_ERR_NO_MEM:
+        return httpd_resp_send_500(req);
+    default:
+        httpd_resp_set_status(req, "502 Bad Gateway");
+        return httpd_resp_sendstr(req, "connection to the device lost");
+    }
+}
+
 /* Takes ownership of request. Passes the client's answer through as is. */
 static esp_err_t forward_to_client(httpd_req_t *req, cJSON *request, uint32_t timeout_ms)
 {
-    device_config_t cfg;
-    device_config_get(&cfg);
     char id[64];
-    if (cfg.role != DEVICE_ROLE_SERVER || !query_device_id(req, id, sizeof(id))) {
+    if (device_config_running_role() != DEVICE_ROLE_SERVER ||
+        !query_device_id(req, id, sizeof(id))) {
         cJSON_Delete(request);
         httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such device");
         return ESP_OK;
@@ -1157,21 +1258,8 @@ static esp_err_t forward_to_client(httpd_req_t *req, cJSON *request, uint32_t ti
     char *reply = NULL;
     const esp_err_t rc = snapserver_remote_request(id, json, &reply, timeout_ms);
     free(json);
-
-    switch (rc) {
-    case ESP_OK:
-        break;
-    case ESP_ERR_NOT_FOUND:
-        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "device not connected");
-        return ESP_OK;
-    case ESP_ERR_TIMEOUT:
-        httpd_resp_set_status(req, "504 Gateway Timeout");
-        httpd_resp_sendstr(req, "device did not answer");
-        return ESP_OK;
-    default:
-        httpd_resp_set_status(req, "502 Bad Gateway");
-        httpd_resp_sendstr(req, "connection to the device lost");
-        return ESP_OK;
+    if (rc != ESP_OK) {
+        return send_remote_failure(req, rc);
     }
 
     /* {"error": ...} is the client turning the request down. */
@@ -1209,7 +1297,128 @@ static esp_err_t api_device_status_get_handler(httpd_req_t *req)
     return forward_to_client(req, remote_op("status"), REMOTE_STATUS_TIMEOUT_MS);
 }
 
-/* Body: the same form as POST /api/config. */
+/*
+ * Takes ownership of request. On ESP_OK *answer is the client's answer,
+ * which may still be {"error": ...}; the caller deletes it.
+ */
+static esp_err_t remote_call(const char *id, cJSON *request, uint32_t timeout_ms, cJSON **answer)
+{
+    *answer = NULL;
+    char *json = cJSON_PrintUnformatted(request);
+    cJSON_Delete(request);
+    if (json == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    char *reply = NULL;
+    const esp_err_t rc = snapserver_remote_request(id, json, &reply, timeout_ms);
+    free(json);
+    if (rc != ESP_OK) {
+        return rc;
+    }
+    *answer = cJSON_Parse(reply);
+    free(reply);
+    return (*answer != NULL) ? ESP_OK : ESP_ERR_INVALID_RESPONSE;
+}
+
+/*
+ * Makes a client the server. It gets this server's per-client settings,
+ * then the form with role server and the handover marker, and restarts as
+ * the server; this one stores itself as a client and restarts too. The new
+ * server waits for this one to be gone before it opens the mesh
+ * (server_probe.c), and this one joins it like every other client. Until
+ * the client has taken the new role nothing changes here.
+ */
+static esp_err_t hand_over_to_client(httpd_req_t *req, cJSON *config)
+{
+    char id[64];
+    if (device_config_running_role() != DEVICE_ROLE_SERVER ||
+        !query_device_id(req, id, sizeof(id))) {
+        cJSON_Delete(config);
+        httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "no such device");
+        return ESP_OK;
+    }
+
+    client_store_record_t *records =
+        heap_caps_malloc(sizeof(*records) * CLIENT_STORE_MAX, MALLOC_CAP_SPIRAM);
+    if (records == NULL) {
+        records = malloc(sizeof(*records) * CLIENT_STORE_MAX);
+    }
+    if (records == NULL) {
+        cJSON_Delete(config);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    const size_t count = client_store_list(records, CLIENT_STORE_MAX);
+
+    /* At least one request, even with nothing stored: the first one also
+     * clears whatever the client has stored from an earlier time as server. */
+    esp_err_t rc = ESP_OK;
+    cJSON *answer = NULL;
+    size_t first = 0;
+    do {
+        cJSON *request = remote_op("clients_import");
+        cJSON_AddNumberToObject(request, "first", (double)first);
+        cJSON *list = cJSON_AddArrayToObject(request, "clients");
+        for (size_t i = first; i < count && i < first + HANDOVER_CLIENTS_PER_REQUEST; ++i) {
+            cJSON *record = cJSON_CreateArray();
+            cJSON_AddItemToArray(record, cJSON_CreateString(records[i].id));
+            cJSON_AddItemToArray(record, cJSON_CreateString(records[i].entry.name));
+            cJSON_AddItemToArray(record, cJSON_CreateNumber(records[i].entry.volume_percent));
+            cJSON_AddItemToArray(record, cJSON_CreateBool(records[i].entry.muted));
+            cJSON_AddItemToArray(record, cJSON_CreateNumber(records[i].entry.latency_ms));
+            cJSON_AddItemToArray(list, record);
+        }
+        cJSON_Delete(answer);
+        rc = remote_call(id, request, REMOTE_CONFIG_TIMEOUT_MS, &answer);
+        first += HANDOVER_CLIENTS_PER_REQUEST;
+    } while (rc == ESP_OK && cJSON_GetObjectItemCaseSensitive(answer, "error") == NULL &&
+             first < count);
+    free(records);
+
+    if (rc == ESP_OK && cJSON_GetObjectItemCaseSensitive(answer, "error") == NULL) {
+        cJSON_Delete(answer);
+        cJSON *request = remote_op("set_config");
+        cJSON_AddItemToObject(request, "config", config);
+        cJSON_AddBoolToObject(request, "takeover", true);
+        config = NULL;
+        rc = remote_call(id, request, REMOTE_CONFIG_TIMEOUT_MS, &answer);
+    }
+    cJSON_Delete(config);
+    if (rc != ESP_OK) {
+        cJSON_Delete(answer);
+        return send_remote_failure(req, rc);
+    }
+    const cJSON *error = cJSON_GetObjectItemCaseSensitive(answer, "error");
+    if (cJSON_IsString(error)) {
+        const esp_err_t result = httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, error->valuestring);
+        cJSON_Delete(answer);
+        return result;
+    }
+    cJSON_Delete(answer);
+
+    /* The client restarts as the server now; this one steps down. */
+    device_config_t cfg;
+    device_config_get(&cfg);
+    cfg.role = DEVICE_ROLE_CLIENT;
+    if (device_config_save(&cfg) != ESP_OK) {
+        /* It stays the server, and the new one, still finding it after its
+         * wait, joins it as a client: one server either way. */
+        ESP_LOGE(TAG, "Handing over to %s: storing this device as a client failed", id);
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "this server could not step down");
+    }
+
+    ESP_LOGW(TAG, "Handing the server role over to %s, restarting as a client", id);
+    cJSON *resp = cJSON_CreateObject();
+    cJSON_AddBoolToObject(resp, "reboot", true);
+    cJSON_AddBoolToObject(resp, "handover", true);
+    const esp_err_t send_result = send_json(req, resp);
+    schedule_reboot();
+    return send_result;
+}
+
+/* Body: the same form as POST /api/config. Role server makes the client
+ * the server, see hand_over_to_client(). */
 static esp_err_t api_device_config_post_handler(httpd_req_t *req)
 {
     char body[WEBCONFIG_MAX_BODY];
@@ -1222,6 +1431,10 @@ static esp_err_t api_device_config_post_handler(httpd_req_t *req)
         cJSON_Delete(config);
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "invalid JSON");
         return ESP_OK;
+    }
+    const cJSON *role = cJSON_GetObjectItemCaseSensitive(config, "role");
+    if (cJSON_IsNumber(role) && role->valueint == (int)DEVICE_ROLE_SERVER) {
+        return hand_over_to_client(req, config);
     }
     cJSON *request = remote_op("set_config");
     cJSON_AddItemToObject(request, "config", config);
@@ -1338,18 +1551,17 @@ esp_err_t webconfig_start(void)
      * one you looked at first. A unique per-role, per-MAC hostname avoids
      * that collision entirely.
      */
-    device_config_t cfg;
-    device_config_get(&cfg);
+    const bool client_role = device_config_running_role() == DEVICE_ROLE_CLIENT;
     char device_id[7];
     get_device_id_suffix(device_id, sizeof(device_id));
 
     char hostname[24];
     snprintf(hostname, sizeof(hostname), "%s-%s",
-             (cfg.role == DEVICE_ROLE_CLIENT) ? "snapclient" : "snapserver",
+             client_role ? "snapclient" : "snapserver",
              device_id);
 
     mdns_hostname_set(hostname);
-    mdns_instance_name_set((cfg.role == DEVICE_ROLE_CLIENT) ? "ESP32-S3 Snapclient" : "ESP32-S3 Snapserver");
+    mdns_instance_name_set(client_role ? "ESP32-S3 Snapclient" : "ESP32-S3 Snapserver");
     mdns_service_add(NULL, "_http", "_tcp", WEBCONFIG_PORT, NULL, 0);
     ESP_LOGI(TAG, "mDNS ready: http://%s.local/", hostname);
 

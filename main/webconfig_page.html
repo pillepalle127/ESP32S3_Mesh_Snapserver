@@ -85,6 +85,7 @@
   <option value="0">Server</option>
   <option value="1">Client</option>
 </select>
+<div class="note" id="role_note" hidden></div>
 <div id="server_fields">
   <label for="buffer_ms">Buffer (ms)</label>
   <input type="number" id="buffer_ms" min="200" max="10000" step="100">
@@ -335,6 +336,19 @@ const DE = {
   'knob {0} %': 'Poti {0} %',
   'no volume knob': 'ohne Lautstärke',
   'This server ({0})': 'Dieser Server ({0})',
+  'This device is the server. To change that, make another device the server in its settings.':
+    'Dieses Gerät ist der Server. Zum Wechseln ein anderes Gerät in dessen Einstellungen zum Server machen.',
+  'Saving makes {0} the server; this server restarts as a client. The music stops for a moment.':
+    'Speichern macht {0} zum Server, dieser Server startet als Client neu. Die Musik setzt kurz aus.',
+  'Saving restarts this device. If another server is already running, it stays that server\'s client.':
+    'Speichern startet dieses Gerät neu. Läuft schon ein anderer Server, bleibt es dessen Client.',
+  'Set to server, but another server was running when it started, so it runs as a client.':
+    'Als Server eingestellt, beim Start lief aber schon ein anderer Server. Es läuft deshalb als Client.',
+  '{0} becomes the server, this server restarts as a client. The music stops for a moment; reload this page in about half a minute.':
+    '{0} wird Server, dieser Server startet als Client neu. Die Musik setzt kurz aus. Seite in etwa einer halben Minute neu laden.',
+  'set to server': 'als Server eingestellt',
+  'Set to server, but this server was already running when it started. It runs as a client.':
+    'Als Server eingestellt, beim Start lief aber schon dieser Server. Es läuft deshalb als Client.',
   'no address in the mesh yet': 'noch ohne Adresse im Mesh',
   'at {0}': 'an {0}',
 };
@@ -393,6 +407,7 @@ function addSignToggle(input) {
 }
 
 let currentRole = null;
+let configuredRole = null;
 let currentDeviceId = null;
 
 /* Whose settings the form shows. null is the device serving this page;
@@ -445,6 +460,7 @@ function selectDevice(id, name) {
   // The heading names the device being edited; neutral until its role and
   // ID have both arrived.
   currentRole = null;
+  configuredRole = null;
   currentDeviceId = null;
   document.title = $('pageTitle').textContent = 'ESP32-S3 Snapmesh';
   for (const [key, row] of deviceRows) {
@@ -491,8 +507,10 @@ async function loadConfig() {
   setFormDirty(false);
   updateSettingsHead();
   currentRole = cfg.role;
+  configuredRole = cfg.configured_role ?? cfg.role;
   updatePageTitle();
   $('role').value = String(cfg.role);
+  updateRoleNote();
   $('source_mode').value = String(cfg.source_mode);
   $('local_input_threshold_db').value = cfg.local_input_threshold_db;
   $('buffer_ms').value = cfg.buffer_ms;
@@ -646,6 +664,30 @@ function updateCompFieldsEnabled() {
   }
 }
 
+/* The running server hands its role on by making a client the server;
+ * switching itself to client would leave the mesh without one, so its own
+ * field is locked -- not on a provisioning boot, where a new board becomes
+ * a client this way. Picking server for a client says what saving does. */
+function updateRoleNote() {
+  const note = $('role_note');
+  const own = selectedId === null;
+  const toServer = currentRole === 1 && $('role').value === '0';
+  const locked = own && currentRole === 0 && !deviceProvisioning;
+  $('role').disabled = locked;
+  let text = '';
+  if (locked) {
+    text = t('This device is the server. To change that, make another device the server in its settings.');
+  } else if (toServer && !own) {
+    text = t('Saving makes {0} the server; this server restarts as a client. The music stops for a moment.', selectedName);
+  } else if (toServer) {
+    text = t('Saving restarts this device. If another server is already running, it stays that server\'s client.');
+  } else if (configuredRole === 0 && currentRole === 1) {
+    text = t('Set to server, but another server was running when it started, so it runs as a client.');
+  }
+  note.textContent = text;
+  note.hidden = !text;
+}
+
 function updateRoleFieldsEnabled() {
   const isClient = $('role').value === '1';
   // Only the server's buffer and encoder count; a client plays by what the
@@ -706,6 +748,7 @@ async function loadStatus() {
     currentDeviceId = s.device_id;
     deviceProvisioning = selectedId === null && s.reason !== 'none';
     updatePageTitle();
+    if (configLoaded) updateRoleNote();
     let knobs = '';
     if (s.pot_volume_percent !== null && s.pot_volume_percent !== undefined) {
       knobs += '\n' + t('volume knob') + ': ' + s.pot_volume_percent + ' %';
@@ -746,7 +789,10 @@ $('sub_channel').addEventListener('change', () => {});
 $('crossover_enabled').addEventListener('change', updateCrossoverFieldsEnabled);
 $('comp_enable').addEventListener('change', updateCompFieldsEnabled);
 
-$('role').addEventListener('change', updateRoleFieldsEnabled);
+$('role').addEventListener('change', () => {
+  updateRoleFieldsEnabled();
+  updateRoleNote();
+});
 
 for (const f of PIN_FIELDS) {
   $(f.id).addEventListener('change', () => fillPinSelects(currentPins()));
@@ -833,6 +879,13 @@ $('save').addEventListener('click', async () => {
   }
   const result = await res.json();
   if (token === selectionToken) setFormDirty(false);
+  if (result.handover) {
+    // This server is about to restart as a client; the page comes back
+    // from the new one at the same address.
+    statusFrozen = true;
+    $('status').textContent = t('{0} becomes the server, this server restarts as a client. The music stops for a moment; reload this page in about half a minute.', who);
+    return;
+  }
   $('status').textContent = result.reboot
     ? t('Saved. A setting that needs a restart changed, {0} is rebooting...', who)
     : t('Saved.');
@@ -1054,6 +1107,7 @@ function makeDeviceRow(dev) {
       <input type="text" class="dev-name" maxlength="63">
       <span class="badge dev-hops"></span>
       <span class="badge dev-kind" title="Not one of ours: only volume, mute and delay can be set">Snapcast</span>
+      <span class="badge dev-cfgsrv" title="Set to server, but this server was already running when it started. It runs as a client." hidden>set to server</span>
       <span class="dev-ip dev-knob"></span>
       <button type="button" class="dev-sel">Settings</button>
     </div>
@@ -1070,6 +1124,7 @@ function makeDeviceRow(dev) {
     name: el.querySelector('.dev-name'),
     hops: el.querySelector('.dev-hops'),
     kind: el.querySelector('.dev-kind'),
+    cfgsrv: el.querySelector('.dev-cfgsrv'),
     knob: el.querySelector('.dev-knob'),
     sel: el.querySelector('.dev-sel'),
     vol: el.querySelector('.dev-vol'),
@@ -1114,6 +1169,7 @@ function updateDeviceRow(row, dev) {
   // client has nothing to show beyond volume, mute and delay.
   const foreign = !dev.server && !dev.own;
   row.kind.hidden = !foreign;
+  row.cfgsrv.hidden = !dev.configured_server;
   row.sel.hidden = foreign;
   row.el.classList.toggle('selected', (dev.server ? null : dev.id) === selectedId);
   // The server's own knob multiplies with the volume set here.

@@ -146,6 +146,14 @@ Snapcast app. **Settings** opens a client's page, however deep it sits in the me
 local I2S input), threshold for the local input, volume and mute. While a server is connected, the server sets the
 volume.
 
+**Switching the server:** in a client's settings set the role to server and save. The client becomes the server, the
+old server becomes a client. The clients' names, volumes and delays move along. The music is gone for about 10 s.
+On the server itself the role is locked, otherwise there would be no server left.
+
+A device set to server checks at startup whether a server is already running. If so, it runs as a client, and the
+device list marks it "set to server". If two such devices are switched on at the same time, both become servers.
+Then cut the power to one of them briefly.
+
 **Mesh / Wi-Fi:** mesh on or off, name, password, channel and the maximum mesh depth. The same on all devices.
 
 **DSP / crossover:** crossover on or off, crossover frequency (40–500 Hz), gain for sub and wideband (−24 to +18 dB),

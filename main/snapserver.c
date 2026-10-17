@@ -297,6 +297,9 @@ typedef struct {
      * such flag and is muted outright instead.
      */
     bool is_snapmesh;
+    /* Our own client that is set to server but found this one running at
+     * its start (Hello "ConfiguredServer", server_probe.h). */
+    bool configured_server;
 
     /* Mesh-Lite level our own clients report in their Hello (root = 1),
      * 0 when unknown -- a foreign client, or a build without Mesh-Lite. */
@@ -1100,6 +1103,7 @@ static bool handle_hello(client_t *client,
     const int32_t instance = json_int_or(root, "Instance", 1);
     /* Our own clients say so here, see send_hello() in snapclient.c. */
     const bool is_snapmesh = json_int_or(root, "SnapMesh", 0) != 0;
+    const bool configured_server = json_int_or(root, "ConfiguredServer", 0) != 0;
     /*
      * Reported once, at connect. Enough, because a node's level cannot
      * change under a live connection: moving to another parent gives it a
@@ -1136,6 +1140,7 @@ static bool handle_hello(client_t *client,
     strlcpy(client->version, version, sizeof(client->version));
     client->instance = instance;
     client->is_snapmesh = is_snapmesh;
+    client->configured_server = configured_server;
     client->mesh_level = (uint8_t)mesh_level;
     if (have_stored) {
         client->volume_percent = stored.volume_percent;
@@ -2028,6 +2033,7 @@ static void server_task(void *arg)
                 s_clients[i].voice_muted_sent = false;
                 s_clients[i].announcement_sent = false;
                 s_clients[i].is_snapmesh = false;
+                s_clients[i].configured_server = false;
                 s_clients[i].mesh_level = 0;
                 s_clients[i].latency_ms = 0;
                 s_clients[i].id[0] = '\0';
@@ -2182,6 +2188,7 @@ size_t snapserver_get_clients(snapserver_client_info_t *out,
         dst->muted = s_clients[i].muted;
         dst->latency_ms = s_clients[i].latency_ms;
         dst->is_snapmesh = s_clients[i].is_snapmesh;
+        dst->configured_server = s_clients[i].configured_server;
         dst->hops = (s_clients[i].mesh_level >= 2U) ? (int32_t)s_clients[i].mesh_level - 1 : -1;
         dst->last_seen_sec = s_clients[i].last_seen_sec;
         dst->last_seen_usec = s_clients[i].last_seen_usec;

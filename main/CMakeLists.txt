@@ -12,6 +12,7 @@ idf_component_register(
         "mesh_root.c"
         "pinmap.c"
         "provisioning.c"
+        "server_probe.c"
         "snapclient.c"
         "snapserver.c"
         "status_led.c"

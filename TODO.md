@@ -11,7 +11,14 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
   `feat/wled-sync` (enthält `feat/usb-uac`): USB-Soundkarte am Server
   (Schalter in der Web-UI, Neustart zum Flashen); WLED wird erkannt und
   bekommt die Musik, mit Link auf der Server-Seite; Durchsagen verdecken
-  Funkaussetzer statt still zu werden.
+  Funkaussetzer statt still zu werden. Auf `feat/server-handover`: Server
+  wechseln über die Rolle in den Einstellungen eines Clients; ein als
+  Server eingestelltes Gerät wird Client, wenn beim Start schon ein Server
+  läuft.
+- **Server-Wechsel (`feat/server-handover`):** Zwei als Server eingestellte
+  Geräte, die gleichzeitig starten, werden beide Server (2026-10-17 auf
+  Hardware gesehen). BDFC hat die Firmware noch nicht. Siehe
+  „Server-Wechsel und Prüfung beim Start“.
 - **Features:** OTA über die Web-Seite; USB-Audio am Client als Mikrofon;
   Erkennung, ob das Handy bei Durchsagen direkt am Root hängt.
 - **USB-Soundkarte (`feat/usb-uac`):** Flashen unter Windows nach
@@ -129,6 +136,41 @@ Bugs sind umgesetzt:
   damit mehrere Clients über Stunden synchron bleiben — siehe Plan-Datei.
 
 ## Nicht als Bug, aber vorgemerkt
+
+- **Server-Wechsel und Prüfung beim Start (2026-10-17, `feat/server-handover`).**
+  - Ein Gerät mit gespeicherter Rolle Server verbindet sich beim Start,
+    vor Bridge und Mesh-Lite, als einfache Station mit der Mesh-SSID und
+    fragt `http://192.168.5.1/api/status` (`server_probe.c`). Diese
+    Adresse hat nur das WLAN eines Servers, und über jeden Client mit
+    Server ist sie erreichbar. Antwortet ein Server, läuft das Gerät in
+    diesem Boot als Client (`device_config_running_role()`), die
+    gespeicherte Rolle bleibt Server. Es sagt das im Hello
+    (`"ConfiguredServer":1`), die Server-Seite zeigt „als Server
+    eingestellt“. Speichert man es dort als Client, gilt das ohne Neustart.
+  - Wechsel: Stellt man in der Geräteliste einen Client auf Server, schickt
+    der Server ihm seine Client-Einstellungen (Namen, Lautstärke, Stumm,
+    Latenz; je 8 pro Anfrage, `clients_import`), dann das Formular mit
+    `"takeover": true`. Der Client speichert Rolle und Übergabe-Kennzeichen
+    und startet neu; der Server speichert sich als Client und startet auch
+    neu. Mit Kennzeichen prüft der neue Server, bis der alte weg ist
+    (höchstens 30 s). Am Server selbst lässt sich die Rolle nicht auf
+    Client stellen, außer im Provisioning.
+  - Gemessen auf B688, 14E4, 7788 (BDFC noch alte Firmware, lief mit):
+    Prüfung beim Kaltstart 6,6 s mit 2,5 s HTTP-Wartezeit, danach auf 1 s
+    gesenkt. Wechsel B688 → 14E4: neuer Server nach 10,0 s, alle Clients
+    nach 14,4 s, an 7788 rund 12 s ohne Musik aus dem Netz. Zurück
+    14E4 → B688 mit 1 s Wartezeit: 8,4 s, 12,4 s, rund 7 s. Die fünf
+    gespeicherten Client-Einstellungen kamen beide Male an, die Namen
+    stimmten danach. 7788 per NVS auf Server gestellt und allein neu
+    gestartet: fand 14E4 nach 5,3 s und lief als Client.
+  - Lücke: Starten zwei als Server eingestellte Geräte gleichzeitig, findet
+    keiner den anderen (2026-10-17 gesehen, 14E4 und 7788 nach einem
+    gemeinsamen Reset). Ein laufender Server prüft nicht nach, das hieße
+    den Kanal verlassen. Eine zufällige Startverzögerung würde es nur
+    seltener machen und jeden Serverstart verlängern. Abhilfe von Hand:
+    einen der beiden kurz vom Strom nehmen.
+  - Klein: Das Abzeichen „als Server eingestellt“ verschwindet erst mit
+    dem nächsten Hello des Geräts, nicht gleich beim Speichern als Client.
 
 - **WLED-Anbindung (2026-10-10, `feat/wled-sync`).** Jedes Gerät fragt die
   Stationen in seinem eigenen WLAN nach `/json/info`; antwortet ein WLED,

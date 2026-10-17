@@ -417,6 +417,15 @@ static uint8_t own_mesh_level(void)
 #endif
 }
 
+/* Set to server, running as a client because another server ran at start. */
+static bool configured_server(void)
+{
+    device_config_t cfg;
+    device_config_get(&cfg);
+    return cfg.role == DEVICE_ROLE_SERVER &&
+           device_config_running_role() == DEVICE_ROLE_CLIENT;
+}
+
 static int send_hello(int socket_fd)
 {
     uint8_t mac[6] = {0};
@@ -432,7 +441,7 @@ static int send_hello(int socket_fd)
     char client_name[32];
     snprintf(client_name, sizeof(client_name), "ESP32S3-SnapMesh-%02X%02X", mac[4], mac[5]);
 
-    char hello_json[384];
+    char hello_json[416];
     const int hello_length = snprintf(hello_json, sizeof(hello_json),
         "{"
         "\"MAC\":\"%s\","
@@ -450,9 +459,13 @@ static int send_hello(int socket_fd)
         "\"SnapMesh\":1,"
         /* Our mesh level (root = 1), for the server's device list.
          * Also ignored by a stock Snapserver. */
-        "\"MeshLevel\":%u"
+        "\"MeshLevel\":%u,"
+        /* Set to server, but another one ran at our start, so we joined
+         * it (server_probe.h). Its device list says so. */
+        "\"ConfiguredServer\":%u"
         "}",
-        mac_text, client_name, client_name, (unsigned)own_mesh_level());
+        mac_text, client_name, client_name, (unsigned)own_mesh_level(),
+        configured_server() ? 1U : 0U);
 
     if (hello_length <= 0 || hello_length >= (int)sizeof(hello_json)) {
         ESP_LOGE(TAG, "Hello JSON invalid or too long");

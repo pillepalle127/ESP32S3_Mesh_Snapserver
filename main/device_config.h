@@ -238,6 +238,24 @@ void device_config_get(device_config_t *out);
  */
 bool device_config_is_first_boot(void);
 
+/*
+ * The role this boot runs. The same as device_config_t.role, except when a
+ * device set to server found another server already running at startup and
+ * joined it as a client (server_probe.h). app_main sets it once, before any
+ * role starts; everything that acts on the role at runtime asks here, while
+ * the stored role only decides what the next boot tries.
+ */
+uint8_t device_config_running_role(void);
+void device_config_set_running_role(uint8_t role);
+
+/*
+ * Handover marker. The server sets it on the client that is to take over
+ * (webconfig.c); that client's next boot reads and clears it, so it waits
+ * for the old server to go instead of finding it and joining as a client.
+ */
+esp_err_t device_config_set_handover(void);
+bool device_config_take_handover(void);
+
 /* Current potentiometer settings (defaults if none are stored). */
 void device_config_get_pots(device_pots_t *out);
 

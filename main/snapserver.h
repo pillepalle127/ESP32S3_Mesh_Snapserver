@@ -44,6 +44,7 @@ typedef struct {
     int32_t latency_ms;
 
     bool is_snapmesh;     /* one of our own clients (Hello "SnapMesh") */
+    bool configured_server; /* set to server, runs as a client (Hello "ConfiguredServer") */
     /*
      * Mesh hops between this server and the client: 1 for a direct child
      * of the root AP, one more per relay below it. From the level our own

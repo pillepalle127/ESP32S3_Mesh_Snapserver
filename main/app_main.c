@@ -19,6 +19,8 @@
 #include "status_led.h"
 #include "pots.h"
 #include "power_button.h"
+#include "provisioning.h"
+#include "server_probe.h"
 #include "usb_audio.h"
 #include "voice_announce.h"
 #include "webconfig.h"
@@ -115,7 +117,18 @@ void app_main(void)
         }
     }
 
-    const bool client_role = (cfg.role == DEVICE_ROLE_CLIENT);
+    /* A device set to server first looks for one that already runs, and
+     * joins it as a client if there is (server_probe.h). Before anything
+     * below picks a role's way to start. */
+    uint8_t role = cfg.role;
+#if CONFIG_SNAPSERVER_ENABLE_MESH_LITE
+    if (role == DEVICE_ROLE_SERVER && provisioning_decide(&cfg) == PROVISIONING_REASON_NONE) {
+        char server_id[16];
+        role = server_probe_decide_role(&cfg, server_id, sizeof(server_id));
+    }
+#endif
+    device_config_set_running_role(role);
+    const bool client_role = (role == DEVICE_ROLE_CLIENT);
 
     /* USB sound card: server input only. Otherwise make sure the native
      * port is USB-Serial-JTAG again, even after a software restart from a
@@ -211,7 +224,7 @@ void app_main(void)
         audio_sink_set_local_input_threshold_db(cfg.local_input_threshold_db);
         audio_sink_set_delay_trim_ms(cfg.delay_trim_ms);
         /* After the configured trim, so the knob's first reading wins. */
-        pots_enable_delay(cfg.role, cfg.buffer_ms);
+        pots_enable_delay(role, cfg.buffer_ms);
 
         result = voice_receive_start();
         if (result != ESP_OK) {
@@ -248,7 +261,7 @@ void app_main(void)
         (uint32_t)cfg.buffer_ms + DEVICE_CONFIG_DELAY_TRIM_MAX_MS));
     /* After the delay line exists and holds the configured trim, so the
      * knob's first reading replaces it rather than racing it. */
-    pots_enable_delay(cfg.role, cfg.buffer_ms);
+    pots_enable_delay(role, cfg.buffer_ms);
 
     result = audio_opus_start();
     if (result != ESP_OK) {

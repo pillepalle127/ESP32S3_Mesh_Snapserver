@@ -23,6 +23,7 @@ static const char *TAG = "DEVICE_CONFIG";
 #define DEVICE_PINS_NVS_KEY         "pins"
 #define DEVICE_LVOL_NVS_KEY         "lvol"
 #define DEVICE_SVOL_NVS_KEY         "svol"
+#define DEVICE_HANDOVER_NVS_KEY     "handover"
 
 /*
  * s_cfg is written from whichever task calls device_config_save()/
@@ -45,6 +46,10 @@ static bool s_first_boot;
  * known such writer; this catches any other one too.
  */
 static bool s_erased;
+
+/* See device_config_running_role(). Written once by app_main, before any
+ * other task asks. */
+static uint8_t s_running_role = DEVICE_ROLE_SERVER;
 
 /* Guarded by s_cfg_lock like s_cfg. */
 static device_local_volume_t s_local_volume = { .percent = 100U };
@@ -460,6 +465,7 @@ esp_err_t device_config_load(void)
     portENTER_CRITICAL(&s_cfg_lock);
     s_cfg = next;
     portEXIT_CRITICAL(&s_cfg_lock);
+    s_running_role = next.role;
     return ESP_OK;
 }
 
@@ -546,7 +552,8 @@ esp_err_t device_config_factory_reset(void)
         if (pins_result != ESP_OK && pins_result != ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "Erasing pin assignment failed: %s", esp_err_to_name(pins_result));
         }
-        const char *const volume_keys[] = { DEVICE_LVOL_NVS_KEY, DEVICE_SVOL_NVS_KEY };
+        const char *const volume_keys[] = { DEVICE_LVOL_NVS_KEY, DEVICE_SVOL_NVS_KEY,
+                                             DEVICE_HANDOVER_NVS_KEY };
         for (size_t i = 0; i < sizeof(volume_keys) / sizeof(volume_keys[0]); ++i) {
             const esp_err_t vol_result = nvs_erase_key(handle, volume_keys[i]);
             if (vol_result != ESP_OK && vol_result != ESP_ERR_NVS_NOT_FOUND) {
@@ -572,6 +579,51 @@ void device_config_get(device_config_t *out)
 bool device_config_is_first_boot(void)
 {
     return s_first_boot;
+}
+
+uint8_t device_config_running_role(void)
+{
+    return s_running_role;
+}
+
+void device_config_set_running_role(uint8_t role)
+{
+    s_running_role = role;
+}
+
+esp_err_t device_config_set_handover(void)
+{
+    nvs_handle_t handle;
+    esp_err_t result = nvs_open(DEVICE_CONFIG_NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "nvs_open failed: %s", esp_err_to_name(result));
+        return result;
+    }
+    result = nvs_set_u8(handle, DEVICE_HANDOVER_NVS_KEY, 1U);
+    if (result == ESP_OK) {
+        result = nvs_commit(handle);
+    }
+    if (result != ESP_OK) {
+        ESP_LOGE(TAG, "Storing the handover marker failed: %s", esp_err_to_name(result));
+    }
+    nvs_close(handle);
+    return result;
+}
+
+bool device_config_take_handover(void)
+{
+    nvs_handle_t handle;
+    if (nvs_open(DEVICE_CONFIG_NVS_NAMESPACE, NVS_READWRITE, &handle) != ESP_OK) {
+        return false;
+    }
+    uint8_t marker = 0U;
+    const bool set = nvs_get_u8(handle, DEVICE_HANDOVER_NVS_KEY, &marker) == ESP_OK &&
+                     marker != 0U;
+    if (set && nvs_erase_key(handle, DEVICE_HANDOVER_NVS_KEY) == ESP_OK) {
+        (void)nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return set;
 }
 
 bool device_config_pots_valid(const device_pots_t *pots)
