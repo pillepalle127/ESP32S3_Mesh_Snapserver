@@ -18,9 +18,9 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
   „Neustart zum Flashen“ ungetestet; Dauerlauf unter Windows (FIFO,
   Ausgleichs-Frames); TinyUSB belegt 10,5 KB internes
   RAM auf jedem Gerät, auch ohne USB-Audio (FIFO kleiner oder ins PSRAM).
-- **Ein/Aus-Taster:** Ausstehende Client-Einstellungen (3 s verzögert
-  gespeichert) gehen beim Ausschalten verloren; es fehlt ein Flush in
-  `client_store` vor dem Deep Sleep.
+- **Einstellungen beim Ausschalten:** Client-Einstellungen werden 3 s
+  verzögert gespeichert. Ausgeschaltet wird am Poti-Schalter, also Strom
+  weg ohne Vorwarnung; was in diesen 3 s geändert wurde, ist verloren.
 - **WLED:** Peek bzw. Effekt-Test mit Musik und Durchsage; mehr als ein
   WLED; WLED hinter einem Gerät der dritten Ebene (Weiterleitungskette)
   auf Hardware. An BDFC antwortete das WLED immer wieder 1,5–3 s lang
@@ -50,8 +50,7 @@ Kurzliste; Einzelheiten in den Einträgen weiter unten.
 - **Aufräumen:** Diagnose-Code (`cpu_stats.c`, `heap … children=`,
   Decodierzeit) behalten oder entfernen.
 - **Auf Hardware nicht abgehakt:** Root-Wächter im Client (Server bei
-  laufenden Clients ausschalten); Ein/Aus-Taster mit 1 s Halten;
-  Pin-Seite, App-Geräteliste, Provisioning (Stufe 5), Board mit weniger
+  laufenden Clients ausschalten); Pin-Seite, App-Geräteliste, Provisioning (Stufe 5), Board mit weniger
   als 16 MB Flash.
 
 ## Code-Analyse und Stufen 1–6
