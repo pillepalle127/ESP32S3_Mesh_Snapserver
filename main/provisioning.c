@@ -65,8 +65,7 @@ void provisioning_build_ssid(char *out, size_t out_len)
     if (esp_read_mac(mac, ESP_MAC_WIFI_STA) != ESP_OK) {
         memset(mac, 0, sizeof(mac));
     }
-    snprintf(out, out_len, "ESP32_provisioning_%02X%02X%02X",
-             mac[3], mac[4], mac[5]);
+    snprintf(out, out_len, "ESP32_provisioning_%02X%02X", mac[4], mac[5]);
 }
 
 /*

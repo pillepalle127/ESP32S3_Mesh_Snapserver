@@ -663,18 +663,20 @@ static esp_err_t api_reboot_download_post_handler(httpd_req_t *req)
 }
 
 /*
- * Last three bytes of the board's base (STA) MAC, so the value shown here
+ * Last two bytes of the board's base (STA) MAC, so the value shown here
  * (and used for the mDNS hostname below) lets you match a browser tab back
  * to a specific physical board instead of every device showing/advertising
- * the identical name. The base MAC, not the SoftAP one (base + 1): it is
- * what esptool, the USB serial number and the Snapcast client name show,
- * so the server in the device list ends in the same digits as the board.
+ * the identical name. Two bytes, like the Snapcast client name and the USB
+ * sound card, so a board has one name everywhere (it was three here once).
+ * The base MAC, not the SoftAP one (base + 1): it is what esptool and the
+ * USB serial number show, so the server in the device list ends in the
+ * same digits as the board.
  */
 static void get_device_id_suffix(char *out, size_t out_len)
 {
     uint8_t mac[6] = {0};
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
-    snprintf(out, out_len, "%02X%02X%02X", mac[3], mac[4], mac[5]);
+    snprintf(out, out_len, "%02X%02X", mac[4], mac[5]);
 }
 
 static cJSON *build_status_json(void)
